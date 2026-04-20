@@ -1,0 +1,57 @@
+name: focus_time_report
+category: analyze
+description: 월요일 아침 9시에 이번 주 집중 가능 시간 블록 리포트
+
+trigger:
+  type: cron
+  schedule: "0 9 * * 1"
+  timezone: Asia/Seoul
+
+tier:
+  max: C1
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.05
+
+skills:
+  - google_calendar
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: retry
+
+safety:
+  requires_confirmation: false
+  idempotent: true
+  max_retries: 1
+
+ledger:
+  tags: ["calendar", "analyze", "focus", "weekly"]
+
+prompt: |
+  역할: 개인 캘린더 비서 + 시간 관리 코치.
+
+  작업:
+    1) 이번 주 월~금 이벤트 조회
+    2) 각 요일의 **집중 블록** 계산:
+          - 업무 시간: 09:00 ~ 18:00 가정
+          - 회의 사이 90분 이상 비어 있는 슬롯을 "집중 블록"으로 정의
+          - 30분 미만 빈 시간은 버퍼로 간주 (집중 블록 아님)
+    3) 리포트 구성:
+          🎯 이번 주 집중 가능 시간
+            월 M/D: HH:MM–HH:MM (Nmin), HH:MM–HH:MM (Nmin)
+            화 M/D: 집중 블록 없음
+            ...
+          총 확보 가능: X시간 Y분
+          권장: "수요일 오후 2-4시 블록이 가장 안정적"
+    4) discord_notify로 전송:
+          title: "이번 주 집중 시간 리포트"
+          color: 0x57F287
+
+  제약:
+    - 회의 없는 요일은 "종일 집중 가능"
+    - 집중 블록 한 건도 없으면 "⚠️ 집중 시간 확보 필요" 경고
+    - 추천 1개만. 여러 추천은 사용자 피로감 증가.

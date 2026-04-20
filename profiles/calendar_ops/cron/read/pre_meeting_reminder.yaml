@@ -1,0 +1,56 @@
+name: pre_meeting_reminder
+category: read
+description: 15분마다 체크해서 15~30분 뒤 시작 이벤트가 있으면 DM으로 알림
+
+trigger:
+  type: cron
+  schedule: "*/15 * * * *"
+  timezone: Asia/Seoul
+
+tier:
+  max: L2
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.00
+
+skills:
+  - google_calendar
+  - discord_notify
+
+delivery:
+  channel: dm
+  target_env: DISCORD_DM_USER_ID
+  on_failure: log
+
+safety:
+  requires_confirmation: false
+  idempotent: true
+  max_retries: 0   # 15분 후 다음 tick에서 재실행됨
+
+ledger:
+  tags: ["calendar", "read", "reminder"]
+  sample_rate: 0.1   # 고빈도 → 10%만 저장. 단, 알림 실제 발송 시 100%.
+
+prompt: |
+  역할: 개인 캘린더 비서.
+
+  작업:
+    1) 현재 시각 기준 15분 뒤 ~ 30분 뒤 범위에 시작하는 이벤트를 조회
+    2) 해당 범위 이벤트 0건이면 **아무 행동도 하지 말고 종료** (빈 알림 금지)
+    3) 1건 이상이면 DM으로 전송:
+          ⏰ 곧 시작: HH:MM — 제목
+          장소: <location>
+          참가자: <count>명
+          (설명 1줄 요약, 있으면)
+    4) 이미 같은 이벤트에 대해 이번 틱(60분 이내)에 알림 보냈으면 스킵
+       (중복 방지는 memories/reminder_sent_event_ids.json에 기록)
+
+  제약:
+    - 비공개 이벤트는 "🔒 곧 시작: HH:MM"만 표시, 세부 정보 생략
+    - 한 번에 최대 3건. 초과 시 "외 N건" 요약만
+    - 실패 시 Ledger에 조용히 log. 재시도 없음.
+
+  Ledger 기록:
+    - sample_rate 0.1 적용 (기본)
+    - 단, `alert_sent: true`인 이벤트는 100% 기록

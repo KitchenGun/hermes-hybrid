@@ -1,0 +1,59 @@
+name: morning_briefing
+category: read
+description: 매일 아침 8시에 오늘+내일 일정 요약을 Discord #briefing 채널로 전송
+
+trigger:
+  type: cron
+  schedule: "0 8 * * *"
+  timezone: Asia/Seoul
+
+tier:
+  max: L2
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.00   # L2 only → 로컬
+
+skills:
+  - google_calendar
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: retry
+
+safety:
+  requires_confirmation: false
+  idempotent: true
+  max_retries: 2
+
+ledger:
+  tags: ["calendar", "read", "briefing", "daily"]
+
+prompt: |
+  역할: 개인 캘린더 비서. `_shared/persona.md`와 `_shared/safety_rules.md` 준수.
+
+  작업:
+    1) google_calendar.list_events로 오늘(00:00–24:00)과 내일(00:00–24:00)의 이벤트를 조회
+       - calendar_id: ${GOOGLE_CALENDAR_ID:-primary}
+       - timezone: Asia/Seoul
+    2) 각 이벤트를 다음 형식으로 렌더링 (비공개 이벤트는 제목 마스킹):
+          • HH:MM — 제목 (장소)
+       장소·참가자 없으면 생략. 종일(all-day) 이벤트는 "종일 — 제목".
+    3) 섹션 구성:
+          🌅 오늘 (M월 D일 요일)
+            • ...
+          📅 내일 (M월 D일 요일)
+            • ...
+       각 섹션 0건이면 "일정 없음" 명시.
+    4) discord_notify로 전송:
+          title: "오늘의 일정 브리핑"
+          color: 0x5865F2
+          body: 위 섹션 텍스트
+          footer: "calendar_ops · morning_briefing"
+
+  제약:
+    - 2~4줄 요약 선호. 8줄 초과 시 상위 일정만 표시하고 "외 N건" 추가.
+    - 2000자 초과 시 truncate (discord_notify skill이 처리).
+    - OAuth 실패 시 "재인증 필요" 메시지만 전송, 다른 작업 중단.

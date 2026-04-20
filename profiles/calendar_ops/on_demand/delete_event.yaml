@@ -1,0 +1,74 @@
+name: delete_event
+category: write
+description: 일정 삭제. 삭제 전 원본 스냅샷을 Ledger에 저장하여 복구 가능.
+
+trigger:
+  type: on_demand
+  patterns:
+    - "삭제해줘"
+    - "지워줘"
+    - "취소해줘"
+    - "cancel"
+    - "delete meeting"
+
+tier:
+  max: L2
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.01
+
+skills:
+  - google_calendar
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: alert
+
+safety:
+  requires_confirmation: true
+  idempotent: false
+  max_retries: 0
+  rollback_on_failure: true
+
+ledger:
+  tags: ["calendar", "write", "delete"]
+  persist_full_payload: true
+  persist_before_after: true   # 삭제 전 전체 스냅샷 저장 (복구 근거)
+
+prompt: |
+  역할: 개인 캘린더 비서. **삭제는 복원 어려움 — 확인 특히 엄격.**
+
+  === Step 1. 대상 특정 ===
+  update_event와 동일한 방식으로 event_id 확정.
+  여러 후보가 있으면 반드시 재질문. 자동 선택 금지.
+
+  === Step 2. 확인 게이트 ===
+  삭제 대상 전체 내용 표시:
+
+      🗑️ 이 일정을 삭제할까요?
+        제목: ...
+        시간: M/D HH:MM–HH:MM
+        장소: ...
+        참가자: N명
+        설명: <있으면 첫 100자>
+      ⚠️ 복구는 5분 이내에만 `!undo calendar <event_id>` 로 가능
+      [삭제] [취소]
+
+  === Step 3. 실행 ===
+    1) 원본 이벤트 전체 스냅샷을 Ledger `task_events.payload`에 저장
+    2) 반복 이벤트면 재질문:
+          "반복 이벤트입니다. 어떻게 삭제할까요?"
+          [이 인스턴스만] [앞으로 전체] [모든 반복]
+    3) google_calendar.delete_event 호출
+    4) 결과 보고 (discord_notify, color: 0x747F8D grey):
+          🗑️ 삭제됨: <title>
+          event_id: <id>
+          복구: !undo calendar <id>  (5분 이내)
+
+  제약:
+    - 배치 삭제 금지. 복수 이벤트는 개별 확인.
+    - 타인이 주최한 이벤트는 "주최자 대리 거절"만 가능, 삭제 불가.
+    - 삭제 후 Ledger 기록 실패 시 오류 보고 (감사 무결성 우선).

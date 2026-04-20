@@ -1,0 +1,67 @@
+name: monthly_pattern
+category: analyze
+description: 매월 1일 오전 9시에 지난 달 회의 패턴 분석
+
+trigger:
+  type: cron
+  schedule: "0 9 1 * *"
+  timezone: Asia/Seoul
+
+tier:
+  max: C1
+  prefer: L2
+  bump_rules:
+    - on: "multi_constraint"
+      to: "C1"
+
+budget:
+  usd_per_run_cap: 0.10
+
+skills:
+  - google_calendar
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: retry
+
+safety:
+  requires_confirmation: false
+  idempotent: true
+  max_retries: 1
+
+ledger:
+  tags: ["calendar", "analyze", "pattern", "monthly"]
+  persist_artifact: true
+
+prompt: |
+  역할: 개인 캘린더 비서 + 시간 패턴 분석가.
+
+  작업:
+    1) 지난 달(1일 00:00 ~ 말일 24:00) 전체 이벤트 조회
+    2) 주간 artifact(weekly_retrospective 결과) 4~5개를 참조로 로드
+    3) 패턴 분석:
+          a. 회의 총시간 추이 (주차별 증감)
+          b. 반복 회의 Top 3 (동일 제목·시각 반복)
+          c. 평균 회의 길이
+          d. 참가자 규모별 분포 (1:1 / 소규모 / 대규모)
+          e. 외부/내부 비율
+    4) 다음 달 개선 제안 3~5줄:
+          - 반복 회의 중 가치 낮은 것 제거 고려
+          - 특정 요일 과부하 분산
+          - 1:1 시간 확보 권장
+    5) discord_notify로 전송:
+          title: "<YYYY년 M월> 패턴 리포트"
+          color: 0xEB459E    # Discord pink
+          fields:
+            - { name: "📈 추이", value: "..." }
+            - { name: "🔁 반복 회의 Top 3", value: "..." }
+            - { name: "💡 다음 달 제안", value: "..." }
+          footer: "calendar_ops · monthly_pattern"
+
+  제약:
+    - 월 첫 날 실행되므로 **지난 달 = 현재 month-1** 기준
+    - 참가자 이메일은 도메인만 (@example.com)
+    - 비공개 이벤트는 통계에만 포함, 제목 노출 금지
+    - C1 bump 필요 시 Validator가 판단, 자동 허용

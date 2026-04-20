@@ -1,0 +1,29 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+data/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+
+# Claude Code local settings (개인용, 팀 공유 settings.json은 허용)
+.claude/settings.local.json
+
+# Hermes profiles — secrets and runtime state
+profiles/*/.env
+profiles/*/auth.json
+profiles/*/auth.json.bak
+profiles/*/memories/
+profiles/*/sessions/
+profiles/*/logs/
+profiles/*/.cache/
+
+# 단, 디렉토리 구조 유지용 .gitkeep은 커밋 허용
+!profiles/*/memories/.gitkeep
+!profiles/*/sessions/.gitkeep
+!profiles/*/logs/.gitkeep

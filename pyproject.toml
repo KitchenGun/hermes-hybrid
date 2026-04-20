@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-hybrid"
+version = "0.1.0"
+description = "Hybrid LLM orchestrator wrapping the official NousResearch Hermes Agent"
+requires-python = ">=3.11"
+dependencies = [
+    "discord.py>=2.3.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "httpx>=0.25.0",
+    "openai>=1.0.0",
+    "anthropic>=0.20.0",
+    "jsonschema>=4.0.0",
+    "structlog>=24.0.0",
+    "python-dotenv>=1.0.0",
+    "aiosqlite>=0.19.0",
+]
+
+[project.optional-dependencies]
+ollama = ["ollama>=0.3.0"]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "mypy>=1.0.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+hermes-hybrid = "orchestrator.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

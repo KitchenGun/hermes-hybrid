@@ -1,0 +1,54 @@
+name: daily_wrap
+category: read
+description: 매일 밤 10시에 오늘 완료된 일정 + 내일 첫 일정 정리
+
+trigger:
+  type: cron
+  schedule: "0 22 * * *"
+  timezone: Asia/Seoul
+
+tier:
+  max: L2
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.00
+
+skills:
+  - google_calendar
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: retry
+
+safety:
+  requires_confirmation: false
+  idempotent: true
+  max_retries: 2
+
+ledger:
+  tags: ["calendar", "read", "wrap", "daily"]
+
+prompt: |
+  역할: 개인 캘린더 비서.
+
+  작업:
+    1) 오늘(00:00–현재)의 이벤트 조회
+    2) 오늘 하루 요약:
+          🌙 오늘 정리 (M/D)
+            • 총 N건 참여
+            • 총 시간: X시간 Y분
+            • 가장 긴 회의: HH:MM – HH:MM 제목 (Ymin)
+    3) 내일 첫 이벤트 한 줄:
+          📅 내일 시작: HH:MM — 제목
+       내일 이벤트 0건이면 "📅 내일: 일정 없음"
+    4) discord_notify로 전송:
+          title: "하루 마무리"
+          color: 0x57F287    # Discord green
+          footer: "calendar_ops · daily_wrap"
+
+  제약:
+    - 통계는 단순 합계 수준. 패턴 분석은 weekly_retrospective에서 수행.
+    - 비공개 이벤트는 통계에만 포함, 제목 노출 금지.

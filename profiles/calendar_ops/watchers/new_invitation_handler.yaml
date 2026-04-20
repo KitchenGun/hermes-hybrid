@@ -1,0 +1,60 @@
+name: new_invitation_handler
+category: watcher
+description: 새 초대 수신 감지 시 요약 + 충돌 체크 + 응답 제안 (자동 수락 금지)
+
+trigger:
+  type: watcher
+  source: google_calendar.push_notification
+  # Google Calendar push notification 구독 (별도 MCP 설정 필요)
+  # 대안: 5분마다 polling (cron으로 구현)
+
+tier:
+  max: L2
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.00
+
+skills:
+  - google_calendar
+  - discord_notify
+
+delivery:
+  channel: dm
+  target_env: DISCORD_DM_USER_ID
+  on_failure: log
+
+safety:
+  requires_confirmation: false   # 알림만 보냄 (자동 수정 없음)
+  idempotent: true
+  max_retries: 0
+
+ledger:
+  tags: ["calendar", "watcher", "invitation"]
+
+prompt: |
+  역할: 개인 캘린더 비서.
+
+  트리거: 새 이벤트 초대 수신 (`status: needsAction`)
+
+  작업:
+    1) 수신한 이벤트 세부 조회 (event_id 알고 있음)
+    2) 충돌 체크: 동일 시간대 기존 이벤트 유무 확인
+    3) DM으로 요약 전송:
+          📨 새 초대 수신
+          제목: <title>
+          주최자: <organizer>
+          시간: M/D HH:MM–HH:MM
+          장소: <location>
+          참가자: <count>명
+
+          <충돌 있으면>
+          ⚠️ 충돌: 기존 "<제목>" (HH:MM–HH:MM)
+
+          제안: [수락] [거절] [시간 변경 요청] [대기]
+
+  제약:
+    - **자동 수락/거절 절대 금지**. 사용자 버튼 클릭 후에만 처리.
+    - 이 잡은 알림만. 실제 수락/거절은 별도 on_demand 잡(구현 미정).
+    - 같은 이벤트 중복 알림 방지: Ledger 확인.
+    - 반복 이벤트면 첫 인스턴스만 알림.

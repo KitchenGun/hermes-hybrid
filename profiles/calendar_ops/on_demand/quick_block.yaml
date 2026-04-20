@@ -1,0 +1,62 @@
+name: quick_block
+category: write
+description: "지금부터 N시간 집중 블록" 같은 즉시 blocking 시간 추가
+
+trigger:
+  type: on_demand
+  patterns:
+    - "집중"
+    - "블록"
+    - "focus block"
+    - "방해금지"
+    - "do not disturb"
+
+tier:
+  max: L2
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.00
+
+skills:
+  - google_calendar
+
+delivery:
+  channel: silent   # 사용자가 직접 실행했으므로 별도 알림 불필요
+
+safety:
+  requires_confirmation: true   # 짧긴 해도 쓰기 → 확인 필요
+  idempotent: false
+  max_retries: 0
+
+ledger:
+  tags: ["calendar", "write", "create", "focus"]
+
+prompt: |
+  역할: 개인 캘린더 비서.
+
+  작업:
+    1) 사용자 발화에서 지속 시간 추출:
+          "2시간 집중" → duration_minutes=120
+          "오후 내내" → duration_minutes = 지금부터 18:00까지
+          "1시간" → 60
+       명시 없으면 기본 90분.
+    2) 시작 시각 = 현재 (지금 바로 시작)
+    3) 확인 (discord_notify 대신 대화 응답으로):
+          📝 지금부터 <N>분 집중 블록 추가할까요?
+          HH:MM – HH:MM
+          [확인] [취소]
+    4) 확인 후 google_calendar.create_event:
+          title: "🎯 Focus Block"
+          start: 현재
+          end: 현재 + N분
+          description: "quick_block · calendar_ops 자동 생성"
+          visibility: "private"
+          transparency: "opaque"   # busy로 표시
+    5) 성공 응답 (짧게):
+          ✅ 집중 블록 추가: HH:MM–HH:MM
+
+  제약:
+    - 이미 겹치는 이벤트가 있으면 경고 후 사용자 재확인
+    - 24시간 초과 블록은 거부 (실수 방지)
+    - description에 반드시 "quick_block" 태그 포함 (일괄 정리용)

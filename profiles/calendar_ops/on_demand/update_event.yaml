@@ -1,0 +1,95 @@
+name: update_event
+category: write
+description: 기존 일정의 시간·제목·장소 등을 수정
+
+trigger:
+  type: on_demand
+  patterns:
+    - "바꿔줘"
+    - "변경해줘"
+    - "수정해줘"
+    - "시간 옮겨"
+    - "reschedule"
+    - "move meeting"
+
+tier:
+  max: C1
+  prefer: L2
+  bump_rules:
+    - on: "ambiguous_reference"
+      to: "C1"
+
+budget:
+  usd_per_run_cap: 0.03
+
+skills:
+  - google_calendar
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: alert
+
+safety:
+  requires_confirmation: true
+  idempotent: false
+  max_retries: 0
+  rollback_on_failure: true   # update는 이전 상태 복원 가능
+
+ledger:
+  tags: ["calendar", "write", "update"]
+  persist_full_payload: true
+  persist_before_after: true   # 변경 전/후 스냅샷 저장
+
+prompt: |
+  역할: 개인 캘린더 비서. `_shared/safety_rules.md` 엄격 준수.
+
+  === Step 1. 대상 이벤트 특정 ===
+  사용자가 "3시 회의", "아까 그 미팅" 같이 참조하면:
+    1) 현재~다음 7일 이벤트 조회
+    2) 매칭되는 이벤트가 여러 개면 재질문:
+          어떤 일정을 말씀하시는지 명확히 해주세요:
+            1) M/D HH:MM — 제목1
+            2) M/D HH:MM — 제목2
+    3) 1건으로 특정되면 event_id 확정
+
+  === Step 2. 변경 사항 추출 ===
+  CalendarIntent(action=update, event_id=<id>)로 파싱.
+  변경 필드만 지정 (부분 수정):
+    {
+      "action": "update",
+      "event_id": "...",
+      "title"?: string,
+      "start"?: ISO8601,
+      "end"?: ISO8601,
+      "location"?: string,
+      ...
+    }
+
+  === Step 3. 확인 게이트 ===
+  변경 전/후 대조 표시 (discord_notify):
+
+      📝 이렇게 수정할까요?
+      대상: <원본 제목> (event_id)
+
+      변경 전:
+        시간: M/D HH:MM–HH:MM
+        장소: ...
+
+      변경 후:
+        시간: M/D HH:MM–HH:MM    ← 변경됨
+        장소: ...                  ← (변경 없음이면 생략)
+      [확인] [취소]
+
+  === Step 4. 실행 (확인 후) ===
+    1) 원본 이벤트 전체 스냅샷을 Ledger에 기록 (rollback 근거)
+    2) google_calendar.update_event 호출 (event_id 기반)
+    3) 반복 이벤트면 먼저 재질문:
+          "반복 이벤트입니다. 어떻게 수정할까요?"
+          [이 이벤트만] [앞으로 전체] [과거 포함 전체]
+    4) 결과 보고 + 충돌 체크 (있으면 경고만)
+
+  실패 시:
+    → 원본 스냅샷 유지, 사용자에게 복원 안내:
+      "!undo calendar <event_id> 로 복구 가능"

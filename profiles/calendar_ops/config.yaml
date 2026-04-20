@@ -1,0 +1,110 @@
+# calendar_ops — Hermes profile config
+# 공식 Hermes config.yaml 스키마 + hermes-hybrid 확장 (x-* prefix)
+#
+# 이 프로파일은 Google Calendar CRUD + Discord webhook 브리핑 전용.
+# L2(qwen2.5:14b)를 기본으로 하고, 분석 잡에서만 C1(gpt-4o)로 bump.
+
+# ── 공식 섹션 ─────────────────────────────────────────────────────
+agent:
+  max_turns: 10
+  reasoning_effort: "low"
+  tool_use_enforcement: "strict"
+
+model:
+  provider: "ollama"
+  model: "qwen2.5:14b-instruct"
+  # bump 대상 (hermes-hybrid Orchestrator가 해석)
+  fallback:
+    provider: "openai"
+    model: "gpt-4o"
+
+terminal:
+  backend: local
+  cwd: "."
+  timeout: 60
+  env_passthrough:
+    - DISCORD_BRIEFING_WEBHOOK_URL
+    - GOOGLE_CALENDAR_ID
+    - TIMEZONE
+
+memory:
+  enabled: true
+  max_chars: 20000
+  path: "${HERMES_RUNTIME_HOME}/memories"
+
+compression:
+  enabled: true
+  threshold_ratio: 0.8
+
+auxiliary:
+  approval:
+    mode: "auto"        # L2 범위 내 자동. write 잡은 잡 YAML에서 safety.requires_confirmation=true
+
+display:
+  verbosity: "normal"
+  emoji: true
+
+security:
+  secret_redaction: true
+  scan_outputs: true
+
+delegation:
+  enabled: false
+
+# ── MCP Servers (Google Calendar 연결) ────────────────────────────
+mcp_servers:
+  google_calendar:
+    # 실제 MCP 서버 URI는 환경에 따라 설정
+    # 현재 환경에서는 Claude 측 MCP(mcp__a05a6cbd-*)와 동일한 서버를 재사용
+    transport: "stdio"
+    command: "npx"
+    args: ["-y", "@google/calendar-mcp"]
+    env:
+      GOOGLE_APPLICATION_CREDENTIALS: "${HERMES_PROFILE_HOME}/auth.json"
+
+# ── Skills ─────────────────────────────────────────────────────────
+skills:
+  external_dirs:
+    - "${HERMES_PROFILE_HOME}/skills"
+  auto_load:
+    - google_calendar
+    - discord_notify
+
+# ── hermes-hybrid 확장 (공식 파서는 무시) ─────────────────────────
+x-hermes-hybrid:
+  profile_id: "calendar_ops"
+  timezone: "Asia/Seoul"
+
+  tier_policy:
+    max_tier: "C1"              # C2 영구 금지
+    prefer_tier: "L2"
+    heavy_policy: "never"       # suggest_heavy 무시
+    bump_rules:
+      - on: "ambiguous_reference"
+        to: "C1"
+      - on: "multi_constraint"
+        to: "C1"
+
+  budget:
+    cap_usd_per_day: 0.20
+    cap_usd_per_run: 0.10
+    alert_threshold_ratio: 0.8
+
+  ledger:
+    enabled: true
+    default_tags: ["calendar"]
+    # 고빈도 잡(pre_meeting_reminder 등)은 잡 YAML에서 sample_rate 개별 지정
+
+  delivery_defaults:
+    channel: "webhook"
+    target_env: "DISCORD_BRIEFING_WEBHOOK_URL"
+    on_failure: "retry"
+
+  safety_defaults:
+    write_requires_confirmation: true
+    write_max_retries: 0
+    read_max_retries: 2
+    analyze_max_retries: 1
+
+  runtime_home: "${HERMES_RUNTIME_HOME}"   # memories/sessions/logs (WSL 로컬, 성능)
+  profile_home: "${HERMES_PROFILE_HOME}"   # config/skills/cron (리포 내부, Git 관리)
