@@ -44,6 +44,21 @@ class Settings(BaseSettings):
     claude_code_timeout_ms: int = 300_000  # heavy tasks can take minutes
     claude_code_concurrency: int = 1  # Max session has per-hour limits; don't stampede
 
+    # C1 backend selector. When OpenAI TPM/quota limits make the legacy
+    # gpt-4o path unusable (see incident 2026-04-21), flip this to
+    # ``claude_cli`` and C1 runs through the Claude Code CLI with the
+    # Haiku model — still Max OAuth, zero per-token cost, but a lighter
+    # model than C2/heavy. Precedence:
+    #   1. ``use_hermes_for_c1=True``  → Hermes-driven C1 (Phase 2 path)
+    #   2. ``c1_backend="claude_cli"`` → direct Claude CLI with Haiku
+    #   3. else                         → legacy direct gpt-4o
+    # The Haiku C1 instance has its own concurrency pool so it does NOT
+    # share the heavy-path cap of 1 (which would serialize C1 behind C2).
+    c1_backend: Literal["openai", "claude_cli"] = "openai"
+    c1_claude_code_model: str = "haiku"           # alias; full name also accepted
+    c1_claude_code_timeout_ms: int = 120_000      # C1 is per-turn planning, not deep
+    c1_claude_code_concurrency: int = 3           # Haiku is light; allow real parallelism
+
     # Ollama (optional) — when disabled, R3 surrogate path is used.
     ollama_enabled: bool = False
     ollama_base_url: str = "http://localhost:11434"

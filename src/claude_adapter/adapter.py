@@ -85,9 +85,18 @@ _RESUME_FAIL_RE = re.compile(
 
 
 class ClaudeCodeAdapter:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, concurrency: int | None = None):
+        """Claude Code CLI adapter.
+
+        ``concurrency`` overrides ``settings.claude_code_concurrency`` for
+        callers that need a separate semaphore — e.g. the C1-lite instance
+        (Haiku for the planning tier) runs with its own pool so it does
+        NOT share the heavy-path cap of 1. When omitted we fall back to
+        the heavy-path default, preserving existing behavior.
+        """
         self.settings = settings
-        self._sem = asyncio.Semaphore(max(1, settings.claude_code_concurrency))
+        effective = concurrency if concurrency is not None else settings.claude_code_concurrency
+        self._sem = asyncio.Semaphore(max(1, effective))
 
     async def run(
         self,

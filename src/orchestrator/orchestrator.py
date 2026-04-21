@@ -88,6 +88,13 @@ class Orchestrator:
         self.validator = Validator(settings)
         self.hermes = HermesAdapter(settings)
         self.claude_code = ClaudeCodeAdapter(settings)
+        # Separate Claude CLI instance for C1 (Haiku) with its own semaphore
+        # so it doesn't serialize behind C2/heavy's concurrency cap of 1.
+        # Only actually invoked when ``c1_backend == "claude_cli"``; idle
+        # otherwise (cheap to hold — no subprocess at construction time).
+        self.claude_code_c1 = ClaudeCodeAdapter(
+            settings, concurrency=settings.c1_claude_code_concurrency
+        )
         # FIX#4: per-user heavy-path session reuse (10-min window).
         self.heavy_sessions = HeavySessionRegistry()
         # Phase 2: skill surface + memory backend. Both injectable for tests;
@@ -290,6 +297,22 @@ class Orchestrator:
             except HermesAdapterError as e:
                 text = ""; timed_out = False; tool_error = True
                 log.warning("hermes.error", err=str(e))
+            except ClaudeCodeAuthError as e:
+                # C1-via-Claude-CLI hit Max OAuth / quota error. Non-retryable.
+                task.record_error("tool_error", f"claude cli auth: {e}", tier=task.current_tier)
+                task.status = "failed"; task.degraded = True
+                task.final_response = (
+                    "⚠️ Claude CLI (C1 Haiku) auth/quota failed. "
+                    "Run `claude /login` in WSL to refresh the Max OAuth token, "
+                    "or wait for the hourly Max quota to reset."
+                )
+                return "claude-auth"
+            except ClaudeCodeTimeout as e:
+                text = ""; timed_out = True; tool_error = False
+                log.warning("claude_code.timeout_c1", err=str(e))
+            except ClaudeCodeAdapterError as e:
+                text = ""; timed_out = False; tool_error = True
+                log.warning("claude_code.error_c1", err=str(e))
             except LLMTimeoutError as e:
                 text = ""; timed_out = True; tool_error = False
                 log.warning("llm.timeout", err=str(e))
@@ -487,18 +510,28 @@ class Orchestrator:
     async def _run_c1(self, task: TaskState) -> tuple[str, str]:
         """C1: planning tier.
 
-        Two paths:
+        Three paths (first match wins):
           1. ``USE_HERMES_FOR_C1=true`` → HermesAdapter v2 with
              provider='openai' pinned. Phase 2 rollout; off by default.
-          2. Else → direct GPT-4o (unchanged legacy path).
+          2. ``C1_BACKEND=claude_cli`` → direct Claude Code CLI with the
+             Haiku model. Zero per-token cost (Max OAuth), immune to
+             OpenAI TPM limits. Added after the 2026-04-21 incident where
+             the 72-skill Hermes system prompt blew past the 30k TPM cap.
+             Unlike C2, this lane does NOT persist sessions — C1 is a
+             single-turn planner, and heavy-session reuse is reserved for
+             `!heavy`.
+          3. Else → direct GPT-4o (unchanged legacy path).
 
-        Claude is **never** reached from this lane — both paths are
-        structurally pinned to OpenAI (Phase 1 FIX#1 type-level guarantee
-        in the Router; FIX#5 runtime guarantee in the Hermes adapter).
-        Claude stays reserved for `!heavy`.
+        Claude **can** be reached from this lane via path #2, but only
+        the lightweight Haiku model and only when the operator explicitly
+        flips ``C1_BACKEND=claude_cli``. Heavy Sonnet/Opus usage stays
+        gated behind `!heavy` regardless.
         """
         if self.settings.effective_use_hermes_for_c1:
             return await self._run_c1_via_hermes(task)
+
+        if self.settings.c1_backend == "claude_cli":
+            return await self._run_c1_via_claude_cli(task)
 
         resp = await self._openai_main_client().generate(self._messages(task))
         task.record_model_output(
@@ -506,6 +539,46 @@ class Orchestrator:
             prompt_tokens=resp.prompt_tokens, completion_tokens=resp.completion_tokens,
         )
         return resp.text, "cloud-gpt"
+
+    async def _run_c1_via_claude_cli(self, task: TaskState) -> tuple[str, str]:
+        """C1 through the Claude Code CLI with the Haiku model.
+
+        Single-turn, stateless: we flatten system prompt + recent history
+        + bump breadcrumb into a single stdin payload and read back the
+        JSON ``result`` field. No ``--resume``, no session persistence
+        (those belong to the heavy path).
+
+        Errors flow through :class:`ClaudeCodeAuthError` /
+        :class:`ClaudeCodeTimeout` / :class:`ClaudeCodeAdapterError` —
+        the dispatch loop catches them and maps auth to a non-retryable
+        failure, timeout to a retryable same-tier signal, and adapter
+        errors to ``tool_error``.
+        """
+        # History here is passed through the adapter's own stdin flattener,
+        # but we still need to surface the system prompt and the bump
+        # breadcrumb. _SYSTEM_PROMPT goes at the front of the prompt line
+        # so the Haiku model has the same "concise Discord assistant"
+        # framing the OpenAI path uses via the system message.
+        user_content = task.user_message
+        if task.bump_prefix:
+            user_content = f"{task.bump_prefix}\n\n{task.user_message}"
+        prompt = f"{_SYSTEM_PROMPT}\n\n{user_content}"
+
+        result = await self.claude_code_c1.run(
+            prompt=prompt,
+            history=task.history_window,
+            model=self.settings.c1_claude_code_model,
+            timeout_ms=self.settings.c1_claude_code_timeout_ms,
+            persist_session=False,
+        )
+        task.record_model_output(
+            tier="C1",
+            text=result.text,
+            model_name=result.model_name or self.settings.c1_claude_code_model,
+            prompt_tokens=result.input_tokens,
+            completion_tokens=result.output_tokens,
+        )
+        return result.text, "cloud-claude-cli"
 
     async def _run_c1_via_hermes(self, task: TaskState) -> tuple[str, str]:
         """Phase 2 path: C1 through HermesAdapter v2 with OpenAI pinned.

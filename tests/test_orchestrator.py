@@ -131,7 +131,8 @@ def _claude_result(text: str, model: str = "claude-sonnet-4-6") -> ClaudeCodeRes
 def _build_orch(settings: Settings, repo: Repository | None = None, *,
                 local_scripts=None, worker_scripts=None, main_scripts=None,
                 anth_scripts=None, ollama_local_scripts=None, ollama_worker_scripts=None,
-                hermes_scripts=None, claude_scripts=None) -> Orchestrator:
+                hermes_scripts=None, claude_scripts=None,
+                claude_c1_scripts=None) -> Orchestrator:
     o = Orchestrator(settings, repo=repo)
     o._openai_surrogate_local = _FakeLLM(  # type: ignore[assignment]
         settings.openai_model_local_surrogate, local_scripts or [])
@@ -143,6 +144,9 @@ def _build_orch(settings: Settings, repo: Repository | None = None, *,
     o._ollama_worker = _FakeLLM(settings.ollama_worker_model, ollama_worker_scripts or [])  # type: ignore[assignment]
     o.hermes = _FakeHermes(hermes_scripts or [])  # type: ignore[assignment]
     o.claude_code = _FakeClaudeCode(claude_scripts or [])  # type: ignore[assignment]
+    # Separate C1-Haiku adapter (path A). Fakes are only exercised when
+    # settings.c1_backend == "claude_cli".
+    o.claude_code_c1 = _FakeClaudeCode(claude_c1_scripts or [])  # type: ignore[assignment]
     return o
 
 
@@ -428,3 +432,100 @@ async def test_retry_replay_creates_new_task(settings: Settings, tmp_path):
     assert replayed.task.task_id != first.task.task_id
     assert replayed.task.user_id == "u1"
     assert replayed.response == "second"
+
+
+# ---- Path A: C1 via Claude CLI (Haiku) -------------------------------------
+
+
+def _c1_claude_settings(settings: Settings) -> Settings:
+    """Clone settings with c1_backend flipped to claude_cli."""
+    return settings.model_copy(update={"c1_backend": "claude_cli"})
+
+
+@pytest.mark.asyncio
+async def test_c1_routes_through_claude_cli_when_backend_is_claude(settings: Settings):
+    """Path A: with c1_backend=claude_cli, C1 traffic hits claude_code_c1
+    (Haiku) instead of the OpenAI gpt-4o client. Phase 2 Hermes flag is off
+    so the claude-cli branch wins over the legacy openai branch."""
+    s = _c1_claude_settings(settings)
+    # Force escalation to C1: local + worker return empty, then C1 answers.
+    o = _build_orch(
+        s,
+        local_scripts=[_resp("", "gpt-4o-mini")],
+        worker_scripts=[_resp("", "gpt-4o")],
+        main_scripts=[_resp("SHOULD NOT BE CALLED", "gpt-4o")],
+        claude_c1_scripts=[_claude_result("haiku reply", model="claude-haiku-4-5")],
+    )
+    result = await o.handle("hello", user_id="u1")
+    assert result.handled_by == "cloud-claude-cli"
+    assert result.response == "haiku reply"
+    assert result.task.current_tier == "C1"
+    # Legacy OpenAI gpt-4o client must NOT have been touched.
+    assert o._openai_main.calls == []  # type: ignore[attr-defined]
+    # Haiku adapter called exactly once, with the configured light model.
+    assert len(o.claude_code_c1.calls) == 1  # type: ignore[attr-defined]
+    call = o.claude_code_c1.calls[0]  # type: ignore[attr-defined]
+    assert call["model"] == s.c1_claude_code_model
+    assert call["persist_session"] is False  # C1 is stateless
+    assert call["resume_session_id"] is None
+    # Heavy-path Claude adapter stays untouched.
+    assert o.claude_code.calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_c1_claude_cli_auth_error_is_non_retryable(settings: Settings):
+    """ClaudeCodeAuthError on C1 lane must degrade immediately — NOT burn
+    retries attempting to hit the Max OAuth token that already rejected us."""
+    from src.claude_adapter.adapter import ClaudeCodeAuthError
+
+    s = _c1_claude_settings(settings)
+    o = _build_orch(
+        s,
+        local_scripts=[_resp("", "gpt-4o-mini")],
+        worker_scripts=[_resp("", "gpt-4o")],
+        claude_c1_scripts=[ClaudeCodeAuthError("Max quota exhausted")],
+    )
+    result = await o.handle("hello", user_id="u1")
+    assert result.handled_by == "claude-auth"
+    assert result.task.degraded is True
+    # Only one attempt on the Haiku adapter — no retry storm.
+    assert len(o.claude_code_c1.calls) == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_c1_backend_openai_is_default_legacy_path(settings: Settings):
+    """Default (c1_backend='openai'): C1 still uses gpt-4o — Path A must
+    stay off unless explicitly opted in."""
+    o = _build_orch(
+        settings,
+        local_scripts=[_resp("", "gpt-4o-mini")],
+        worker_scripts=[_resp("", "gpt-4o")],
+        main_scripts=[_resp("gpt-4o reply", "gpt-4o")],
+        claude_c1_scripts=[_claude_result("SHOULD NOT BE CALLED")],
+    )
+    result = await o.handle("hello", user_id="u1")
+    assert result.handled_by == "cloud-gpt"
+    assert result.response == "gpt-4o reply"
+    # Haiku adapter must NOT have been called in the default config.
+    assert o.claude_code_c1.calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_hermes_c1_flag_overrides_claude_cli_backend(settings: Settings):
+    """Precedence: use_hermes_for_c1 beats c1_backend=claude_cli.
+    The Phase 2 Hermes C1 path is the most explicit knob and wins."""
+    s = settings.model_copy(update={
+        "c1_backend": "claude_cli",
+        "use_hermes_for_c1": True,
+    })
+    o = _build_orch(
+        s,
+        local_scripts=[_resp("", "gpt-4o-mini")],
+        worker_scripts=[_resp("", "gpt-4o")],
+        hermes_scripts=[_hermes_result("hermes reply", "gpt-4o", tier="C1")],
+        claude_c1_scripts=[_claude_result("SHOULD NOT BE CALLED")],
+    )
+    result = await o.handle("hello", user_id="u1")
+    assert result.handled_by == "cloud-gpt-hermes"
+    assert o.claude_code_c1.calls == []  # type: ignore[attr-defined]
+    assert len(o.hermes.calls) == 1  # type: ignore[attr-defined]
