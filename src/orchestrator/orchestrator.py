@@ -98,8 +98,12 @@ class Orchestrator:
         # FIX#4: per-user heavy-path session reuse (10-min window).
         self.heavy_sessions = HeavySessionRegistry()
         # Phase 2: skill surface + memory backend. Both injectable for tests;
-        # default wiring matches the production topology.
-        self.skills: SkillRegistry = skills if skills is not None else default_registry()
+        # default wiring matches the production topology. Pass settings
+        # through so flag-gated skills (e.g. CalendarSkill) register only
+        # when their feature flag is on.
+        self.skills: SkillRegistry = (
+            skills if skills is not None else default_registry(settings)
+        )
         self.memory: MemoryBackend = memory if memory is not None else InMemoryMemory()
         self.repo = repo  # may be None for CLI/tests
 

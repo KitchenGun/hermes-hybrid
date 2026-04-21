@@ -129,6 +129,62 @@ def test_build_cmd_passes_resume_session(settings: Settings):
     assert "--resume 20260419_abc" in joined
 
 
+def test_build_cmd_emits_profile_before_chat_subcommand(settings: Settings):
+    """Per the Hermes CLI reference, ``-p <name>`` is a TOP-LEVEL flag
+    and must precede the ``chat`` subcommand. If we slot it after ``chat``
+    Hermes rejects the invocation. Guards against regressions.
+    """
+    settings.hermes_cli_backend = "local_subprocess"  # simpler assertion surface
+    a = HermesAdapter(settings)
+    cmd = a._build_cmd(
+        query="hi", model="gpt-4o", provider="openrouter",
+        resume_session=None, max_turns=5, extra_args=[],
+        profile="calendar_ops",
+    )
+    # Find the index of the profile flag and the chat subcommand.
+    assert "-p" in cmd
+    assert "chat" in cmd
+    assert cmd.index("-p") < cmd.index("chat"), (
+        f"-p must precede chat; got: {cmd}"
+    )
+    # And the profile name immediately follows -p.
+    assert cmd[cmd.index("-p") + 1] == "calendar_ops"
+
+
+def test_build_cmd_emits_preload_skills_as_repeated_flags(settings: Settings):
+    """``-s <skill>`` is repeatable per the CLI reference. We emit one
+    flag per entry rather than a comma-joined string so skill names with
+    slashes (e.g. ``productivity/google-workspace``) survive intact."""
+    settings.hermes_cli_backend = "local_subprocess"
+    a = HermesAdapter(settings)
+    cmd = a._build_cmd(
+        query="hi", model="gpt-4o", provider="openrouter",
+        resume_session=None, max_turns=5, extra_args=[],
+        preload_skills=["productivity/google-workspace", "research/web-search"],
+    )
+    # Count -s flags — should be exactly 2, each followed by the skill name.
+    s_indices = [i for i, a in enumerate(cmd) if a == "-s"]
+    assert len(s_indices) == 2
+    assert cmd[s_indices[0] + 1] == "productivity/google-workspace"
+    assert cmd[s_indices[1] + 1] == "research/web-search"
+
+
+def test_build_cmd_without_profile_matches_legacy_shape(settings: Settings):
+    """Regression guard: absent a profile, the command must be byte-for-byte
+    identical to the pre-profile-support shape so Phase 1/2 callers are
+    unaffected."""
+    settings.hermes_cli_backend = "local_subprocess"
+    a = HermesAdapter(settings)
+    cmd = a._build_cmd(
+        query="hi", model="gpt-4o", provider="openrouter",
+        resume_session=None, max_turns=5, extra_args=[],
+    )
+    assert cmd[0] == settings.hermes_cli_path
+    assert cmd[1] == "chat"  # -p must NOT appear
+    assert "-p" not in cmd
+    assert "-s" not in cmd
+
+
 # ======================================================================
 # v2 contract tests (FIX#5)
 # ======================================================================

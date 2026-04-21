@@ -59,6 +59,26 @@ class Settings(BaseSettings):
     c1_claude_code_timeout_ms: int = 120_000      # C1 is per-turn planning, not deep
     c1_claude_code_concurrency: int = 3           # Haiku is light; allow real parallelism
 
+    # Calendar skill — routes calendar/schedule queries to the calendar_ops
+    # Hermes profile so the google-workspace skill (with OAuth) is active.
+    # Disabled by default; flip on once the calendar_ops profile is
+    # configured and OAuth is authenticated (setup.py --check returns OK).
+    calendar_skill_enabled: bool = False
+    calendar_skill_profile: str = "calendar_ops"
+    # Empty string = defer to the profile's own config.yaml. Custom
+    # providers defined in the profile (e.g. ``ollama-local``) are NOT
+    # valid ``--provider`` argparse choices on the Hermes CLI, so the
+    # documented way to opt into a profile-defined backend is to leave
+    # these blank. Set them only if you want to override what the
+    # profile config says on a per-turn basis.
+    calendar_skill_model: str = ""
+    calendar_skill_provider: str = ""
+    # Preload the google-workspace skill so it's available for the turn
+    # without the model needing to pick it from the global catalog.
+    calendar_skill_preload: str = "productivity/google-workspace"
+    calendar_skill_timeout_ms: int = 180_000
+    calendar_skill_max_turns: int = 10
+
     # Ollama (optional) — when disabled, R3 surrogate path is used.
     ollama_enabled: bool = False
     ollama_base_url: str = "http://localhost:11434"

@@ -153,12 +153,14 @@ class HermesAdapter:
         self,
         query: str,
         *,
-        model: str,
-        provider: str,
+        model: str | None,
+        provider: str | None,
         resume_session: str | None = None,
         max_turns: int | None = None,
         extra_args: list[str] | None = None,
         timeout_ms: int | None = None,
+        profile: str | None = None,
+        preload_skills: list[str] | None = None,
     ) -> HermesResult:
         """Execute one Hermes turn. Never silently re-maps model/provider.
 
@@ -180,6 +182,8 @@ class HermesAdapter:
             resume_session=resume_session,
             max_turns=max_turns,
             extra_args=extra_args or [],
+            profile=profile,
+            preload_skills=preload_skills or [],
         )
 
         async with self._sem:
@@ -220,15 +224,25 @@ class HermesAdapter:
             raw_json = await self._load_session_json(session_id)
             trace = self._project_trace(raw_json) if raw_json else {}
 
-        tier: Literal["C1", "C2"] = "C2" if "claude" in model.lower() or "opus" in model.lower() else "C1"
+        model_for_tier = (model or "").lower()
+        tier: Literal["C1", "C2"] = "C2" if "claude" in model_for_tier or "opus" in model_for_tier else "C1"
 
         # ---- v2: extract and verify ----
-        v2 = self._extract_v2(raw_json, requested_provider=provider, requested_model=model)
+        v2 = self._extract_v2(
+            raw_json,
+            requested_provider=provider or "",
+            requested_model=model or "",
+        )
 
         # R1 enforcement: if Hermes reported an actual provider and it's
-        # different from what we pinned, fail-closed.
+        # different from what we pinned, fail-closed. When ``provider`` is
+        # None (caller deferred to the profile's config.yaml) OR
+        # ``provider=="auto"`` (Hermes-side auto-selection), we skip this
+        # check — by definition the caller accepted whatever Hermes chose.
         if (
-            v2["provider_actual"]
+            provider
+            and provider != "auto"
+            and v2["provider_actual"]
             and v2["provider_actual"] != provider
             # Accept provider aliases that Hermes might normalize (e.g., "openai" vs "openai-chat")
             and not _providers_compatible(provider, v2["provider_actual"])
@@ -246,10 +260,10 @@ class HermesAdapter:
         # or used a cloud surrogate under the hood.
         log.info(
             "hermes.model_selected",
-            primary_model=v2["primary_model"] or model,
+            primary_model=v2["primary_model"] or (model or ""),
             models_used=v2["models_used"],
-            provider_requested=provider,
-            provider_actual=v2["provider_actual"] or provider,
+            provider_requested=provider or "",
+            provider_actual=v2["provider_actual"] or (provider or ""),
             turns_used=v2["turns_used"],
             session_id=session_id,
         )
@@ -258,8 +272,8 @@ class HermesAdapter:
             text=text,
             session_id=session_id,
             tier_used=tier,
-            model_name=model,
-            provider=provider,
+            model_name=model or (v2["primary_model"] or ""),
+            provider=provider or (v2["provider_actual"] or ""),
             duration_ms=duration_ms,
             stdout_raw=stdout,
             stderr_raw=stderr,
@@ -267,10 +281,10 @@ class HermesAdapter:
             prompt_tokens=v2["prompt_tokens"],
             completion_tokens=v2["completion_tokens"],
             # v2 fields
-            provider_requested=provider,
-            provider_actual=v2["provider_actual"] or provider,
+            provider_requested=provider or "",
+            provider_actual=v2["provider_actual"] or (provider or ""),
             models_used=v2["models_used"],
-            primary_model=v2["primary_model"] or model,
+            primary_model=v2["primary_model"] or (model or ""),
             turns_used=v2["turns_used"],
             skills_invoked=v2["skills_invoked"],
             mcp_tools_invoked=v2["mcp_tools_invoked"],
@@ -284,21 +298,41 @@ class HermesAdapter:
         self,
         *,
         query: str,
-        model: str,
-        provider: str,
+        model: str | None,
+        provider: str | None,
         resume_session: str | None,
         max_turns: int,
         extra_args: list[str],
+        profile: str | None = None,
+        preload_skills: list[str] | None = None,
     ) -> list[str]:
-        args = [
-            self.settings.hermes_cli_path,
+        # Per the official Hermes CLI reference: ``-p/--profile <name>`` is
+        # a top-level flag that precedes the subcommand, so we need to
+        # slot it in BEFORE ``chat`` — not after it like --provider etc.
+        # See https://hermes-agent.nousresearch.com/docs/reference/cli-commands
+        args: list[str] = [self.settings.hermes_cli_path]
+        if profile:
+            args += ["-p", profile]
+        args += [
             "chat",
             "-q", query,
             "-Q",
-            "-m", model,
-            "--provider", provider,
             "--max-turns", str(max_turns),
         ]
+        # ``-m`` and ``--provider`` are optional: when the caller passes
+        # ``None`` we let the profile's own ``config.yaml`` drive model
+        # and provider selection. Custom providers defined in the profile
+        # (e.g. ``ollama-local``) are NOT valid ``--provider`` argparse
+        # choices, so leaving the flag off is the documented way to opt
+        # into a profile-defined backend.
+        if model:
+            args += ["-m", model]
+        if provider:
+            args += ["--provider", provider]
+        # ``-s/--skills`` preloads a skill for the session. Repeatable, so
+        # we emit one flag per entry for unambiguous parsing.
+        for skill_name in (preload_skills or []):
+            args += ["-s", skill_name]
         if resume_session:
             args += ["--resume", resume_session]
         args += extra_args
