@@ -344,6 +344,12 @@ Hermes 측 MCP client 또는 Claude Desktop에서 연결.
 
 ## 8. Hermes 프로파일 사용 (calendar_ops 예시)
 
+> **💡 CalendarSkill 통해 Discord에서 `이번주 일정 알려줘` 를 동작시키려면**
+> Hermes-native 프로파일(`~/.hermes/profiles/calendar_ops/`) 쪽에도 4가지 수정이
+> 필요합니다 (OAuth 배치, 심볼릭 링크, gapi wrapper, 툴셋 비활성화).
+> 한 번에 자동화돼 있음: `bash scripts/provision_calendar_ops_native.sh`
+> 근거와 트러블슈팅은 [`docs/calendar_ops_runbook.md`](docs/calendar_ops_runbook.md) 참조.
+
 ### 8.1 부트스트랩 (WSL)
 
 ```bash
