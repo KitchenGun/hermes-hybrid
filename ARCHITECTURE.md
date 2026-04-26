@@ -113,3 +113,51 @@ Discord). It uses a single dedicated mailbox, IMAP polls for unseen
 mail, and SMTP replies in-thread. That doesn't fit "monitor my personal
 inbox and alert me on new mail," so we ship our own watcher and mail
 provider abstraction instead.
+
+## Hermes runtime — gateway vs dashboard
+
+These two services are easy to confuse but do different things. Per the
+official Hermes docs (user-guide/messaging, user-guide/features/cron):
+
+### `hermes-gateway-<profile>.service` (systemd user unit)
+
+The gateway is "a single background process that connects to all your
+configured platforms, handles sessions, **runs cron jobs**, and
+delivers voice messages." It is the **only** thing that ticks the cron
+scheduler — every 60 seconds it scans `~/.hermes/profiles/<profile>/cron/jobs.json`
+and runs anything due. Without the gateway running, cron is silently
+dead: jobs stay registered in the list but never fire.
+
+For the calendar_ops profile in this repo:
+
+- `channel_directory.json` is empty arrays — no Discord/Telegram/Slack
+  platform registered.
+- `auth.json` has only the Anthropic OAuth credential — no Discord
+  bot token.
+- → the gateway, when running, only ticks cron. It does not connect
+  to Discord, so there is **no token conflict** with the
+  hermes-hybrid Discord bot.
+
+### `hermes-dashboard.service`
+
+The dashboard is the web admin UI on `http://localhost:9119`:
+
+- Lists registered cron jobs and their next-run times.
+- Shows recent cron output / agent session logs.
+- Surfaces token usage, gateway state via `/api/status`.
+- Lets you trigger jobs manually (`hermes cron run <id>` calls the
+  same API endpoint).
+
+The dashboard does **not** tick the cron scheduler. It is purely a
+read/admin layer over the gateway. If the gateway is stopped, the
+dashboard happily continues to serve listings and queue manual triggers,
+but those triggers wait forever for a tick that never comes.
+
+### Lesson learned
+
+An earlier `run_all.bat` revision disabled the gateway "to avoid a
+race with dashboard-spawned gateway." That was a misdiagnosis — the
+cost was that calendar_ops cron had been silently dead for a week
+(`~/.hermes/cron/output/` was empty since Apr 19). The current
+`run_all.bat` enables the gateway and trusts systemd's `--replace`
+flag in the unit to handle any stale gateway PIDs from older runs.

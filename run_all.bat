@@ -20,7 +20,7 @@ if %errorlevel%==0 (
 )
 echo.
 
-REM ---- 2. WSL warm-up + disable conflicting gateway service ----
+REM ---- 2. WSL warm-up ----
 echo [2/5] Warming up WSL (Ubuntu)...
 wsl -d Ubuntu -- echo "WSL ready"
 if errorlevel 1 (
@@ -28,10 +28,25 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-REM hermes dashboard manages the gateway itself; disable the systemd gateway
-REM service so it doesn't race with dashboard-spawned gateway.
-wsl -d Ubuntu -- bash -lc "systemctl --user stop hermes-gateway-calendar_ops.service 2>/dev/null; systemctl --user disable hermes-gateway-calendar_ops.service 2>/dev/null; true" 2>nul
-echo        Disabled systemd gateway service (dashboard will manage it).
+REM Per official Hermes docs, the gateway daemon is what ticks the cron
+REM scheduler every 60s. Without it running, calendar_ops cron jobs
+REM (morning_briefing, daily_wrap, etc.) never fire. Dashboard alone is
+REM admin UI only — it does NOT tick cron.
+REM
+REM Earlier this script disabled the gateway service to "avoid a race
+REM with dashboard-spawned gateway", but that was a misdiagnosis: our
+REM calendar_ops profile has no Discord/messaging platforms registered
+REM (channel_directory.json is empty arrays, auth.json has no Discord
+REM bot token), so the gateway only ticks cron — no platform connect,
+REM no token conflict with the hermes-hybrid Discord bot.
+echo [2.5/5] Enabling hermes-gateway service (cron tick daemon)...
+wsl -d Ubuntu -- bash -lc "systemctl --user enable --now hermes-gateway-calendar_ops.service 2>&1 | tail -3"
+wsl -d Ubuntu -- bash -lc "systemctl --user is-active hermes-gateway-calendar_ops.service"
+if errorlevel 1 (
+    echo        WARN: gateway not active. Check: wsl -d Ubuntu -- journalctl --user -u hermes-gateway-calendar_ops -n 30
+) else (
+    echo        Gateway active — cron tick is alive.
+)
 echo.
 
 REM ---- 3. Hermes Dashboard (via systemd user service) ----
