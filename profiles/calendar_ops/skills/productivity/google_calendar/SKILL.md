@@ -58,7 +58,7 @@ output:
 
 사용 MCP tool: `create_event`
 
-**반드시 확인 게이트 거칠 것** (`_shared/safety_rules.md` §1).
+**반드시 확인 게이트 거칠 것** (`SOUL.md` Safety Rules §1).
 
 ```
 input (intent_schema.json 따름):
@@ -88,7 +88,7 @@ output:
 
 사용 MCP tool: `delete_event`
 
-삭제 전 이벤트 전체 내용을 Ledger에 스냅샷 저장 (`_shared/safety_rules.md` §5).
+삭제 전 이벤트 전체 내용을 Ledger에 스냅샷 저장 (`SOUL.md` Safety Rules §5).
 반복 이벤트의 경우 "이번 인스턴스만 / 앞으로 / 전체" 사용자 선택 필수.
 
 ## 5. 충돌 감지 (conflict_check)

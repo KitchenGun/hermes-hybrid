@@ -1,0 +1,80 @@
+# mail_ops — Hermes profile config
+# 개인 메일(Gmail + Naver) 수신 알림 + 검색 전용 프로파일.
+# READ-ONLY 도메인이므로 write 게이트는 두지 않는다.
+
+agent:
+  max_turns: 5
+  reasoning_effort: "low"
+  tool_use_enforcement: "auto"
+
+model:
+  provider: "custom"
+  model: "gpt-4o-mini"             # 메일 요약은 가벼운 모델로 충분
+  base_url: "https://api.openai.com/v1"
+  api_mode: "chat_completions"
+
+terminal:
+  backend: local
+  cwd: "."
+  timeout: 60
+  persistent_shell: false
+  env_passthrough:
+    - DISCORD_BRIEFING_WEBHOOK_URL
+    - NAVER_APP_PASSWORD
+    - TIMEZONE
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+
+compression:
+  enabled: true
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
+
+approvals:
+  mode: "off"                      # 읽기 전용 — 확인 게이트 불필요
+
+display:
+  verbosity: "normal"
+  emoji: true
+
+security:
+  redact_secrets: true
+
+# Skills는 hermes-hybrid Python 측에서 직접 mail provider를 다루므로
+# Hermes profile의 skills 슬롯은 비워둔다 (이 프로파일이 Hermes CLI로
+# 실행될 일이 적기 때문). 향후 on_demand 메일 검색을 추가하면 여기에
+# messaging/discord_notify 등을 넣을 수 있다.
+skills:
+  auto_load: []
+
+x-hermes-hybrid:
+  profile_id: "mail_ops"
+  timezone: "Asia/Seoul"
+
+  tier_policy:
+    max_tier: "L2"
+    prefer_tier: "L2"
+    heavy_policy: "never"
+
+  budget:
+    cap_usd_per_day: 0.05
+    cap_usd_per_run: 0.01
+    alert_threshold_ratio: 0.8
+
+  ledger:
+    enabled: true
+    default_tags: ["mail"]
+
+  delivery_defaults:
+    channel: "webhook"
+    target_env: "DISCORD_MAIL_WEBHOOK_URL"
+    on_failure: "log"
+
+  safety_defaults:
+    write_requires_confirmation: false
+    read_max_retries: 1

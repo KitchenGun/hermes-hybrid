@@ -19,6 +19,7 @@ Status = Literal[
     "reflecting",
     "retrying",
     "escalated",
+    "awaiting_confirmation",
     "succeeded",
     "failed",
 ]
@@ -43,6 +44,28 @@ class ModelOutput(BaseModel):
     completion_tokens: int = 0
     text: str = ""
     model_name: str = ""
+    # OpenCode: identifies which pipeline stage produced this output
+    # ("plan" | "build" | "high" | "review"). Empty for legacy single-call paths.
+    substage: str = ""
+
+
+class ConfirmationContext(BaseModel):
+    """Pending-write state captured when a task hits a ``requires_confirmation``
+    gate. Persisted via state_json so the bot can resume after restart.
+    """
+
+    profile_id: str
+    job_name: str
+    preview_title: str
+    preview_body: str
+    preview_color: int = 0xFEE75C
+    pending_payload: dict[str, Any] = Field(default_factory=dict)
+    expires_at: datetime
+    discord_message_id: int | None = None
+    discord_channel_id: int | None = None
+
+    def is_expired(self) -> bool:
+        return _utcnow() >= self.expires_at
 
 
 class ErrorEvent(BaseModel):
@@ -103,6 +126,10 @@ class TaskState(BaseModel):
     # goes directly to Claude Code CLI (C2). Never set by automatic escalation.
     heavy: bool = False
 
+    # JobFactory: factory.decide()가 "match"를 반환할 때 profile_id 저장.
+    # None = 팩토리 비활성화 또는 no_match/ambiguous 상태.
+    job_profile_id: str | None = None
+
     # Execution
     status: Status = "pending"
     current_tier: Tier = "L2"
@@ -136,6 +163,9 @@ class TaskState(BaseModel):
     cloud_model_used: list[str] = Field(default_factory=list)
     token_budget_remaining: int = 20_000
 
+    # HITL: present only while status == "awaiting_confirmation"
+    confirmation_context: ConfirmationContext | None = None
+
     # Output
     final_response: str = ""
     degraded: bool = False
@@ -164,6 +194,7 @@ class TaskState(BaseModel):
         model_name: str,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
+        substage: str = "",
     ) -> None:
         self.model_outputs.append(
             ModelOutput(
@@ -172,6 +203,7 @@ class TaskState(BaseModel):
                 model_name=model_name,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                substage=substage,
             )
         )
         if tier in ("C1", "C2"):

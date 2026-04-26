@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-post_webhook.py — Discord webhook sender for calendar_ops profile.
+post_webhook.py — Discord webhook sender for kk_job profile.
+
+calendar_ops의 동일 스크립트와 동작·인자 호환.
 
 Usage:
-    echo "본문 내용" | python post_webhook.py --title "오늘 일정 브리핑"
-    python post_webhook.py --title "..." --body-file ./briefing.txt
-    python post_webhook.py --title "..." --color 0xED4245 --footer "error"
+    echo "본문" | python post_webhook.py --title "주간 구인 다이제스트"
+    python post_webhook.py --title "..." --body-file ./digest.txt
+    python post_webhook.py --title "..." --color 0xED4245 --footer "kk_job"
 
 Env:
     DISCORD_BRIEFING_WEBHOOK_URL  (required)
@@ -29,7 +31,7 @@ from typing import Optional
 from urllib import request as urlreq
 from urllib.error import HTTPError, URLError
 
-DEFAULT_COLOR = 0x5865F2  # Discord blurple
+DEFAULT_COLOR = 0x5865F2
 MAX_DESCRIPTION = 4000
 MAX_TITLE = 256
 MAX_FOOTER = 2048
@@ -74,13 +76,7 @@ def _truncate(text: str, limit: int, suffix: str = "…") -> str:
     return text[: limit - len(suffix)] + suffix
 
 
-def _build_payload(
-    title: str,
-    body: str,
-    color: int,
-    footer: Optional[str],
-    timestamp: Optional[str],
-) -> dict:
+def _build_payload(title, body, color, footer, timestamp):
     ts = timestamp or datetime.now(timezone.utc).isoformat()
     embed = {
         "title": _truncate(title, MAX_TITLE),
@@ -93,12 +89,20 @@ def _build_payload(
     return {"embeds": [embed]}
 
 
+USER_AGENT = "hermes-hybrid-cron/0.1 (+https://github.com/anthropics/hermes-hybrid)"
+
+
 def _send(url: str, payload: dict) -> int:
     data = json.dumps(payload).encode("utf-8")
+    # User-Agent is required: Discord's Cloudflare frontend blocks the
+    # default Python-urllib UA with error 1010 (Forbidden).
     req = urlreq.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
         method="POST",
     )
 
@@ -116,17 +120,13 @@ def _send(url: str, payload: dict) -> int:
             if 500 <= e.code < 600:
                 time.sleep(1.0 * (attempt + 1))
                 continue
-            # 4xx 외 기타: 즉시 실패
-            print(
-                f"[post_webhook] HTTP {e.code}: {e.reason}",
-                file=sys.stderr,
-            )
+            print(f"[post_webhook] HTTP {e.code}: {e.reason}", file=sys.stderr)
             return e.code
         except URLError as e:
             last_err = e
             time.sleep(1.0 * (attempt + 1))
             continue
-        except Exception as e:  # pragma: no cover
+        except Exception as e:
             last_err = e
             break
 
@@ -142,10 +142,7 @@ def main() -> int:
 
     webhook_url = os.environ.get("DISCORD_BRIEFING_WEBHOOK_URL", "").strip()
     if not webhook_url and not args.dry_run:
-        print(
-            "[post_webhook] DISCORD_BRIEFING_WEBHOOK_URL 환경변수 없음",
-            file=sys.stderr,
-        )
+        print("[post_webhook] DISCORD_BRIEFING_WEBHOOK_URL 환경변수 없음", file=sys.stderr)
         return 2
 
     try:

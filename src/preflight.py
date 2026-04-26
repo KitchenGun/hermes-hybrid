@@ -85,9 +85,9 @@ async def run_preflight(settings: Settings, *, require_gateway_stopped: bool) ->
 
     # API keys
     if not settings.openai_api_key:
-        warnings.append("OPENAI_API_KEY not set — C1 + L2/L3 surrogates unavailable")
+        warnings.append("OPENAI_API_KEY not set - C1 + L2/L3 surrogates unavailable")
     if not settings.anthropic_api_key:
-        warnings.append("ANTHROPIC_API_KEY not set — C2 unavailable")
+        warnings.append("ANTHROPIC_API_KEY not set - C2 unavailable")
 
     # Hermes CLI reachability
     ok, reason = await check_hermes_available(settings)

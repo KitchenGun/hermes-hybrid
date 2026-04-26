@@ -1,0 +1,44 @@
+name: new_mail_alert
+category: watcher
+description: 새 메일(스팸 제외) 수신 시 Discord webhook 알림 — Gmail + Naver 통합
+
+trigger:
+  type: watcher
+  interval_seconds: 300        # 5분 폴링 (최소 30초)
+  source:
+    type: mail_poll
+    accounts:
+      - gmail_kk
+      - gmail_kitchen
+      - naver_kk
+    dedup_key: "message_id"
+
+tier:
+  max: L2
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.00        # 폴링·webhook뿐, LLM 호출 없음
+
+skills:
+  - mail
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_MAIL_WEBHOOK_URL
+  on_failure: log
+
+safety:
+  requires_confirmation: false
+  idempotent: true
+  max_retries: 1
+
+ledger:
+  tags: ["mail", "watcher", "alert"]
+
+prompt: |
+  새로 도착한 메일을 한 줄씩 요약해서 Discord webhook으로 보낸다.
+  형식: 📨 [account] 발신자 — 제목
+        ↳ snippet (있을 때만, 160자 컷)
+  본문 인용·외부 적재·자동 응답 금지. INBOX만 대상으로 한다.

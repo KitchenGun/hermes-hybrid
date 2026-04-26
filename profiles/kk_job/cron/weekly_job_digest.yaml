@@ -1,0 +1,56 @@
+name: weekly_job_digest
+category: read
+description: 매주 월요일 오전 9시 새 구인 공고 다이제스트를 Discord로 전송
+
+trigger:
+  type: cron
+  schedule: "0 9 * * 1"
+  timezone: Asia/Seoul
+
+tier:
+  max: C1
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.05
+
+skills:
+  - web_search
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: retry
+
+safety:
+  requires_confirmation: false
+  idempotent: true
+  max_retries: 2
+
+ledger:
+  tags: ["job", "digest", "weekly", "read"]
+
+prompt: |
+  역할: 구인 리서처. `SOUL.md` Safety Rules 준수.
+
+  작업:
+    1) memories/USER.md에서 선호 직무·기술 스택·지역 로드
+    2) web_search.query 실행 (지난 7일 공고 필터):
+       - query: 선호 직무 + 기술 스택 상위 3개
+       - site_filter: ["wanted.co.kr", "programmers.co.kr", "jumpit.co.kr", "rocketpunch.com"]
+       - max_results: 20
+    3) 각 공고에 web_search.score 실행 → 매칭 점수 산출
+    4) 점수 70+ 공고만 선별, 최대 5개
+    5) 각 공고 렌더링:
+          • [회사명] 직무명 — 점수 N/100
+            마감: M월 D일 / URL
+    6) discord_notify로 전송:
+          title: "🔍 주간 구인 다이제스트 (M/D 주)"
+          color: 0x5865F2
+          footer: "kk_job · weekly_job_digest"
+
+  제약:
+    - 0건이면 "이번 주 매칭 공고 없음" 명시
+    - 연봉 정보는 공고 원문에 있을 때만 표시 (추측 금지)
+    - 만료/404 공고는 제외

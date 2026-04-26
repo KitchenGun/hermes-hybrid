@@ -35,6 +35,18 @@ CREATE TABLE IF NOT EXISTS budget_daily (
     tokens   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, day)
 );
+
+-- Watcher dedup state. account is empty for non-mail watchers; for
+-- mail_poll, it is the account name from accounts.yaml so each mailbox
+-- gets its own last_message_id row.
+CREATE TABLE IF NOT EXISTS watcher_state (
+    profile_id     TEXT NOT NULL,
+    watcher_name   TEXT NOT NULL,
+    account        TEXT NOT NULL DEFAULT '',
+    last_dedup_key TEXT,
+    last_run_at    TEXT,
+    PRIMARY KEY (profile_id, watcher_name, account)
+);
 """
 
 
@@ -97,6 +109,20 @@ class Repository:
                 rows = await cur.fetchall()
         return [TaskState.model_validate_json(r[0]) for r in rows]
 
+    async def list_awaiting_confirmations(self) -> list[TaskState]:
+        """Return all tasks persisted in the ``awaiting_confirmation`` state.
+
+        Used on bot startup to notify users of pending confirmations whose
+        Discord buttons were orphaned by the restart.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT state_json FROM tasks WHERE status=? ORDER BY updated_at DESC",
+                ("awaiting_confirmation",),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [TaskState.model_validate_json(r[0]) for r in rows]
+
     # ---- budget ----
 
     async def used_tokens_today(self, user_id: str) -> int:
@@ -121,3 +147,41 @@ class Repository:
             )
             await db.commit()
         return await self.used_tokens_today(user_id)
+
+    # ---- watcher state ----
+
+    async def get_watcher_state(
+        self, profile_id: str, watcher_name: str, account: str = ""
+    ) -> str | None:
+        """Return last_dedup_key for the given watcher+account, or None."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT last_dedup_key FROM watcher_state
+                WHERE profile_id=? AND watcher_name=? AND account=?
+                """,
+                (profile_id, watcher_name, account),
+            ) as cur:
+                row = await cur.fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    async def update_watcher_state(
+        self,
+        profile_id: str,
+        watcher_name: str,
+        last_dedup_key: str,
+        account: str = "",
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO watcher_state(profile_id, watcher_name, account, last_dedup_key, last_run_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(profile_id, watcher_name, account) DO UPDATE SET
+                  last_dedup_key=excluded.last_dedup_key,
+                  last_run_at=excluded.last_run_at
+                """,
+                (profile_id, watcher_name, account, last_dedup_key, now),
+            )
+            await db.commit()

@@ -1,74 +1,108 @@
 # calendar_ops — Hermes profile config
-# 공식 Hermes config.yaml 스키마 + hermes-hybrid 확장 (x-* prefix)
+# 공식 Hermes config.yaml 스키마 준수 + hermes-hybrid 확장 (x-* prefix)
+# 참조: https://hermes-agent.nousresearch.com/docs/
 #
 # 이 프로파일은 Google Calendar CRUD + Discord webhook 브리핑 전용.
 # L2(qwen2.5:14b)를 기본으로 하고, 분석 잡에서만 C1(gpt-4o)로 bump.
 
-# ── 공식 섹션 ─────────────────────────────────────────────────────
+# ── 에이전트 설정 ────────────────────────────────────────────────
 agent:
   max_turns: 10
-  reasoning_effort: "low"
-  tool_use_enforcement: "strict"
+  reasoning_effort: "low"        # none|minimal|low|medium|high|xhigh
+  tool_use_enforcement: "strict" # auto|true|false|[model-list]
 
+# ── LLM ──────────────────────────────────────────────────────────
+# Hermes가 아는 provider 목록: auto / openrouter / nous / openai-codex /
+#   zai / kimi-coding / minimax / minimax-cn / custom
+# custom = OPENAI_BASE_URL + OPENAI_API_KEY (OpenAI 호환 엔드포인트). 기본
+# base_url은 api.openai.com이라 .env의 OPENAI_API_KEY로 바로 사용 가능.
 model:
-  provider: "ollama"
-  model: "qwen2.5:14b-instruct"
-  # bump 대상 (hermes-hybrid Orchestrator가 해석)
-  fallback:
-    provider: "openai"
-    model: "gpt-4o"
+  provider: "custom"
+  model: "gpt-4o"
+  base_url: "https://api.openai.com/v1"
+  api_mode: "chat_completions"
 
+# ── 터미널 백엔드 ─────────────────────────────────────────────────
 terminal:
   backend: local
   cwd: "."
   timeout: 60
+  persistent_shell: true
   env_passthrough:
     - DISCORD_BRIEFING_WEBHOOK_URL
     - GOOGLE_CALENDAR_ID
     - TIMEZONE
 
+# ── 메모리 (공식 필드명) ─────────────────────────────────────────
 memory:
-  enabled: true
-  max_chars: 20000
-  path: "${HERMES_RUNTIME_HOME}/memories"
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200        # 공식: agent notes (~800 tokens)
+  user_char_limit: 1375          # 공식: user profile (~500 tokens)
 
+# ── 컨텍스트 압축 (공식 필드명) ───────────────────────────────────
 compression:
   enabled: true
-  threshold_ratio: 0.8
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
 
+# ── 승인 (공식 최상위 위치) ──────────────────────────────────────
+approvals:
+  mode: "manual"                 # manual|smart|off
+                                 # write 잡은 잡 YAML에서 requires_confirmation=true
+
+# ── 보조 모델 ─────────────────────────────────────────────────────
 auxiliary:
-  approval:
-    mode: "auto"        # L2 범위 내 자동. write 잡은 잡 YAML에서 safety.requires_confirmation=true
+  compression:
+    provider: "auto"
+    timeout: 120
+  vision:
+    provider: "auto"
+    timeout: 120
+  web_extract:
+    provider: "auto"
+    timeout: 360
 
+# ── 디스플레이 ────────────────────────────────────────────────────
 display:
   verbosity: "normal"
   emoji: true
+  tool_progress: "all"
 
+# ── 보안 ──────────────────────────────────────────────────────────
 security:
-  secret_redaction: true
-  scan_outputs: true
+  redact_secrets: true
 
+# ── 위임 ──────────────────────────────────────────────────────────
 delegation:
   enabled: false
 
 # ── MCP Servers (Google Calendar 연결) ────────────────────────────
+# 실제 npm 패키지: @cocal/google-calendar-mcp (nspady/google-calendar-mcp)
+#   - GOOGLE_OAUTH_CREDENTIALS: OAuth client_secret JSON 경로 (Google Cloud Console 발급)
+#   - GOOGLE_CALENDAR_MCP_TOKEN_PATH: refresh/access 토큰 저장 위치 (선택)
+# 노출 도구 이름은 대시 형식: list-events, create-event, get-event, update-event, delete-event
 mcp_servers:
   google_calendar:
-    # 실제 MCP 서버 URI는 환경에 따라 설정
-    # 현재 환경에서는 Claude 측 MCP(mcp__a05a6cbd-*)와 동일한 서버를 재사용
     transport: "stdio"
-    command: "npx"
-    args: ["-y", "@google/calendar-mcp"]
+    # WSL에 nvm으로 설치한 Linux native Node 20을 명시적으로 사용.
+    # WSL interop PATH에 Windows node가 먼저 잡히는 것을 회피
+    # (Windows node는 OAuth credentials 경로를 Windows 경로로 해석해 실패).
+    command: "/home/kang/.local/bin/npx"
+    args: ["-y", "@cocal/google-calendar-mcp"]
     env:
-      GOOGLE_APPLICATION_CREDENTIALS: "${HERMES_PROFILE_HOME}/auth.json"
+      GOOGLE_OAUTH_CREDENTIALS: "/home/kang/.hermes/profiles/calendar_ops/google_client_secret.json"
+      GOOGLE_CALENDAR_MCP_TOKEN_PATH: "/home/kang/.hermes/profiles/calendar_ops/google_token_cocal.json"
+      PATH: "/home/kang/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    timeout: 60
+    enabled: true
 
-# ── Skills ─────────────────────────────────────────────────────────
+# ── Skills (공식: 카테고리/이름 경로) ────────────────────────────
 skills:
-  external_dirs:
-    - "${HERMES_PROFILE_HOME}/skills"
   auto_load:
-    - google_calendar
-    - discord_notify
+    - productivity/google_calendar
+    - messaging/discord_notify
 
 # ── hermes-hybrid 확장 (공식 파서는 무시) ─────────────────────────
 x-hermes-hybrid:
@@ -93,7 +127,6 @@ x-hermes-hybrid:
   ledger:
     enabled: true
     default_tags: ["calendar"]
-    # 고빈도 잡(pre_meeting_reminder 등)은 잡 YAML에서 sample_rate 개별 지정
 
   delivery_defaults:
     channel: "webhook"
@@ -106,5 +139,5 @@ x-hermes-hybrid:
     read_max_retries: 2
     analyze_max_retries: 1
 
-  runtime_home: "${HERMES_RUNTIME_HOME}"   # memories/sessions/logs (WSL 로컬, 성능)
-  profile_home: "${HERMES_PROFILE_HOME}"   # config/skills/cron (리포 내부, Git 관리)
+  runtime_home: "${HERMES_RUNTIME_HOME}"   # memories/sessions/logs
+  profile_home: "${HERMES_PROFILE_HOME}"   # config/skills/cron (Git 관리)

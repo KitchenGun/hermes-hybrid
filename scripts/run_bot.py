@@ -12,6 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Populate os.environ from .env so dynamic-name env vars (e.g. NAVER_APP_PASSWORD,
+# referenced by accounts.yaml's password_env) are visible. pydantic-settings
+# only reads .env into declared Settings fields, not into os.environ, so any
+# code path doing os.environ.get(...) directly needs this.
+try:
+    from dotenv import load_dotenv  # noqa: E402
+    load_dotenv(ROOT / ".env")
+except ImportError:  # pragma: no cover
+    pass
+
 from src.config import get_settings  # noqa: E402
 from src.gateway import run_bot  # noqa: E402
 from src.obs import get_logger, setup_logging  # noqa: E402
@@ -39,6 +49,10 @@ async def _startup() -> tuple[bool, Repository]:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     ok, repo = asyncio.run(_startup())
     if not ok:
         return 2

@@ -75,9 +75,10 @@ class Settings(BaseSettings):
     calendar_skill_provider: str = ""
     # Preload the google-workspace skill so it's available for the turn
     # without the model needing to pick it from the global catalog.
-    calendar_skill_preload: str = "productivity/google-workspace"
+    calendar_skill_preload: str = ""  # 프로파일 config.yaml의 auto_load로 충분, 별도 preload 불필요
     calendar_skill_timeout_ms: int = 180_000
-    calendar_skill_max_turns: int = 10
+    calendar_skill_max_turns: int = 5        # write/복잡 쿼리용
+    calendar_skill_read_max_turns: int = 3   # read 전용: plan + API + respond
 
     # Ollama (optional) — when disabled, R3 surrogate path is used.
     ollama_enabled: bool = False
@@ -146,6 +147,44 @@ class Settings(BaseSettings):
     state_db_path: Path = Path("./data/state.db")
     log_level: str = "INFO"
     log_json: bool = False  # R14: structured JSON logs
+
+    # Profiles directory (for Refiner / Job_Factory / HITL profile_loader)
+    profiles_dir: Path = Path("./profiles")
+
+    # JobFactory — 두 단계 게이트.
+    # 1) job_factory_enabled=True : _handle_locked()에서 factory.decide() 호출 시작.
+    #    no_match 시 degraded 응답에 힌트 메시지 추가.
+    # 2) allow_profile_creation=True : final_failure 때 프로필 스켈레톤 자동 생성.
+    #    템플릿 출력 검증 후에만 활성화할 것.
+    job_factory_enabled: bool = False
+    allow_profile_creation: bool = False
+
+    # Watcher runtime — event/poll 기반 watcher YAML 실행 엔진.
+    # 비활성화 시 watchers/*.yaml은 디스크에만 존재하고 폴링되지 않음.
+    watcher_enabled: bool = False
+    watcher_default_interval_seconds: int = 300  # YAML이 interval_seconds 미지정 시 기본값
+    watcher_max_concurrency: int = 4              # 동시 실행 watcher 수 cap
+
+    # Mail skill — Gmail/Naver 등 멀티 프로바이더 메일 조회.
+    # accounts.yaml(profile별)이 계정·자격을 들고 있으며, 이 플래그는 단지
+    # MailSkill을 SkillRegistry에 등록할지를 결정한다.
+    mail_skill_enabled: bool = False
+
+    # Human-in-the-loop (HITL) — confirmation gates for writes declared
+    # with ``safety.requires_confirmation: true`` in profile job YAMLs.
+    hitl_enabled: bool = True
+    hitl_timeout_seconds: int = 600  # 10 min — matches discord.ui.View default sentiment
+    hitl_fallback_to_text_command: bool = True  # allow `/confirm <id> yes|no`
+
+    # OpenCode agent specialization (Plan→Build/High→Reviewer pipeline).
+    # Off by default; `!opencode` prefix is a no-op until flipped on.
+    opencode_enabled: bool = False
+    opencode_plan_model: str = "gpt-4o"
+    opencode_build_model: str = "qwen2.5-coder:14b-instruct"
+    opencode_high_model: str = "sonnet"       # Claude Code CLI alias
+    opencode_reviewer_model: str = "haiku"    # Claude Code CLI alias
+    opencode_risk_threshold: Literal["low", "medium", "high"] = "medium"
+    opencode_reviewer_enabled: bool = True    # skip Reviewer for cost
 
     @property
     def allowed_user_ids(self) -> set[int]:

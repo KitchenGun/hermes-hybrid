@@ -43,7 +43,7 @@ ledger:
   persist_before_after: true   # 변경 전/후 스냅샷 저장
 
 prompt: |
-  역할: 개인 캘린더 비서. `_shared/safety_rules.md` 엄격 준수.
+  역할: 개인 캘린더 비서. `SOUL.md` Safety Rules 엄격 준수.
 
   === Step 1. 대상 이벤트 특정 ===
   사용자가 "3시 회의", "아까 그 미팅" 같이 참조하면:

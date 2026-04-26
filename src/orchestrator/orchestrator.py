@@ -14,10 +14,13 @@ Key invariants (risk-fixed):
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from src.claude_adapter import (
     ClaudeCodeAdapter,
@@ -42,13 +45,15 @@ from src.llm import (
     OllamaClient,
     OpenAIClient,
 )
+from src.job_factory.factory import JobFactory, JobFactoryError
 from src.obs import bind_task_id, get_logger
 from src.memory import InMemoryMemory, MemoryBackend
 from src.orchestrator.bump import compress_for_bump
 from src.orchestrator.heavy_session import HeavySessionRegistry
+from src.orchestrator.profile_loader import JobMeta, ProfileLoader
 from src.router import Router, RouterDecision, RuleLayer, RuleMatch
 from src.skills import SkillContext, SkillRegistry, default_registry
-from src.state import Repository, TaskState, Tier
+from src.state import ConfirmationContext, Repository, TaskState, Tier
 from src.validator import Validator
 
 log = get_logger(__name__)
@@ -106,6 +111,19 @@ class Orchestrator:
         )
         self.memory: MemoryBackend = memory if memory is not None else InMemoryMemory()
         self.repo = repo  # may be None for CLI/tests
+
+        # HITL: 30s-TTL cache over profiles/*/on_demand/*.yaml safety metadata.
+        # Consulted by :meth:`enter_confirmation_gate` to decide whether a
+        # profile job needs a Discord [확인]/[취소] gate before execution.
+        self.profile_loader = ProfileLoader(settings.profiles_dir)
+
+        # JobFactory: 키워드 기반 프로필 매처 + 스켈레톤 자동 생성기.
+        # 항상 생성(비용 없음) — 매칭은 job_factory_enabled 플래그가 켜졌을 때만 실행.
+        # allow_profile_creation은 create_profile() 호출 게이트를 제어한다.
+        self.factory = JobFactory(
+            settings.profiles_dir,
+            allow_profile_creation=settings.allow_profile_creation,
+        )
 
         # Lazy clients
         self._openai_main: OpenAIClient | None = None
@@ -170,6 +188,171 @@ class Orchestrator:
             return None
         return await self.repo.get_task(task_id)
 
+    # ---- HITL (human-in-the-loop) ----
+
+    def requires_confirmation(self, profile_id: str, job_name: str) -> bool:
+        """Quick check — does this profile job declare ``safety.requires_confirmation``?
+
+        Returns ``False`` if HITL is globally disabled, or if the job has no
+        safety section, or if the declared value is false. Used as the gate
+        before :meth:`enter_confirmation_gate`.
+        """
+        if not self.settings.hitl_enabled:
+            return False
+        return self.profile_loader.requires_confirmation(profile_id, job_name)
+
+    async def enter_confirmation_gate(
+        self,
+        task: TaskState,
+        *,
+        profile_id: str,
+        job_name: str,
+        preview_title: str,
+        preview_body: str,
+        pending_payload: dict[str, Any],
+        preview_color: int = 0xFEE75C,
+    ) -> ConfirmationContext:
+        """Suspend ``task`` in ``awaiting_confirmation`` with a preview.
+
+        The caller (Discord layer in Phase C) receives the returned
+        :class:`ConfirmationContext` and renders it as an embed + buttons.
+        Persistence happens here so a bot restart mid-wait can be recovered
+        via :meth:`Repository.list_awaiting_confirmations`.
+        """
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=self.settings.hitl_timeout_seconds
+        )
+        ctx = ConfirmationContext(
+            profile_id=profile_id,
+            job_name=job_name,
+            preview_title=preview_title,
+            preview_body=preview_body,
+            preview_color=preview_color,
+            pending_payload=pending_payload,
+            expires_at=expires_at,
+        )
+        task.confirmation_context = ctx
+        task.status = "awaiting_confirmation"
+        task.mark("awaiting_confirmation_at")
+        await self._persist(task)
+        log.info(
+            "hitl.gate_entered",
+            task_id=task.task_id,
+            profile_id=profile_id,
+            job_name=job_name,
+            expires_at=expires_at.isoformat(),
+        )
+        return ctx
+
+    async def record_confirmation_message(
+        self, task_id: str, *, message_id: int, channel_id: int
+    ) -> None:
+        """Store the Discord message id after the confirm embed is posted.
+
+        Lets the resume path know which message's buttons to disable, and
+        lets restart-recovery know which channel to re-notify in.
+        """
+        if self.repo is None:
+            return
+        task = await self.repo.get_task(task_id)
+        if task is None or task.confirmation_context is None:
+            return
+        task.confirmation_context = task.confirmation_context.model_copy(
+            update={
+                "discord_message_id": message_id,
+                "discord_channel_id": channel_id,
+            }
+        )
+        task.touch()
+        await self._persist(task)
+
+    async def resume_after_confirmation(
+        self,
+        task_id: str,
+        *,
+        decision: str,
+        actor_user_id: str,
+    ) -> tuple[TaskState, bool] | None:
+        """Resolve an ``awaiting_confirmation`` task.
+
+        ``decision`` ∈ {"confirm", "cancel", "timeout"}. Returns
+        ``(task, approved)`` where ``approved=True`` means the caller should
+        now execute the pending payload, or ``None`` if the task wasn't
+        found / isn't actually awaiting confirmation.
+
+        Security: silently rejects if ``actor_user_id`` doesn't match the
+        task owner. The discord_bot layer enforces the same check on the
+        button interaction, but we defend in depth.
+        """
+        if self.repo is None:
+            return None
+        task = await self.repo.get_task(task_id)
+        if task is None or task.status != "awaiting_confirmation":
+            return None
+        if str(task.user_id) != str(actor_user_id):
+            log.warning(
+                "hitl.actor_mismatch",
+                task_id=task_id,
+                owner=task.user_id,
+                actor=actor_user_id,
+            )
+            return None
+
+        ctx = task.confirmation_context
+        if ctx is not None and ctx.is_expired() and decision == "confirm":
+            # Fell through the TTL — treat as timeout, don't execute.
+            decision = "timeout"
+
+        if decision == "confirm":
+            task.status = "acting"
+            task.mark("confirmed_at")
+            await self._persist(task)
+            log.info("hitl.confirmed", task_id=task_id)
+            return task, True
+
+        # cancel / timeout / anything else → fail closed
+        task.status = "failed"
+        task.degraded = True
+        reason = "사용자 취소" if decision == "cancel" else "확인 시간 초과"
+        task.final_response = f"⚠️ {reason}으로 실행을 건너뜁니다. (task `{task_id}`)"
+        task.mark("finalized_at")
+        await self._persist(task)
+        log.info("hitl.declined", task_id=task_id, decision=decision)
+        return task, False
+
+    async def list_pending_confirmations(self) -> list[TaskState]:
+        """Startup recovery: all tasks currently stuck awaiting confirmation."""
+        if self.repo is None:
+            return []
+        return await self.repo.list_awaiting_confirmations()
+
+    def build_preview(
+        self,
+        meta: JobMeta,
+        pending_payload: dict[str, Any],
+    ) -> tuple[str, str, int]:
+        """Render a default (title, body, color) for the confirmation embed.
+
+        Profile-specific preview text lives in the profile prompt YAML (the
+        LLM constructs a richer preview before calling this), but for cases
+        where the caller hasn't produced one, this gives a generic fallback
+        so the gate never displays an empty message.
+        """
+        title = f"📝 {meta.job_name} 실행 확인"
+        color = 0xFEE75C
+        lines = [f"프로파일: `{meta.profile_id}`", f"잡: `{meta.job_name}`"]
+        if meta.description:
+            lines.append(f"설명: {meta.description}")
+        if pending_payload:
+            # Compact field list — truncate values so the embed stays readable.
+            for k, v in list(pending_payload.items())[:8]:
+                text = str(v)
+                if len(text) > 80:
+                    text = text[:77] + "..."
+                lines.append(f"• **{k}**: {text}")
+        lines.append("\n[확인] / [취소]")
+        return title, "\n".join(lines), color
+
     # ---- core ----
 
     async def _handle_locked(self, task: TaskState) -> OrchestratorResult:
@@ -226,6 +409,34 @@ class Orchestrator:
                 await self._persist(task)
                 self._log_task_end(task, handled, t0)
                 return OrchestratorResult(task=task, response=resp, handled_by=handled)
+
+            # 1.7. JobFactory 프로필 매칭 (job_factory_enabled일 때만 실행)
+            # "match"    → task.job_profile_id 태깅 후 라우터로 계속
+            # "ambiguous" → 후보 목록 응답 반환 (단락)
+            # "no_match"  → 기존 흐름 유지 (final_failure 시 힌트/생성)
+            if self.settings.job_factory_enabled:
+                fd = self.factory.decide(task.user_message)
+                task.job_profile_id = fd.get("profile_id")
+                log.info(
+                    "factory.decision",
+                    status=fd["status"],
+                    profile_id=fd.get("profile_id"),
+                    candidates=[c.to_dict() for c in fd["candidates"][:3]],
+                )
+                if fd["status"] == "ambiguous":
+                    lines = ["❓ 요청이 여러 프로필과 일치합니다. 하나를 선택해주세요:"]
+                    for i, c in enumerate(fd["candidates"][:3], 1):
+                        terms = ", ".join(c.matched_terms[:4]) or "—"
+                        lines.append(f"  {i}. **{c.profile_id}** (키워드: {terms})")
+                    resp = "\n".join(lines)
+                    task.status = "succeeded"
+                    task.final_response = resp
+                    task.mark("finalized_at")
+                    await self._persist(task)
+                    self._log_task_end(task, "factory:ambiguous", t0)
+                    return OrchestratorResult(
+                        task=task, response=resp, handled_by="factory:ambiguous"
+                    )
 
             # 2. Daily budget check (R4)
             if self.repo is not None:
@@ -359,7 +570,10 @@ class Orchestrator:
             if verdict.decision == "final_failure":
                 task.status = "failed"
                 task.degraded = True
-                task.final_response = self._degraded_response(task, verdict.reason)
+                factory_note = self._maybe_create_profile(task)
+                task.final_response = self._degraded_response(
+                    task, verdict.reason, extra=factory_note
+                )
                 return handled_by
 
             task.retry_count += 1
@@ -390,7 +604,9 @@ class Orchestrator:
                 continue
 
             task.status = "failed"; task.degraded = True
-            task.final_response = self._degraded_response(task, "unknown verdict")
+            task.final_response = self._degraded_response(
+                task, "unknown verdict", extra=self._maybe_create_profile(task)
+            )
             return handled_by
 
     # ---- per-attempt dispatch ----
@@ -855,6 +1071,38 @@ class Orchestrator:
             return f"[replayed {tid} → {result.task.task_id}]\n\n{result.response}"
         if match.handler == "cancel":
             return f"cancel `{match.args['task_id']}`: not supported (per-turn subprocess only)"
+        if match.handler == "confirm":
+            tid = match.args["task_id"]
+            decision = match.args["decision"]
+            # ``actor_user_id`` is the message author — thread the context
+            # through via the task we're about to load. The resume API
+            # enforces owner match; we surface a clear message for each
+            # outcome so the text fallback behaves like the button path.
+            if self.repo is None:
+                return f"confirm `{tid}`: no repository configured"
+            prior = await self.repo.get_task(tid)
+            if prior is None:
+                return f"confirm `{tid}`: task not found"
+            if prior.status != "awaiting_confirmation":
+                return (
+                    f"confirm `{tid}`: not awaiting confirmation "
+                    f"(current status: {prior.status})"
+                )
+            # actor_user_id = author of the /confirm command (task.user_id
+            # here refers to the CURRENT rule-layer task, not the prior one).
+            # resume_after_confirmation rejects if this doesn't match the
+            # prior task's owner — defense in depth against cross-user abuse.
+            result = await self.resume_after_confirmation(
+                tid, decision=decision, actor_user_id=task.user_id
+            )
+            if result is None:
+                return f"confirm `{tid}`: could not resume (owner mismatch?)"
+            task, approved = result
+            if approved:
+                return (
+                    f"✅ 확인 처리됨 — task `{tid}` 실행을 이어갑니다."
+                )
+            return f"❌ 취소 처리됨 — task `{tid}`."
         return "unknown rule"
 
     # ---- helpers ----
@@ -876,12 +1124,56 @@ class Orchestrator:
     def _initial_tier(self, decision: RouterDecision) -> Tier:
         return {"local": "L2", "worker": "L3", "cloud": "C1"}[decision.route]  # type: ignore[return-value]
 
-    def _degraded_response(self, task: TaskState, reason: str) -> str:
+    def _degraded_response(self, task: TaskState, reason: str, extra: str = "") -> str:
         return (
             "⚠️ Request could not be fully processed.\n"
             f"Reason: {reason}\n"
             f"Task: `{task.task_id}` (use `/retry {task.task_id}` to retry)"
+            + extra
         )
+
+    def _maybe_create_profile(self, task: TaskState) -> str:
+        """final_failure 시 프로필 스켈레톤 자동 생성 시도.
+
+        반환값: degraded 응답에 덧붙일 한국어 노트 문자열.
+        팩토리 비활성화 / 이미 매칭된 프로필이 있을 경우 "" 반환.
+        """
+        if not self.settings.job_factory_enabled:
+            return ""
+        if task.job_profile_id:
+            # 알려진 프로필에서 실행 실패 — 라우팅 문제가 아님
+            return ""
+        if not self.settings.allow_profile_creation:
+            log.info("factory.no_match", message=task.user_message[:80])
+            return "\n💡 이 유형의 요청을 처리하는 프로필이 없습니다."
+        # profile_id 유도: 메시지의 첫 3개 영어 토큰을 snake_case로 결합
+        en_tokens = [
+            t.lower()
+            for t in re.findall(r"[a-z][a-z0-9]+", task.user_message, re.IGNORECASE)
+            if len(t) > 2
+        ]
+        profile_id = "_".join(en_tokens[:3])[:28] or "auto_job"
+        profile_id = re.sub(r"[^a-z0-9_]", "", profile_id)
+        if not re.match(r"[a-z][a-z0-9_]{1,30}", profile_id):
+            return "\n💡 이 유형의 요청을 처리하는 프로필이 없습니다."
+        all_tokens = re.findall(r"[a-zA-Z가-힣0-9]+", task.user_message)
+        scope_allowed = [t.lower() for t in all_tokens if len(t) > 1][:12]
+        try:
+            path = self.factory.create_profile(
+                profile_id,
+                role=f"Handle requests like: {task.user_message[:120]}",
+                scope_allowed=scope_allowed,
+                actions=["execute", "monitor"],
+            )
+            self.factory.invalidate_cache()
+            log.info("factory.profile_created", profile_id=profile_id, path=str(path))
+            return (
+                f"\n🆕 새 프로필 `{profile_id}` 생성 완료."
+                " 다음 요청부터 사용 가능합니다."
+            )
+        except JobFactoryError as e:
+            log.warning("factory.create_failed", err=str(e))
+            return "\n💡 이 유형의 요청을 처리하는 프로필이 없습니다."
 
     def _log_task_end(self, task: TaskState, handled_by: str, t0: float) -> None:
         """Single summary line per request — one grep target for all runtime analysis.

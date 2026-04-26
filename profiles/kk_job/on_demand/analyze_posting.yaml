@@ -1,0 +1,81 @@
+name: analyze_posting
+category: analyze
+description: 사용자가 공고 URL을 주며 "이 공고 분석해줘" 요청 시 실행
+
+trigger:
+  type: on_demand
+  patterns:
+    - "이 공고 분석"
+    - "분석해줘"
+    - "이 공고 어때"
+    - "매칭 점수"
+    - "fit score"
+
+tier:
+  max: C1
+  prefer: C1
+  bump_rules:
+    - on: "detailed_requirements_analysis"
+      to: "C1"
+
+budget:
+  usd_per_run_cap: 0.08
+
+skills:
+  - web_search
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: alert
+
+safety:
+  requires_confirmation: false
+  idempotent: true
+  max_retries: 1
+
+ledger:
+  tags: ["job", "analyze", "posting"]
+  persist_full_payload: true
+
+prompt: |
+  역할: 커리어 코치. `SOUL.md` + `intent_schema.json` JobIntent 준수.
+
+  작업:
+    === Step 1. 의도 파싱 ===
+    JobIntent: { action: "analyze_posting", posting_url, confidence }
+    posting_url 누락 또는 format=uri 실패 시 재질문.
+
+    === Step 2. 공고 추출 ===
+    1) web_search.extract(posting_url)
+       - title, company, requirements, preferred, deadline, salary_range, location
+       - HTTP 404/만료 시 "만료됨" 명시 후 중단
+    2) MEMORY.md에서 사용자 경력·기술 로드
+
+    === Step 3. 매칭 분석 ===
+    1) web_search.score 실행 → 점수 + 부족 스킬 목록
+    2) 각 요건별 ✅(보유) / ⚠️(미보유) / 📊(부분) 표시
+    3) 우대사항 별도 섹션
+
+    === Step 4. 리포트 전송 ===
+    discord_notify:
+      title: "🔍 <회사> — <직무>"
+      color: 점수별 (80+: 0x57F287, 60-79: 0xFEE75C, <60: 0xED4245)
+      body:
+        📊 매칭 점수: N/100
+
+        ## 자격 요건
+          • 요건 1 ✅
+          • 요건 2 ⚠️ (부족)
+        ## 우대 사항
+          • ...
+        ## 다음 단계
+          1. 부족 스킬 학습 경로
+          2. 이력서 강조 섹션 제안
+      footer: "kk_job · analyze_posting"
+
+  제약:
+    - 연봉 공고 미명시 시 "미공개" 표시, 추측 금지
+    - 회사 평판/문화 정보는 출처 있을 때만 포함
+    - 허위 경력 매칭 금지 (MEMORY.md 기반만)

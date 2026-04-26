@@ -31,8 +31,30 @@ positives would surprise the user with a Hermes subprocess invocation.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 
 from .base import Skill, SkillContext, SkillMatch
+
+_KST = timezone(timedelta(hours=9))  # Asia/Seoul은 DST 없음, 항상 UTC+9
+_DAYS_KR = ["월", "화", "수", "목", "금", "토", "일"]
+
+_READ_RE = re.compile(
+    r"(알려줘|보여줘|있어\??|뭐\s*있|뭐있|tell\s+me|show\s+me|what.{0,4}s\s+on|list)",
+    re.IGNORECASE,
+)
+
+
+def _date_ctx() -> str:
+    now = datetime.now(_KST)
+    day = _DAYS_KR[now.weekday()]
+    return (
+        f"[현재 날짜: {now.strftime('%Y-%m-%d')} ({day}요일), "
+        f"현재 시각: {now.strftime('%H:%M')} KST]\n\n"
+    )
+
+
+def _is_read(query: str) -> bool:
+    return bool(_READ_RE.search(query))
 
 
 # Conservative pattern set. Each alternative is a strong calendar signal
@@ -41,6 +63,12 @@ from .base import Skill, SkillContext, SkillMatch
 _PATTERNS = [
     # Korean: 일정 (schedule), 캘린더, 미팅, 약속, 회의 일정
     re.compile(r"(일정|캘린더|스케줄|미팅|약속|회의\s*일정)", re.IGNORECASE),
+    # Korean: 삭제/수정 발화 (일정 문맥이 생략돼도 라우팅되도록)
+    # — "중복 제거해줘", "아까 그거 지워줘", "14시 약속 취소" 등
+    re.compile(
+        r"(제거|삭제|지워|지울|취소|변경|수정|옮겨|옮겨줘|바꿔)",
+        re.IGNORECASE,
+    ),
     # English: calendar / schedule / meeting / appointment / agenda / event
     # Require word boundaries so "escalate" doesn't match "calen*"; use
     # ``meet(ing)?`` rather than bare "meet" to avoid random verb uses.
@@ -94,24 +122,21 @@ class CalendarSkill(Skill):
         if not query:
             return "⚠️ CalendarSkill: empty query."
 
-        # Fire a one-shot Hermes invocation against the calendar_ops profile
-        # with the google-workspace skill preloaded. Provider + model are
-        # configurable so operators can flip between ollama-local and an
-        # openai-direct custom_provider without editing this skill.
+        # 날짜 컨텍스트를 앞에 붙여 LLM의 요일/날짜 오계산을 방지한다.
+        query = _date_ctx() + query
+        max_turns = (
+            s.calendar_skill_read_max_turns if _is_read(query)
+            else s.calendar_skill_max_turns
+        )
+
         try:
-            # Empty-string settings → None to the adapter → the
-            # corresponding ``-m``/``--provider`` flag is omitted and the
-            # profile's own ``config.yaml`` drives selection. This is the
-            # documented path for using custom providers like
-            # ``ollama-local`` that aren't valid ``--provider`` argparse
-            # choices on the Hermes CLI.
             result = await orch.hermes.run(
                 query,
                 model=s.calendar_skill_model or None,
                 provider=s.calendar_skill_provider or None,
                 profile=s.calendar_skill_profile,
-                preload_skills=[s.calendar_skill_preload],
-                max_turns=s.calendar_skill_max_turns,
+                preload_skills=[s.calendar_skill_preload] if s.calendar_skill_preload else [],
+                max_turns=max_turns,
                 timeout_ms=s.calendar_skill_timeout_ms,
             )
         except Exception as e:  # noqa: BLE001

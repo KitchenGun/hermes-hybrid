@@ -23,6 +23,7 @@ HELP_TEXT = (
     "`/status <task_id>` — task status\n"
     "`/retry <task_id>` — retry a failed task\n"
     "`/cancel <task_id>` — cancel in-flight task\n"
+    "`/confirm <task_id> yes|no` — text fallback for the HITL button\n"
     "`/ping` — liveness check\n"
     "Any other text is routed through the orchestrator."
 )
@@ -48,6 +49,25 @@ _STATIC_RULES: list[tuple[re.Pattern[str], Callable[[re.Match[str]], RuleMatch]]
     (
         re.compile(r"^\s*/cancel\s+(?P<task_id>[\w\-]+)\s*$", re.IGNORECASE),
         lambda m: RuleMatch(handler="cancel", args={"task_id": m.group("task_id")}),
+    ),
+    (
+        # HITL text fallback — used when the button view expired or
+        # message_id was lost (bot restart). Accepts yes/no/y/n.
+        re.compile(
+            r"^\s*/confirm\s+(?P<task_id>[\w\-]+)\s+(?P<decision>yes|no|y|n)\s*$",
+            re.IGNORECASE,
+        ),
+        lambda m: RuleMatch(
+            handler="confirm",
+            args={
+                "task_id": m.group("task_id"),
+                "decision": (
+                    "confirm"
+                    if m.group("decision").lower() in ("yes", "y")
+                    else "cancel"
+                ),
+            },
+        ),
     ),
 ]
 

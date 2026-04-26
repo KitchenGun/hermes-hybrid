@@ -1,0 +1,59 @@
+name: new_posting_alert
+category: read
+description: 구인 사이트 RSS/API를 폴링하여 키워드 매칭 새 공고 실시간 알림
+
+trigger:
+  type: watcher
+  interval_seconds: 3600  # 1시간마다 체크
+  source:
+    type: rss_poll
+    feeds:
+      - "https://www.wanted.co.kr/rss/jobs"
+      - "https://career.programmers.co.kr/job_positions.rss"
+    dedup_key: "url"
+
+tier:
+  max: L2
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.00
+
+skills:
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: retry
+
+safety:
+  requires_confirmation: false
+  idempotent: true
+  max_retries: 1
+
+ledger:
+  tags: ["job", "watcher", "alert"]
+
+prompt: |
+  역할: 구인 리서처 watcher. `SOUL.md` 준수.
+
+  트리거: 새 공고 감지 (feed 마지막 폴링 이후 신규 항목).
+
+  작업:
+    1) memories/USER.md에서 키워드 목록 로드 (선호 직무/기술)
+    2) 새 공고 제목·설명에 키워드 매칭 (대소문자 무시, 부분 일치)
+    3) 매칭 0건이면 조용히 종료 (noise 방지)
+    4) 매칭된 공고 렌더링:
+          🔔 새 공고: <회사> — <직무>
+            매칭 키워드: <list>
+            URL: ...
+    5) discord_notify 전송:
+          title: "🔔 새 공고 알림 (N건)"
+          color: 0x5865F2
+          footer: "kk_job · new_posting_alert"
+
+  제약:
+    - 중복 URL 전송 금지 (dedup_key 확인)
+    - 시간당 최대 5건, 초과 시 "외 N건" 요약
+    - 피드 파싱 실패 시 해당 피드만 스킵, 다른 피드 계속

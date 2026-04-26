@@ -23,6 +23,13 @@ profiles/*/sessions/
 profiles/*/logs/
 profiles/*/.cache/
 
+# Mail accounts — real addresses & token paths are personal.
+# The .example file is the committed template.
+profiles/*/accounts.yaml
+
+# OAuth tokens, app passwords, etc. — local only.
+secrets/
+
 # 단, 디렉토리 구조 유지용 .gitkeep은 커밋 허용
 !profiles/*/memories/.gitkeep
 !profiles/*/sessions/.gitkeep

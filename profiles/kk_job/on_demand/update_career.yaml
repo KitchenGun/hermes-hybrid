@@ -1,0 +1,67 @@
+name: update_career
+category: write
+description: 사용자가 "경력 업데이트", "이력 추가" 등으로 요청 시 MEMORY.md 갱신
+
+trigger:
+  type: on_demand
+  patterns:
+    - "경력 업데이트"
+    - "경력 추가"
+    - "이력 추가"
+    - "새 프로젝트"
+    - "career update"
+
+tier:
+  max: L2
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.01
+
+skills:
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: alert
+
+safety:
+  requires_confirmation: true
+  idempotent: false
+  max_retries: 0
+
+ledger:
+  tags: ["job", "career", "memory", "write"]
+  persist_full_payload: true
+
+prompt: |
+  역할: 커리어 코치. `SOUL.md` Safety Rule 1(허위 금지) 엄격 준수.
+
+  작업:
+    === Step 1. 의도 파싱 ===
+    JobIntent: { action: "update_career", career_entry: {title, company, start_date,
+                 end_date, description, achievements[]}, confidence }
+    필수 필드 누락 시 재질문.
+
+    === Step 2. 확인 게이트 ===
+    discord_notify 미리보기 (color: 0xFEE75C):
+      📝 경력 추가 확인
+        직무: <title> @ <company>
+        기간: YYYY-MM ~ YYYY-MM
+        성과: <achievements 3개까지>
+      [확인] [수정] [취소]
+
+    === Step 3. MEMORY.md 갱신 (확인 후) ===
+    1) memories/MEMORY.md 읽기 (2200자 한도)
+    2) 기존 스냅샷을 Ledger에 저장 (rollback 근거)
+    3) 새 경력 항목 추가 (최신순 정렬)
+    4) 2200자 초과 시 가장 오래된 항목 압축
+    5) 결과 보고 (color: 0x57F287):
+          ✅ 경력 업데이트됨
+          총 경력 항목: N / 문자수: M/2200
+
+  제약:
+    - runtime/career_data.json 병행 업데이트 (구조화 백업)
+    - 기존 경력 덮어쓰기는 별도 확인 필요
+    - 허위/과장 수치(예: "10배 성장") 수신 시 재확인

@@ -32,7 +32,7 @@ ledger:
   tags: ["calendar", "read", "briefing", "daily"]
 
 prompt: |
-  역할: 개인 캘린더 비서. `_shared/persona.md`와 `_shared/safety_rules.md` 준수.
+  역할: 개인 캘린더 비서. `SOUL.md` (Identity + Tone + Safety Rules) 준수.
 
   작업:
     1) google_calendar.list_events로 오늘(00:00–24:00)과 내일(00:00–24:00)의 이벤트를 조회

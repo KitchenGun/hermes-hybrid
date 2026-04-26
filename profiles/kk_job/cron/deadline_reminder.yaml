@@ -1,0 +1,51 @@
+name: deadline_reminder
+category: read
+description: 매일 오전 8시 지원 마감 D-3 이내 북마크 공고를 Discord로 알림
+
+trigger:
+  type: cron
+  schedule: "0 8 * * *"
+  timezone: Asia/Seoul
+
+tier:
+  max: L2
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.00
+
+skills:
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: retry
+
+safety:
+  requires_confirmation: false
+  idempotent: true
+  max_retries: 2
+
+ledger:
+  tags: ["job", "deadline", "reminder", "daily"]
+
+prompt: |
+  역할: 구인 리서처. `SOUL.md` 준수.
+
+  작업:
+    1) runtime/bookmarks.json 로드 (북마크 공고 목록)
+    2) 현재 시각 기준 마감까지 72시간 이내 공고 필터링
+    3) 만료된 공고는 "expired" 플래그만 갱신하고 알림 제외
+    4) 해당 공고 렌더링:
+          💼 [회사명] 직무명
+            마감: M월 D일 HH:MM (D-N)
+            URL: ...
+    5) discord_notify 전송:
+          title: "💼 지원 마감 임박 (N건)"
+          color: 0xFEE75C
+          footer: "kk_job · deadline_reminder"
+
+  제약:
+    - 0건이면 알림 스킵 (매일 "없음" 알림 방지)
+    - 이미 지원 완료 표시된 공고는 제외

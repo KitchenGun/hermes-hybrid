@@ -20,25 +20,23 @@ Hermes Agent 프로파일로, Google Calendar CRUD + Discord 채널 브리핑을
 
 ```
 calendar_ops/
-├── config.yaml                  # 프로파일 메인 설정 (공식 Hermes 스키마)
-├── SOUL.md                      # 에이전트 페르소나
+├── config.yaml                  # 공식 Hermes 스키마 (memory/compression/approvals 필드명 수정)
+├── SOUL.md                      # 에이전트 정체성 + 톤 + Safety Rules (통합)
+├── intent_schema.json           # 쓰기 잡 입력 JSON schema (PydanticOutputParser)
 ├── .env.example                 # 환경변수 템플릿 (커밋 O)
 ├── .env                         # 실제 시크릿 (커밋 X)
 ├── .gitignore
 ├── auth.json                    # Google OAuth (커밋 X)
 │
-├── _shared/
-│   ├── intent_schema.json       # 쓰기 잡 입력 JSON schema
-│   ├── persona.md               # 공통 응답 톤·포맷
-│   └── safety_rules.md          # 쓰기 안전 규칙
-│
-├── skills/
-│   ├── google_calendar/
-│   │   └── SKILL.md             # MCP wrapper
-│   └── discord_notify/
-│       ├── SKILL.md
-│       └── scripts/
-│           └── post_webhook.py  # webhook POST 헬퍼
+├── skills/                      # 공식: 카테고리/이름 경로
+│   ├── productivity/
+│   │   └── google_calendar/
+│   │       └── SKILL.md         # MCP wrapper
+│   └── messaging/
+│       └── discord_notify/
+│           ├── SKILL.md
+│           └── scripts/
+│               └── post_webhook.py
 │
 ├── cron/
 │   ├── read/
@@ -61,7 +59,9 @@ calendar_ops/
 │   ├── new_invitation_handler.yaml
 │   └── conflict_detector.yaml
 │
-├── memories/                    # 런타임 (gitignore)
+├── memories/                    # 공식 Hermes 메모리
+│   ├── MEMORY.md                # 에이전트 노트 (2200자)
+│   └── USER.md                  # 사용자 프로파일 (1375자)
 ├── sessions/                    # 런타임 (gitignore)
 └── logs/                        # 런타임 (gitignore)
 ```

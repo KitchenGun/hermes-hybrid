@@ -30,71 +30,89 @@ skills:
 delivery:
   channel: webhook
   target_env: DISCORD_BRIEFING_WEBHOOK_URL
-  on_failure: alert   # 쓰기 실패는 사용자에게 즉시 알림
+  on_failure: alert
 
 safety:
-  requires_confirmation: true   # 반드시 사용자 확인 게이트
-  idempotent: false             # 중복 생성 위험
-  max_retries: 0                # 쓰기는 재시도 금지
-  rollback_on_failure: false    # create는 롤백 불가, 실패 기록만
+  requires_confirmation: false   # 단일 실행 파이프라인 — 확인 단계 없음
+  idempotent: false
+  max_retries: 0
+  rollback_on_failure: false
 
 ledger:
   tags: ["calendar", "write", "create"]
-  persist_full_payload: true    # 이벤트 세부를 Ledger에 전체 기록
+  persist_full_payload: true
 
 prompt: |
-  역할: 개인 캘린더 비서. `_shared/safety_rules.md` 엄격 준수.
+  역할: 개인 캘린더 비서. `SOUL.md` Safety Rules 엄격 준수.
 
-  작업 (3단계, 절대 순서 준수):
+  **중요: 이 작업은 단일 실행입니다. 확인을 기다리지 말고 아래 3단계를 순서대로 끝까지 실행하세요.
+  "확인할까요?" 같은 질문은 절대 하지 말 것. 반드시 create-event와 get_event를 실제로 호출해야 합니다.**
 
   === Step 1. 의도 파싱 ===
-  사용자 발화에서 `_shared/intent_schema.json`의 CalendarIntent 구조로 추출:
+  사용자 발화에서 `intent_schema.json`의 CalendarIntent 구조로 추출:
     {
       "action": "create",
       "title": string,
-      "start": ISO8601,
+      "start": ISO8601 (Asia/Seoul),
       "end": ISO8601 (또는 duration_minutes),
       "location": string?,
       "attendees": [email]?,
-      "description": string?,
-      "confidence": 0~1,
-      "ambiguous_fields": [string]
+      "description": string?
     }
 
-  모호하거나 추출 불가 필드가 있으면:
-    → confidence < 0.7 이면 Step 2 스킵하고 사용자에게 재질문
-    → 예: "'내일 3시'에서 오후 맞나요? 종료 시각은요?"
+  사용자 메시지 맨 앞에 주입된 `[현재 날짜: YYYY-MM-DD (요일), 현재 시각: HH:MM KST]`를
+  기준으로 "내일", "오늘", "이번주" 등 상대 표현을 ISO8601 절대 날짜로 계산.
 
-  === Step 2. 확인 게이트 ===
-  확인 메시지를 discord_notify로 전송 (title: "일정 추가 확인", color: 0xFEE75C):
+  필수 필드(title, start)가 없거나 모호하면: 재질문 후 중단 (create-event 호출 금지).
 
-      📝 이렇게 추가할까요?
-        제목: <title>
-        시간: M월 D일 (요일) HH:MM – HH:MM
-        장소: <location 있을 때만>
-        참가자: <email list 있을 때만, 도메인 마스킹>
-      [확인] [수정] [취소]
+  === Step 2. 생성 (반드시 MCP 도구 호출) ===
+  MCP 서버 `google_calendar`의 `create-event` 도구 호출:
+    create-event(
+      calendarId="primary",
+      summary=<title>,
+      start=<ISO8601 with timezone, e.g. "2026-04-25T16:30:00+09:00">,
+      end=<ISO8601 with timezone>,
+      location=<있을 때만>,
+      attendees=<[{"email": "..."}] 있을 때만>,
+      description=<있을 때만>,
+      timeZone="Asia/Seoul"
+    )
+  도구 호출 결과에서 event id와 htmlLink를 확보.
 
-  **여기서 실행을 멈추고 사용자 응답 대기.**
+  === Step 3. 검증 (반드시 MCP 도구 호출) ===
+  MCP 서버 `google_calendar`의 `get-event` 도구 호출:
+    get-event(
+      calendarId="primary",
+      eventId=<Step 2에서 받은 id>
+    )
+  조회 결과의 start/end가 요청과 일치하는지 확인.
 
-  === Step 3. 실행 (사용자 "확인" 수신 후에만) ===
-    1) 중복 체크: 같은 (title, start, end, calendar_id) 존재 여부
-       - 있으면: 기존 event_id 반환, 생성 스킵
-       - 없으면: google_calendar.create_event 호출
-    2) 충돌 체크: 생성 시간대에 기존 이벤트 겹침 여부
-       - 있으면 경고 메시지 추가 (자동 수정 금지)
-    3) 결과 보고 (discord_notify, color: 0x57F287):
-          ✅ 추가됨: <title>
-          시간: ...
-          event_id: <id>
-          <충돌 경고 있으면 여기>
+  === Step 4. 결과 보고 ===
+  검증 성공 시 (color 0x57F287):
+    ```
+    ✅ 추가됨: <title>
+    시간: M월 D일 (요일) HH:MM – HH:MM
+    장소: <있을 때만>
+    event_id: <id>
+    ✔ 구글 캘린더 확인됨
+    ```
 
-  실패 시:
-    → color 0xED4245 (red), title "일정 추가 실패"
-    → 원인 한 줄 + 다음 단계 명시
-    → 절대 재시도하지 말 것
+  검증 실패 시 (color 0xFFA500):
+    ```
+    ⚠️ 이벤트가 생성됐으나 구글 캘린더 조회에서 확인되지 않았습니다.
+    event_id: <id>
+    수동 확인: <html_link>
+    ```
+
+  create-event 실패 시 (color 0xED4245):
+    ```
+    ❌ 일정 추가 실패
+    원인: <에러 메시지 한 줄>
+    ```
+  절대 재시도하지 말 것. 성공했다고 거짓 보고 금지.
 
   제약:
-    - 한 번에 하나의 이벤트만. 복수 요청은 개별 확인으로 분해.
-    - attendees 최대 20명. 초과 시 재질문.
-    - 과거 시각(start < now) 경고 후 사용자 재확인.
+    - 한 번에 하나의 이벤트만
+    - attendees 최대 20명
+    - 과거 시각(start < now) 경고 후 사용자 재확인
+    - MCP 도구 호출 없이 "추가되었습니다" 응답 절대 금지
