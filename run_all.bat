@@ -28,25 +28,33 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-REM Per official Hermes docs, the gateway daemon is what ticks the cron
-REM scheduler every 60s. Without it running, calendar_ops cron jobs
-REM (morning_briefing, daily_wrap, etc.) never fire. Dashboard alone is
-REM admin UI only — it does NOT tick cron.
+REM Hermes gateway is intentionally kept disabled, with these trade-offs:
 REM
-REM Earlier this script disabled the gateway service to "avoid a race
-REM with dashboard-spawned gateway", but that was a misdiagnosis: our
-REM calendar_ops profile has no Discord/messaging platforms registered
-REM (channel_directory.json is empty arrays, auth.json has no Discord
-REM bot token), so the gateway only ticks cron — no platform connect,
-REM no token conflict with the hermes-hybrid Discord bot.
-echo [2.5/5] Enabling hermes-gateway service (cron tick daemon)...
-wsl -d Ubuntu -- bash -lc "systemctl --user enable --now hermes-gateway-calendar_ops.service 2>&1 | tail -3"
-wsl -d Ubuntu -- bash -lc "systemctl --user is-active hermes-gateway-calendar_ops.service"
-if errorlevel 1 (
-    echo        WARN: gateway not active. Check: wsl -d Ubuntu -- journalctl --user -u hermes-gateway-calendar_ops -n 30
-) else (
-    echo        Gateway active — cron tick is alive.
-)
+REM PRO  cost of disable: calendar_ops cron jobs (morning_briefing,
+REM      daily_wrap, etc.) do not fire. Per the official Hermes docs
+REM      (user-guide/features/cron), cron tick is owned by the gateway
+REM      daemon — dashboard alone does not tick.
+REM
+REM PRO  reason for disable: the gateway has known reliability issues
+REM      under systemd in the current Hermes version. After any cron
+REM      job error or restart, gateway-state.json's recorded PID is
+REM      stale, and the next start exits with code 1 (upstream issues
+REM      #13655 stale-PID, #11258 draining-state, #6631 update-restart-
+REM      verify). Even resetting the PID and removing --replace did
+REM      not stop the crash loop in our environment.
+REM
+REM PRO  why no Discord token conflict either way: our calendar_ops
+REM      profile has channel_directory.json empty + auth.json with no
+REM      Discord bot token, so the gateway, when running, only ticks
+REM      cron — no platform connect attempt, no clash with hermes-hybrid
+REM      Discord bot.
+REM
+REM See ARCHITECTURE.md "Hermes runtime — gateway vs dashboard" for the
+REM full analysis. To re-enable once upstream stabilizes:
+REM   wsl -- systemctl --user enable --now hermes-gateway-calendar_ops.service
+echo [2.5/5] Keeping hermes-gateway service disabled (upstream systemd issues)...
+wsl -d Ubuntu -- bash -lc "systemctl --user stop hermes-gateway-calendar_ops.service 2>/dev/null; systemctl --user disable hermes-gateway-calendar_ops.service 2>/dev/null; true" 2>nul
+echo        Gateway disabled — dashboard handles admin only, cron ticks are paused.
 echo.
 
 REM ---- 3. Hermes Dashboard (via systemd user service) ----

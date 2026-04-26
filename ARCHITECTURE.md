@@ -153,11 +153,38 @@ read/admin layer over the gateway. If the gateway is stopped, the
 dashboard happily continues to serve listings and queue manual triggers,
 but those triggers wait forever for a tick that never comes.
 
-### Lesson learned
+### Lesson learned (and current decision)
 
-An earlier `run_all.bat` revision disabled the gateway "to avoid a
-race with dashboard-spawned gateway." That was a misdiagnosis — the
-cost was that calendar_ops cron had been silently dead for a week
-(`~/.hermes/cron/output/` was empty since Apr 19). The current
-`run_all.bat` enables the gateway and trusts systemd's `--replace`
-flag in the unit to handle any stale gateway PIDs from older runs.
+The first `run_all.bat` disabled the gateway "to avoid a race with
+dashboard-spawned gateway." That was a misdiagnosis — the visible cost
+was that calendar_ops cron had been silently dead since registration
+(`~/.hermes/cron/output/` was empty for a week despite daily schedules).
+
+A second iteration enabled the gateway via systemd. That surfaced a
+deeper problem: the gateway repeatedly exits with status=1 within
+seconds of startup under our systemd setup, regardless of whether the
+dashboard is running, regardless of the `--replace` flag, and after
+clearing the recorded PID. The crash matches several known upstream
+issues:
+
+- [#13655](https://github.com/NousResearch/hermes-agent/issues/13655)
+  *Stale gateway.pid causes gateway restart loop after crash/SIGKILL.*
+- [#11258](https://github.com/NousResearch/hermes-agent/issues/11258)
+  *Gateway self-restart can exit cleanly into draining state and stay
+  dead under `Restart=on-failure`.*
+- [#6631](https://github.com/NousResearch/hermes-agent/issues/6631)
+  *`hermes update`: gateway restart doesn't verify service survived.*
+
+We tried each documented workaround (clear stale PID via
+`gateway_state.json`, `systemctl reset-failed`, drop `--replace` via a
+unit override). None were sufficient.
+
+**Decision**: keep the gateway service disabled until either Hermes
+upstream stabilizes the systemd path, or we replace its cron mechanism
+with something we control (Windows Task Scheduler entries that call
+`hermes -p calendar_ops cron run <id>` directly). The hermes-hybrid
+mail watcher and Discord bot do not depend on this — they run as
+separate Python processes and continue to work fine.
+
+To re-test in the future, follow the steps documented at the bottom of
+`run_all.bat`'s `[2.5/5]` block.
