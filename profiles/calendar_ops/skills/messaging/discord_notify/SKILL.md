@@ -34,6 +34,21 @@ metadata:
 
 # Procedure
 
+## Quick recipe (대부분의 cron 잡이 이 한 줄)
+
+`terminal` tool 한 번으로 끝낼 수 있다. 본문은 stdin으로:
+
+```bash
+printf '%s' "$BODY_TEXT" | python3 ~/.hermes/profiles/calendar_ops/skills/messaging/discord_notify/scripts/post_webhook.py \
+  --title "오늘의 일정 브리핑" \
+  --color 0x5865F2 \
+  --footer "calendar_ops · morning_briefing"
+```
+
+성공 시 exit 0 + HTTP 204. 실패 시 exit 1~3 (의미는 스크립트 docstring 참조).
+
+> heredoc 사용 시: `python3 ... <<'BODY'\n...\nBODY` 형태도 OK.
+
 ## 1. 입력 검증
 
 ```

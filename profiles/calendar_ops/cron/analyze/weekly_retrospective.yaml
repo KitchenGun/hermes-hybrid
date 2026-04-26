@@ -38,27 +38,34 @@ ledger:
 prompt: |
   역할: 개인 캘린더 비서 + 주간 회고 코치.
 
-  작업:
-    1) 이번 주 월~금(00:00 월 ~ 24:00 금) 이벤트 전체 조회
-    2) 분석 (L2에서 시작, 복잡도 높으면 C1 bump):
-          a. 총 회의 시간 / 집중 가능 시간 비율
-          b. 가장 빈번한 회의 유형 (정기/임시/외부)
-          c. 시간대별 밀집도 (오전/오후/저녁)
-          d. 가장 바쁜 요일 Top 2
-    3) 개선 제안 2~3줄:
-          - 특정 시간대에 회의가 몰려 있으면 분산 제안
-          - 집중 시간 <20% 이면 "회의 없는 블록" 확보 제안
-          - 긴 회의(>90분) 많으면 분할 제안
-    4) discord_notify로 전송:
-          title: "주간 회고 (M/D ~ M/D)"
-          color: 0xFEE75C    # Discord yellow
-          fields:
-            - { name: "📊 시간 분배", value: "..." }
-            - { name: "🔥 바쁜 요일", value: "..." }
-            - { name: "💡 개선 제안", value: "..." }
-          footer: "calendar_ops · weekly_retrospective"
+  ## MCP 호출 규칙 (필수)
+  - `mcp_google_calendar_list_events` 호출 시 **`account` 파라미터 절대 넘기지 말 것**.
+  - `calendarId="primary"`, `timeZone="Asia/Seoul"` 고정.
+  - **`text_to_speech` 호출 금지** — 텍스트 전용.
 
-  제약:
-    - 수치는 반올림해서 표시 (3.72시간 → 3시간 43분)
-    - 분석 본문을 artifact로 저장해서 monthly_pattern 잡이 참조 가능하게
-    - 개선 제안은 **제안만**, 자동 실행 금지
+  ## 작업 단계
+  1) 이번 주 월~금(00:00 월 ~ 24:00 금) 이벤트 전체 조회 (`mcp_google_calendar_list_events`).
+  2) 분석:
+        a. 총 회의 시간 / 집중 가능 시간 비율
+        b. 가장 빈번한 회의 유형 (정기/임시/외부)
+        c. 시간대별 밀집도 (오전/오후/저녁)
+        d. 가장 바쁜 요일 Top 2
+  3) 개선 제안 2~3줄:
+        - 특정 시간대 몰림 → 분산 제안
+        - 집중 시간 <20% → "회의 없는 블록" 확보
+        - 긴 회의(>90분) 많음 → 분할 제안
+  4) 본문 구성 (마크다운):
+        📊 시간 분배: ...
+        🔥 바쁜 요일: ...
+        💡 개선 제안:
+          - ...
+          - ...
+  5) **두 단계로 webhook 발송 (필수)**:
+     - 5-A: `write_file(path="/tmp/weekly_retrospective_body.txt", content="<4) 본문>")`
+     - 5-B: `terminal(command="python3 /home/kang/.hermes/profiles/calendar_ops/skills/messaging/discord_notify/scripts/post_webhook.py --title '주간 회고 (M/D ~ M/D)' --color 0xFEE75C --footer 'calendar_ops · weekly_retrospective' --body-file /tmp/weekly_retrospective_body.txt")`
+  6) terminal 결과: "✅ 전송 완료 (status=204)" 또는 "⚠️ 전송 실패 (exit=N)".
+
+  ## 제약
+  - 수치는 반올림(3.72시간 → 3시간 43분).
+  - 분석 본문을 artifact로 저장해 monthly_pattern이 참조.
+  - 개선 제안은 **제안만**, 자동 실행 금지.

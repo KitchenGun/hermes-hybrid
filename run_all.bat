@@ -20,7 +20,7 @@ if %errorlevel%==0 (
 )
 echo.
 
-REM ---- 2. WSL warm-up ----
+REM ---- 2. WSL warm-up + persistent session keep-alive ----
 echo [2/5] Warming up WSL (Ubuntu)...
 wsl -d Ubuntu -- echo "WSL ready"
 if errorlevel 1 (
@@ -28,33 +28,37 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-REM Hermes gateway is intentionally kept disabled, with these trade-offs:
-REM
-REM PRO  cost of disable: calendar_ops cron jobs (morning_briefing,
-REM      daily_wrap, etc.) do not fire. Per the official Hermes docs
-REM      (user-guide/features/cron), cron tick is owned by the gateway
-REM      daemon — dashboard alone does not tick.
-REM
-REM PRO  reason for disable: the gateway has known reliability issues
-REM      under systemd in the current Hermes version. After any cron
-REM      job error or restart, gateway-state.json's recorded PID is
-REM      stale, and the next start exits with code 1 (upstream issues
-REM      #13655 stale-PID, #11258 draining-state, #6631 update-restart-
-REM      verify). Even resetting the PID and removing --replace did
-REM      not stop the crash loop in our environment.
-REM
-REM PRO  why no Discord token conflict either way: our calendar_ops
-REM      profile has channel_directory.json empty + auth.json with no
-REM      Discord bot token, so the gateway, when running, only ticks
-REM      cron — no platform connect attempt, no clash with hermes-hybrid
-REM      Discord bot.
-REM
-REM See ARCHITECTURE.md "Hermes runtime — gateway vs dashboard" for the
-REM full analysis. To re-enable once upstream stabilizes:
-REM   wsl -- systemctl --user enable --now hermes-gateway-calendar_ops.service
-echo [2.5/5] Keeping hermes-gateway service disabled (upstream systemd issues)...
-wsl -d Ubuntu -- bash -lc "systemctl --user stop hermes-gateway-calendar_ops.service 2>/dev/null; systemctl --user disable hermes-gateway-calendar_ops.service 2>/dev/null; true" 2>nul
-echo        Gateway disabled — dashboard handles admin only, cron ticks are paused.
+
+REM Persistent WSL session — required workaround for microsoft/WSL#10205
+REM where systemd-user dies whenever the last login session ends, even
+REM with linger=yes. Without this, hermes-gateway dies seconds later.
+echo        Spawning hidden WSL session keep-alive (microsoft/WSL#10205 workaround)...
+start "hermes-wsl-keepalive" /B wsl -d Ubuntu --user kang -- bash -lc "while true; do sleep 60; done"
+echo.
+
+REM ---- 2.5. Gateway override (script -qfc pseudo-TTY) + enable ----
+REM Hermes gateway exits with code 1 immediately when started without a
+REM controlling TTY (per `hermes gateway --help`, "run is recommended for
+REM WSL"). systemd by default has no TTY, so we wrap ExecStart in
+REM `script -qfc` which provides a pseudo-TTY. Without this wrapper, the
+REM gateway crash-loops at startup banner and cron tick never fires.
+REM See ARCHITECTURE.md "Hermes runtime — gateway vs dashboard".
+echo [2.5/5] Installing gateway TTY-wrapper override + enabling service...
+wsl -d Ubuntu -- bash -lc "mkdir -p ~/.config/systemd/user/hermes-gateway-calendar_ops.service.d && cat > ~/.config/systemd/user/hermes-gateway-calendar_ops.service.d/override.conf <<'OVR'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/script -qfc \"/home/kang/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile calendar_ops gateway run --replace\" /home/kang/.hermes/profiles/calendar_ops/logs/gateway.log
+OVR
+mkdir -p /home/kang/.hermes/profiles/calendar_ops/logs
+systemctl --user daemon-reload
+systemctl --user reset-failed hermes-gateway-calendar_ops.service 2>/dev/null
+systemctl --user enable --now hermes-gateway-calendar_ops.service"
+wsl -d Ubuntu -- bash -lc "systemctl --user is-active hermes-gateway-calendar_ops.service"
+if errorlevel 1 (
+    echo        WARN: gateway not active. Check: wsl -d Ubuntu -- journalctl --user -u hermes-gateway-calendar_ops -n 30
+) else (
+    echo        Gateway active — cron tick is alive.
+)
 echo.
 
 REM ---- 3. Hermes Dashboard (via systemd user service) ----

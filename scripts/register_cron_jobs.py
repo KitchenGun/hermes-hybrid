@@ -133,6 +133,43 @@ def patch_jobs_model_fields(profile: str, model_cfg: dict[str, Any]) -> int:
     return patched
 
 
+def sync_jobs_prompts(profile: str, yaml_jobs: list[dict[str, Any]]) -> int:
+    """Re-sync each registered job's prompt from its source YAML.
+
+    Hermes' `hermes -p ... cron create ...` only sets the prompt at
+    creation time. Editing the cron YAML afterwards has no effect on
+    the runtime jobs.json. This routine reconciles them: for every
+    YAML job, if jobs.json's prompt drifted, replace it with the
+    YAML's. Lets `register_cron_jobs.py` double as a "git pull, then
+    run me" sync command.
+    """
+    jobs_path = HERMES_HOME / "profiles" / profile / "cron" / "jobs.json"
+    if not jobs_path.exists():
+        return 0
+    data = json.loads(jobs_path.read_text(encoding="utf-8"))
+    jobs = data.get("jobs") if isinstance(data, dict) else data
+    if not isinstance(jobs, list):
+        return 0
+    by_name = {j["name"]: j for j in jobs if isinstance(j, dict) and "name" in j}
+    patched = 0
+    for y in yaml_jobs:
+        name = y.get("name")
+        new_prompt = (y.get("prompt") or "").strip()
+        if not name or not new_prompt:
+            continue
+        target = by_name.get(name)
+        if target is None:
+            continue
+        if (target.get("prompt") or "").strip() != new_prompt:
+            target["prompt"] = new_prompt
+            patched += 1
+    if patched:
+        jobs_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    return patched
+
+
 def main() -> int:
     profile = "calendar_ops"
     print(f"[cron] Syncing jobs for profile '{profile}'...")
@@ -168,6 +205,14 @@ def main() -> int:
             )
     else:
         print("\n[cron] WARN: profile model config empty — skipping patch.")
+
+    # Sync prompts from current YAML files into jobs.json — Hermes only
+    # honors the prompt at create-time, so YAML edits after registration
+    # would otherwise drift. This makes register_cron_jobs.py the single
+    # idempotent command for both new jobs and prompt updates.
+    prompt_patched = sync_jobs_prompts(profile, jobs)
+    if prompt_patched:
+        print(f"[cron] Re-synced {prompt_patched} prompt(s) from YAML to jobs.json.")
 
     print(f"\n[cron] Done — {registered} new job(s) registered, "
           f"{len(jobs) - registered} skipped.")

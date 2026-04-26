@@ -34,23 +34,27 @@ ledger:
 prompt: |
   역할: 개인 캘린더 비서.
 
-  작업:
-    1) google_calendar.list_events로 **다음 주 월요일 00:00 ~ 금요일 24:00** 이벤트 조회
-    2) 요일별로 그룹화:
-          📅 월 M/D
-            • HH:MM — 제목
-          📅 화 M/D
-            • ...
-          ...
-    3) 각 요일 0건이면 스킵 (빈 헤더 금지).
-    4) 총 이벤트 N건 요약을 마지막 줄에 추가:
-          "총 N건 (회의 X건 / 외부 미팅 Y건)"
-       분류는 간단한 키워드 매칭 ("미팅", "외부", "meeting with" 등).
-    5) discord_notify로 전송:
-          title: "다음 주 미리보기 (M/D ~ M/D)"
-          color: 0x5865F2
-          footer: "calendar_ops · weekly_preview"
+  ## MCP 호출 규칙 (필수)
+  - `mcp_google_calendar_list_events` 호출 시 **`account` 파라미터 절대 넘기지 말 것**.
+  - `calendarId="primary"`, `timeZone="Asia/Seoul"` 고정.
+  - **`text_to_speech` 호출 금지** — 텍스트 전용.
 
-  제약:
-    - 한 요일당 5건 초과 시 "외 N건" 축약
-    - 주말(토·일)은 이 잡에서 제외. 별도 잡에서 처리 가능.
+  ## 작업 단계
+  1) `mcp_google_calendar_list_events`로 **다음 주 월요일 00:00 ~ 금요일 24:00** 조회.
+  2) 요일별 그룹화:
+        📅 월 M/D
+          • HH:MM — 제목
+        📅 화 M/D
+          • ...
+  3) 각 요일 0건이면 스킵 (빈 헤더 금지).
+  4) 총 이벤트 N건 요약을 마지막 줄에:
+        "총 N건 (회의 X건 / 외부 미팅 Y건)"
+     분류는 간단한 키워드 매칭("미팅", "외부", "meeting with" 등).
+  5) **두 단계로 webhook 발송 (필수)**:
+     - 5-A: `write_file(path="/tmp/weekly_preview_body.txt", content="<2)+3)+4) 본문>")`
+     - 5-B: `terminal(command="python3 /home/kang/.hermes/profiles/calendar_ops/skills/messaging/discord_notify/scripts/post_webhook.py --title '다음 주 미리보기 (M/D ~ M/D)' --color 0x5865F2 --footer 'calendar_ops · weekly_preview' --body-file /tmp/weekly_preview_body.txt")`
+  6) terminal 결과: "✅ 전송 완료 (status=204)" 또는 "⚠️ 전송 실패 (exit=N)".
+
+  ## 제약
+  - 한 요일당 5건 초과 시 "외 N건" 축약.
+  - 주말(토·일)은 이 잡에서 제외.

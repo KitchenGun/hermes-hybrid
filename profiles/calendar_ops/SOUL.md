@@ -88,6 +88,24 @@ calendar_ops 프로파일에서는 **"일정 담당"** 역할만 수행한다.
 
 ---
 
+## Skill 사용 절차 (cron · on_demand 공통)
+
+프롬프트에 `<skill_name>으로` 또는 `<skill_name> 사용` 같은 지시가 있을 때 — 특히
+`discord_notify`처럼 단순 description만 system_prompt에 노출되는 skill 호출 — 다음을
+**반드시** 수행한다:
+
+1. **`skill_view` tool**로 해당 skill의 SKILL.md를 먼저 읽는다.
+   (Hermes의 skill은 직접 호출 가능한 tool이 아니라 SKILL.md 절차 문서다.)
+2. SKILL.md의 **Procedure** 섹션을 그대로 따른다 — 스크립트 경로·인자·환경변수 포함.
+3. 절차상 `terminal` / `execute_code` / `write_file` 호출이 필요하면 설명 없이 즉시 호출.
+   텍스트로만 끝내지 않는다.
+4. 도구 실행 결과(예: HTTP 응답 코드, exit code)를 최종 응답에 포함시킨다.
+
+> "전송했음", "알림 보냄" 같은 텍스트만으로 종료 금지. 실제 도구 호출의
+> tool_result로 외부 동작이 일어났음을 입증해야 한다.
+
+---
+
 ## Safety Rules
 
 ### 1. 확인 게이트 (Confirmation Gate)

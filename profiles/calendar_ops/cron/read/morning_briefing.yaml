@@ -32,28 +32,40 @@ ledger:
   tags: ["calendar", "read", "briefing", "daily"]
 
 prompt: |
-  역할: 개인 캘린더 비서. `SOUL.md` (Identity + Tone + Safety Rules) 준수.
+  역할: 개인 캘린더 비서. `SOUL.md` 준수.
 
-  작업:
-    1) google_calendar.list_events로 오늘(00:00–24:00)과 내일(00:00–24:00)의 이벤트를 조회
-       - calendar_id: ${GOOGLE_CALENDAR_ID:-primary}
-       - timezone: Asia/Seoul
-    2) 각 이벤트를 다음 형식으로 렌더링 (비공개 이벤트는 제목 마스킹):
-          • HH:MM — 제목 (장소)
-       장소·참가자 없으면 생략. 종일(all-day) 이벤트는 "종일 — 제목".
-    3) 섹션 구성:
-          🌅 오늘 (M월 D일 요일)
-            • ...
-          📅 내일 (M월 D일 요일)
-            • ...
-       각 섹션 0건이면 "일정 없음" 명시.
-    4) discord_notify로 전송:
-          title: "오늘의 일정 브리핑"
-          color: 0x5865F2
-          body: 위 섹션 텍스트
-          footer: "calendar_ops · morning_briefing"
+  ## MCP 호출 규칙 (필수)
+  - `mcp_google_calendar_list_events` 호출 시 **`account` 파라미터 절대 넘기지 말 것**.
+    MCP가 기본 계정을 자동 사용. 잘못된 account 이름 추론하면 401 에러.
+  - `calendarId`는 항상 `"primary"`.
+  - **`text_to_speech` 도구 호출 금지** — 이번 잡은 텍스트 전용.
 
-  제약:
-    - 2~4줄 요약 선호. 8줄 초과 시 상위 일정만 표시하고 "외 N건" 추가.
-    - 2000자 초과 시 truncate (discord_notify skill이 처리).
-    - OAuth 실패 시 "재인증 필요" 메시지만 전송, 다른 작업 중단.
+  ## 작업 단계
+  1) `mcp_google_calendar_list_events` 두 번:
+     - 호출 A: timeMin=오늘 00:00+09:00, timeMax=내일 00:00+09:00
+     - 호출 B: timeMin=내일 00:00+09:00, timeMax=모레 00:00+09:00
+     - 둘 다 `calendarId="primary"`, `timeZone="Asia/Seoul"`, **account 미지정**
+  2) 각 이벤트를 렌더 (비공개 🔒 마스킹, 종일은 "종일 — 제목"):
+        • HH:MM — 제목 (장소)
+  3) 본문 구성:
+        🌅 오늘 (M월 D일 요일)
+          • ...
+        📅 내일 (M월 D일 요일)
+          • ...
+     각 섹션 0건이면 "일정 없음".
+  4) **두 단계로 webhook 발송 (필수). 파이프 명령은 Hermes 보안 스캔에 차단되니 파일 경유.**
+     - 단계 4-A: `write_file` 도구로 본문을 임시 파일에 저장
+       ```
+       write_file(path="/tmp/morning_briefing_body.txt", content="<3) 단계 본문>")
+       ```
+     - 단계 4-B: `terminal` 도구로 post_webhook.py 실행 (파이프 없이, --body-file 옵션 사용)
+       ```
+       terminal(command="python3 /home/kang/.hermes/profiles/calendar_ops/skills/messaging/discord_notify/scripts/post_webhook.py --title '오늘의 일정 브리핑' --color 0x5865F2 --footer 'calendar_ops · morning_briefing' --body-file /tmp/morning_briefing_body.txt")
+       ```
+     exit code 0 = HTTP 204 성공. 4xx/5xx 시 1회 재시도, 그래도 실패면 에러 보고.
+  5) terminal 결과를 최종 응답에 한 줄: "✅ 전송 완료 (status=204)" 또는 "⚠️ 전송 실패 (exit=N)".
+
+  ## 제약
+  - 8줄 초과 시 상위 일정만 + "외 N건".
+  - 2000자 초과 시 본문 truncate.
+  - MCP 401/403 시 webhook으로 "⚠️ 캘린더 재인증 필요"만 전송하고 잡 종료.
