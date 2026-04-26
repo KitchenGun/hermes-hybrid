@@ -85,6 +85,16 @@ class NaverProvider:
     ) -> list[MailMessage]:
         MailBox, _AND = _lazy_imap_tools()
 
+        # Parse last_uid for the strict client-side filter below.
+        # IMAP servers (per RFC 3501 §6.4.8) ALWAYS include the highest
+        # existing UID in a "UID X:*" range, even when X > highest. So
+        # the server-side criterion is a candidate filter only — we
+        # must drop UIDs <= last_uid client-side or we'll re-notify the
+        # latest message every poll until something newer arrives.
+        last_uid: int | None = None
+        if last_message_id and last_message_id.isdigit():
+            last_uid = int(last_message_id)
+
         try:
             with MailBox(self.host, self.port).login(
                 self.address, self._password(), initial_folder="INBOX"
@@ -115,6 +125,10 @@ class NaverProvider:
         for m in msgs:
             uid = (m.uid or "").strip()
             if not uid:
+                continue
+            # Strict UID filter — see RFC note above. Drop the server's
+            # "courtesy" message that's actually <= our high-water mark.
+            if last_uid is not None and uid.isdigit() and int(uid) <= last_uid:
                 continue
             received = m.date or datetime.now(tz=timezone.utc)
             if received.tzinfo is None:

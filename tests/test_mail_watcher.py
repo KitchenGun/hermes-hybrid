@@ -183,6 +183,111 @@ def test_naver_provider_raises_when_password_env_unset(monkeypatch):
         p._password()
 
 
+def test_naver_provider_strict_uid_filter_drops_rfc_3501_courtesy_match(monkeypatch):
+    """Regression: per RFC 3501 §6.4.8, "UID X:*" always returns the
+    highest UID even when X > highest. Without a strict client-side
+    filter, we'd re-notify the latest message every poll forever.
+    """
+    from types import SimpleNamespace
+
+    # Fake imap_tools.MailBox + AND
+    class _FakeMsg:
+        def __init__(self, uid, subject):
+            self.uid = uid
+            self.subject = subject
+            self.from_ = "user@example.com"
+            self.from_values = SimpleNamespace(name="User", email="user@example.com")
+            self.date = datetime(2026, 4, 26, 23, 5, tzinfo=timezone.utc)
+
+    class _FakeMailBox:
+        def __init__(self, host, port):
+            self._fetch_result = []
+
+        def login(self, address, password, initial_folder=None):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def fetch(self, *, criteria, limit, **kw):
+            # Server-side: returns latest UID even when criteria range is empty
+            return iter(self._fetch_result)
+
+    # Build a fake mailbox where the highest UID (32798) was already seen
+    # last poll. Server "obediently" returns it for "UID 32799:*".
+    fake_box = _FakeMailBox("h", 993)
+    fake_box._fetch_result = [_FakeMsg("32798", "Test")]
+
+    def fake_imap_tools():
+        class _AND:
+            pass
+        return (lambda h, p: fake_box), _AND
+
+    monkeypatch.setattr("src.skills.mail.naver._lazy_imap_tools", fake_imap_tools)
+
+    p = NaverProvider(
+        account="t", address="x@naver.com", password_env="FAKE_NAVER_PW"
+    )
+    monkeypatch.setenv("FAKE_NAVER_PW", "x")
+
+    # last_message_id == "32798": the server returns UID 32798 (RFC courtesy),
+    # but our strict filter must drop it.
+    out = p.list_new_since("32798", limit=20)
+    assert out == [], f"strict filter failed: returned {[m.message_id for m in out]}"
+
+
+def test_naver_provider_strict_uid_filter_keeps_genuinely_new(monkeypatch):
+    """Companion case: when there IS a genuinely new UID, it must survive."""
+    from types import SimpleNamespace
+
+    class _FakeMsg:
+        def __init__(self, uid, subject):
+            self.uid = uid
+            self.subject = subject
+            self.from_ = "user@example.com"
+            self.from_values = SimpleNamespace(name="User", email="user@example.com")
+            self.date = datetime(2026, 4, 26, 23, 5, tzinfo=timezone.utc)
+
+    class _FakeMailBox:
+        def __init__(self, host, port):
+            self._fetch_result = []
+
+        def login(self, address, password, initial_folder=None):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def fetch(self, *, criteria, limit, **kw):
+            return iter(self._fetch_result)
+
+    fake_box = _FakeMailBox("h", 993)
+    # Server returns the new UID 32800 + the RFC-courtesy UID 32798
+    fake_box._fetch_result = [_FakeMsg("32800", "New"), _FakeMsg("32798", "Old")]
+
+    def fake_imap_tools():
+        class _AND:
+            pass
+        return (lambda h, p: fake_box), _AND
+
+    monkeypatch.setattr("src.skills.mail.naver._lazy_imap_tools", fake_imap_tools)
+    monkeypatch.setenv("FAKE_NAVER_PW", "x")
+
+    p = NaverProvider(
+        account="t", address="x@naver.com", password_env="FAKE_NAVER_PW"
+    )
+
+    out = p.list_new_since("32798", limit=20)
+    # Only the genuinely-new 32800 should pass the filter
+    assert [m.message_id for m in out] == ["32800"]
+
+
 # ---- WatcherRunner notification formatting -----------------------------
 
 
