@@ -33,6 +33,15 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
+from src.hermes_adapter.adapter import (
+    HermesAdapterError,
+    HermesAuthError,
+    HermesBudgetExceeded,
+    HermesMalformedResult,
+    HermesProviderMismatch,
+    HermesTimeout,
+)
+
 from .base import Skill, SkillContext, SkillMatch
 
 _KST = timezone(timedelta(hours=9))  # Asia/Seoul은 DST 없음, 항상 UTC+9
@@ -139,9 +148,21 @@ class CalendarSkill(Skill):
                 max_turns=max_turns,
                 timeout_ms=s.calendar_skill_timeout_ms,
             )
-        except Exception as e:  # noqa: BLE001
-            # Skills are expected to render their own user-facing error
-            # strings rather than propagate raw exceptions to the user.
+        except (
+            HermesTimeout,
+            HermesAuthError,
+            HermesProviderMismatch,
+            HermesBudgetExceeded,
+            HermesMalformedResult,
+        ):
+            # Transient/runtime failures: propagate so the orchestrator marks
+            # task.status="failed" and degraded=True. Otherwise these would be
+            # silent successes in metrics while the user sees an error.
+            raise
+        except HermesAdapterError as e:
+            # Setup/config errors (binary missing, profile not found, OAuth
+            # not initialised) are user-actionable — render a hint instead
+            # of a raw stack trace.
             return (
                 f"⚠️ Calendar lookup failed: `{type(e).__name__}`\n"
                 f"```\n{str(e)[:400]}\n```\n"

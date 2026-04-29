@@ -152,6 +152,7 @@ class Orchestrator:
         session_id: str | None = None,
         history: list[dict[str, str]] | None = None,
         heavy: bool = False,
+        forced_profile: str | None = None,
     ) -> OrchestratorResult:
         session_id = session_id or str(uuid.uuid4())
         task = TaskState(
@@ -162,6 +163,7 @@ class Orchestrator:
             retry_budget=self.settings.retry_budget_default,
             token_budget_remaining=self.settings.cloud_token_budget_session,
             heavy=heavy,
+            forced_profile=forced_profile,
         )
         task.mark("created_at")
 
@@ -358,13 +360,27 @@ class Orchestrator:
     async def _handle_locked(self, task: TaskState) -> OrchestratorResult:
         with bind_task_id(task.task_id, task.user_id):
             t0 = time.perf_counter()
-            log.info("task.start", message=task.user_message[:120], heavy=task.heavy)
+            log.info(
+                "task.start",
+                message=task.user_message[:120],
+                heavy=task.heavy,
+                forced_profile=task.forced_profile,
+            )
 
             # Opt-in heavy path: skip rule layer + router, go directly to
             # Claude Code CLI. Daily token budget still applies as a safety
             # net, even though Max OAuth usage isn't metered in tokens.
             if task.heavy:
                 return await self._handle_heavy(task, t0)
+
+            # Channel-pinned forced profile path (e.g. ``#일기`` →
+            # journal_ops). Skips rule/skill/factory/router pipeline and
+            # invokes Hermes with ``-p <forced_profile>`` directly. No
+            # validator retries — these jobs are single-pass write
+            # pipelines (see profiles/journal_ops/SOUL.md), and a retry
+            # would risk duplicate side-effects (e.g. sheet rows).
+            if task.forced_profile:
+                return await self._handle_forced_profile(task, t0)
 
             # 1. Rule layer
             match = self.rules.match(task.user_message)
@@ -401,8 +417,10 @@ class Orchestrator:
                     log.warning("skill.error", skill=skill.name, err=str(e))
                     task.status = "failed"
                     task.degraded = True
+                    body = str(e)[:400]
                     task.final_response = (
-                        f"⚠️ skill `{skill.name}` failed: `{type(e).__name__}`"
+                        f"⚠️ skill `{skill.name}` failed: `{type(e).__name__}`\n"
+                        f"```\n{body}\n```"
                     )
                     resp = task.final_response
                 task.mark("finalized_at")
@@ -950,6 +968,106 @@ class Orchestrator:
             completion_tokens=result.completion_tokens,
         )
         return result.text, "claude-max-hermes"
+
+    async def _handle_forced_profile(
+        self, task: TaskState, t0: float
+    ) -> OrchestratorResult:
+        """Channel-pinned profile path: invoke Hermes with ``-p <profile>``.
+
+        Like the heavy path, this skips rule/skill/factory/router and the
+        validator retry loop. Used when a Discord message arrives on a
+        channel pinned to a specific profile (e.g. ``#일기`` → journal_ops),
+        so the user's intent is explicit by virtue of the channel itself.
+
+        Design choices:
+          - **No retries**: profile jobs (e.g. log_activity) commit to
+            external side-effects (Apps Script POST → sheet row append).
+            A retry would duplicate rows. The profile YAML MUST set
+            ``safety.max_retries: 0``; this path enforces it structurally.
+          - **No HITL gate**: ``approvals.mode: "off"`` in profile config
+            +  ``requires_confirmation: false`` in job YAML. The channel
+            itself is the explicit confirmation.
+          - **Tier**: defaults to L2 for accounting, but ``model=None`` /
+            ``provider=None`` defers to the profile's own ``config.yaml``
+            (which may bump to C1 via ``bump_rules``).
+          - **Token ledger**: same finalize-then-add pattern as the legacy
+            cloud lanes, so the daily budget still backstops runaway costs.
+        """
+        task.route = "cloud"  # informational; profile jobs reach external services
+        task.job_profile_id = task.forced_profile
+        task.switch_tier("L2")
+        task.status = "acting"
+        task.mark("first_act_at")
+
+        handled_by = f"forced:{task.forced_profile}"
+        try:
+            result = await self.hermes.run(
+                task.user_message,
+                model=None,           # defer to profile config.yaml
+                provider=None,        # defer to profile config.yaml
+                profile=task.forced_profile,
+                max_turns=self.settings.hermes_max_turns,
+                timeout_ms=self.settings.hermes_timeout_ms,
+            )
+            task.status = "succeeded"
+            task.final_response = result.text or "✅ 처리됨 (응답 없음)"
+            self._last_hermes_turns = result.turns_used
+            task.record_model_output(
+                tier=task.current_tier,
+                text=result.text,
+                model_name=result.primary_model or result.model_name,
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+            )
+        except HermesAuthError as e:
+            log.warning("forced_profile.auth_error", profile=task.forced_profile, err=str(e))
+            task.record_error(
+                "tool_error", f"hermes auth: {e}", tier=task.current_tier
+            )
+            task.status = "failed"
+            task.degraded = True
+            task.final_response = (
+                f"⚠️ `{task.forced_profile}` 인증 실패. "
+                "ANTHROPIC_API_KEY / OAuth 토큰을 확인하세요."
+            )
+            handled_by = f"forced:{task.forced_profile}:auth"
+        except HermesTimeout as e:
+            log.warning("forced_profile.timeout", profile=task.forced_profile, err=str(e))
+            task.record_error("timeout", f"hermes timeout: {e}", tier=task.current_tier)
+            task.status = "failed"
+            task.degraded = True
+            task.final_response = (
+                f"⚠️ `{task.forced_profile}` 시간 초과 "
+                f"({self.settings.hermes_timeout_ms // 1000}s)."
+            )
+            handled_by = f"forced:{task.forced_profile}:timeout"
+        except HermesAdapterError as e:
+            log.warning("forced_profile.error", profile=task.forced_profile, err=str(e))
+            task.record_error("tool_error", f"hermes error: {e}", tier=task.current_tier)
+            task.status = "failed"
+            task.degraded = True
+            task.final_response = (
+                f"⚠️ `{task.forced_profile}` 실행 실패: `{type(e).__name__}`"
+            )
+            handled_by = f"forced:{task.forced_profile}:error"
+
+        task.mark("finalized_at")
+        await self._persist(task)
+
+        # Daily token ledger: same backstop the legacy lanes have.
+        if self.repo is not None:
+            cloud_tokens = sum(
+                mo.prompt_tokens + mo.completion_tokens
+                for mo in task.model_outputs
+                if mo.tier in ("C1", "C2")
+            )
+            if cloud_tokens > 0:
+                await self.repo.add_tokens(task.user_id, cloud_tokens)
+
+        self._log_task_end(task, handled_by, t0)
+        return OrchestratorResult(
+            task=task, response=task.final_response, handled_by=handled_by
+        )
 
     async def _handle_heavy(self, task: TaskState, t0: float) -> OrchestratorResult:
         """Heavy path: direct Claude Code CLI invocation, no tiers, no retries.

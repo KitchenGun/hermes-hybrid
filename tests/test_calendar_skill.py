@@ -21,7 +21,12 @@ from typing import Any
 import pytest
 
 from src.config import Settings
-from src.hermes_adapter.adapter import HermesAdapterError, HermesResult
+from src.hermes_adapter.adapter import (
+    HermesAdapterError,
+    HermesAuthError,
+    HermesResult,
+    HermesTimeout,
+)
 from src.orchestrator import Orchestrator
 from src.skills import CalendarSkill, SkillRegistry, default_registry
 from src.skills.base import SkillContext
@@ -134,6 +139,7 @@ async def test_calendar_skill_invokes_hermes_with_profile_and_skill(
     # by ``test_calendar_skill_empty_model_provider_passes_none``.
     settings.calendar_skill_model = "qwen2.5-coder:32b-instruct"
     settings.calendar_skill_provider = "auto"
+    settings.calendar_skill_preload = "productivity/google-workspace"
     o = Orchestrator(settings)
     fake = _FakeHermes(_hermes_ok("이번 주 일정: 월 10시 회의, 수 14시 리뷰"))
     o.hermes = fake  # type: ignore[assignment]
@@ -146,12 +152,13 @@ async def test_calendar_skill_invokes_hermes_with_profile_and_skill(
     # Verify the hermes.run invocation shape.
     assert len(fake.calls) == 1
     call = fake.calls[0]
-    assert call["query"] == "이번주 일정 알려줘"
+    assert call["query"].startswith("[현재 날짜: ")
+    assert call["query"].endswith("\n\n이번주 일정 알려줘")
     assert call["profile"] == settings.calendar_skill_profile  # "calendar_ops"
     assert call["preload_skills"] == [settings.calendar_skill_preload]
     assert call["provider"] == "auto"
     assert call["model"] == "qwen2.5-coder:32b-instruct"
-    assert call["max_turns"] == settings.calendar_skill_max_turns
+    assert call["max_turns"] == settings.calendar_skill_read_max_turns
     assert call["timeout_ms"] == settings.calendar_skill_timeout_ms
 
 
@@ -174,9 +181,9 @@ async def test_calendar_skill_empty_model_provider_passes_none(settings: Setting
     call = fake.calls[0]
     assert call["model"] is None
     assert call["provider"] is None
-    # Profile + preload_skills are still passed.
+    # Profile is still passed; preload is omitted by default.
     assert call["profile"] == "calendar_ops"
-    assert call["preload_skills"] == ["productivity/google-workspace"]
+    assert call["preload_skills"] == []
 
 
 @pytest.mark.asyncio
@@ -217,6 +224,46 @@ async def test_calendar_skill_renders_hermes_error_as_warning(settings: Settings
     assert "HermesAdapterError" in r.response
     # Also includes the setup hint pointing at the OAuth check.
     assert "setup.py --check" in r.response
+
+
+@pytest.mark.asyncio
+async def test_calendar_skill_propagates_hermes_timeout(settings: Settings):
+    """A HermesTimeout MUST propagate so the orchestrator records
+    task.status="failed" — otherwise the silent-success bug returns:
+    user sees an error but metrics show succeeded.
+    """
+    settings.calendar_skill_enabled = True
+    o = Orchestrator(settings)
+    o.hermes = _FakeHermes(  # type: ignore[assignment]
+        HermesTimeout("Hermes timed out after 180000ms")
+    )
+
+    r = await o.handle("오늘 일정 알려줘", user_id="u1")
+
+    assert r.handled_by == "skill:calendar"
+    assert r.task.status == "failed"
+    assert r.task.degraded is True
+    # Orchestrator's catch produces the failure message with body included.
+    assert "HermesTimeout" in r.response
+    assert "Hermes timed out after 180000ms" in r.response
+
+
+@pytest.mark.asyncio
+async def test_calendar_skill_propagates_hermes_auth_error(settings: Settings):
+    """OAuth refresh failures should also surface as failed, not as a hint
+    string — the metrics path needs to register them as failures."""
+    settings.calendar_skill_enabled = True
+    o = Orchestrator(settings)
+    o.hermes = _FakeHermes(  # type: ignore[assignment]
+        HermesAuthError("Hermes auth failed (model=qwen2.5, provider=ollama)")
+    )
+
+    r = await o.handle("내일 미팅 있나?", user_id="u1")
+
+    assert r.handled_by == "skill:calendar"
+    assert r.task.status == "failed"
+    assert r.task.degraded is True
+    assert "HermesAuthError" in r.response
 
 
 @pytest.mark.asyncio

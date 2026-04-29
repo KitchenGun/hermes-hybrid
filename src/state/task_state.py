@@ -126,6 +126,14 @@ class TaskState(BaseModel):
     # goes directly to Claude Code CLI (C2). Never set by automatic escalation.
     heavy: bool = False
 
+    # Channel-pinned forced profile routing. When set, _handle_locked skips
+    # the rule/skill/factory/router pipeline and invokes ``hermes.run`` with
+    # ``-p <forced_profile>`` directly. Set by the gateway when a message
+    # arrives on a configured profile-pinned channel (e.g. ``#일기`` →
+    # journal_ops). HITL gate is skipped — the channel itself is the
+    # explicit user intent. ``heavy`` always wins if both are set.
+    forced_profile: str | None = None
+
     # JobFactory: factory.decide()가 "match"를 반환할 때 profile_id 저장.
     # None = 팩토리 비활성화 또는 no_match/ambiguous 상태.
     job_profile_id: str | None = None

@@ -1,0 +1,102 @@
+# journal_ops — Discord journal channel(#일기) → 24-field activity logger → Google Sheets
+#
+# 사용 흐름:
+#   1) Discord 사용자가 #일기 채널에 자연어로 활동을 적는다.
+#   2) src/gateway/discord_bot.py가 channel_id 매칭 → forced_profile="journal_ops"
+#   3) Orchestrator._handle_forced_profile()가 hermes -p journal_ops 직접 호출
+#   4) on_demand/log_activity.yaml의 prompt가 24-field JSON 추출 + sheets_append 호출
+#   5) Apps Script doPost가 Google Sheet에 행 append
+#
+# 핵심 제약:
+#   - HITL 없음 (approvals.mode: off + safety.requires_confirmation: false)
+#   - 재시도 금지 (max_retries: 0) — 시트 중복 행 방지
+#   - max_tier C1 (Claude C2 영구 금지)
+
+# ===== Hermes 공식 스키마 =====
+agent:
+  max_turns: 5                      # 단일 실행 파이프라인이라 짧게
+  reasoning_effort: "low"
+  tool_use_enforcement: "auto"
+
+# Hermes가 아는 provider 목록: auto / openrouter / nous / openai-codex /
+#   zai / kimi-coding / minimax / minimax-cn / custom (calendar_ops 참조)
+#
+# 24-필드 JSON 추출은 instruction-following이 강한 모델이 유리하고,
+# 비용도 메시지당 < $0.0001로 미미함. calendar_ops와 동일하게 OpenAI를
+# custom provider로 호출 (부모 .env의 OPENAI_API_KEY 사용).
+#
+# Ollama로 전환하고 싶다면 README의 "로컬 모델 옵션" 섹션 참조.
+model:
+  provider: "custom"
+  model: "gpt-4o-mini"
+  base_url: "https://api.openai.com/v1"
+  api_mode: "chat_completions"
+
+terminal:
+  backend: local
+  cwd: "."
+  timeout: 30
+  persistent_shell: true
+  env_passthrough:
+    - GOOGLE_SHEETS_WEBHOOK_URL
+    - JOURNAL_ALERT_WEBHOOK_URL    # optional: Discord webhook for sheets failure alerts
+    - TIMEZONE
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200           # Hermes 공식 한도
+  user_char_limit: 1375
+
+compression:
+  enabled: true
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
+
+approvals:
+  mode: "off"                       # 핵심: HITL 없음
+
+security:
+  redact_secrets: true
+
+mcp_servers: {}                     # MCP 서버 불필요 — terminal만 사용
+
+skills:
+  auto_load:
+    - storage/sheets_append
+
+# ===== hermes-hybrid 확장 =====
+x-hermes-hybrid:
+  profile_id: "journal_ops"
+  timezone: "Asia/Seoul"
+
+  tier_policy:
+    max_tier: "C1"                  # C2(Claude) 영구 금지
+    prefer_tier: "L2"               # 빠르고 무료
+    heavy_policy: "never"           # !heavy는 forced_profile을 우회 (gateway에서 처리)
+    bump_rules:
+      - on: "schema_validation_failed"
+        to: "C1"                    # L2가 24필드 못 채우면 GPT-4o-mini로 escalate
+      - on: "ambiguous_activity_count"
+        to: "C1"
+
+  budget:
+    cap_usd_per_day: 0.05
+    cap_usd_per_run: 0.01
+    alert_threshold_ratio: 0.8
+
+  ledger:
+    enabled: true
+    default_tags: ["journal", "activity_log"]
+
+  delivery_defaults:
+    channel: "webhook"
+    target_env: "GOOGLE_SHEETS_WEBHOOK_URL"
+    on_failure: "alert"
+
+  safety_defaults:
+    write_requires_confirmation: false   # 채널 자체가 의도 시그널
+    write_max_retries: 0                 # 중복 행 방지
+    read_max_retries: 0
+    analyze_max_retries: 0

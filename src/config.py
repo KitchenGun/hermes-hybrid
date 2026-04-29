@@ -19,6 +19,21 @@ class Settings(BaseSettings):
     discord_allowed_user_ids: str = ""  # comma-separated
     require_allowlist: bool = True  # R12: fail-closed by default
 
+    # journal_ops: channel-pinned forced profile routing.
+    # When a message arrives on the channel matching ``journal_channel_id``,
+    # the bot bypasses the rule/skill/factory pipeline and forces the
+    # orchestrator into the journal_ops profile (24-field activity logger
+    # → Google Sheets via Apps Script). 0 (default) = feature disabled.
+    journal_channel_id: int = 0
+    # Apps Script doPost endpoint that journal_ops's sheets_append skill
+    # POSTs activity rows to. Empty = skill will fail with exit 2.
+    google_sheets_webhook_url: str = ""
+    # Optional Discord webhook for journal_ops operational alerts. When the
+    # Apps Script endpoint fails (HTTP 4xx/5xx, {"ok": false, ...}, or
+    # network error), post_to_sheet.py best-effort posts a red embed here.
+    # Empty = no alert fired (only stderr + LLM-driven Discord reply).
+    journal_alert_webhook_url: str = ""
+
     # Hermes adapter
     hermes_cli_backend: Literal["wsl_subprocess", "local_subprocess", "mcp"] = "wsl_subprocess"
     hermes_wsl_distro: str = "Ubuntu"

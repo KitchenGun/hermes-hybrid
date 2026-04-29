@@ -18,12 +18,13 @@ import asyncio
 import fnmatch
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib import request as urlreq
 from urllib.error import HTTPError, URLError
 
+from src.hermes_adapter.adapter import HermesAdapterError
 from src.obs import get_logger
 from src.orchestrator.profile_loader import ProfileLoader, WatcherMeta
 from src.skills.mail import PROVIDERS  # noqa: F401  (registers providers)
@@ -37,6 +38,8 @@ log = get_logger(__name__)
 _EMBED_COLOR_DEFAULT = 0x5865F2
 _WEBHOOK_TIMEOUT_SEC = 10
 _MIN_INTERVAL = 30
+_KST = timezone(timedelta(hours=9))
+_NO_NOTIFICATION_MARKER = "NO_NOTIFICATION"
 
 
 class WatcherRunner:
@@ -46,11 +49,16 @@ class WatcherRunner:
         repo: Repository,
         profile_loader: ProfileLoader,
         profiles_dir: Path,
+        *,
+        dm_dispatcher: Any = None,
+        hermes: Any = None,
     ):
         self.settings = settings
         self.repo = repo
         self.profile_loader = profile_loader
         self.profiles_dir = Path(profiles_dir)
+        self.dm_dispatcher = dm_dispatcher
+        self.hermes = hermes
         self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         self._stop = asyncio.Event()
 
@@ -124,6 +132,16 @@ class WatcherRunner:
     async def _tick(self, meta: WatcherMeta) -> None:
         if meta.source_type == "mail_poll":
             await self._tick_mail(meta)
+            return
+        # Calendar watchers — yaml's source values are kept as the original
+        # design intent (internal event vs. push) but until those upstream
+        # mechanisms exist, we fall back to polling Hermes which uses the
+        # google_calendar MCP under the calendar_ops profile.
+        if meta.source_type == "internal.calendar_write_completed":
+            await self._tick_calendar_via_hermes(meta, mode="conflicts")
+            return
+        if meta.source_type == "google_calendar.push_notification":
+            await self._tick_calendar_via_hermes(meta, mode="invitations")
             return
         log.info(
             "watcher_runner.unsupported_source",
@@ -288,6 +306,182 @@ class WatcherRunner:
                 line += f"\n  ↳ {snippet[:160]}"
             lines.append(line)
         return "\n".join(lines)
+
+    # ---- calendar watchers (hermes-delegated polling) -----------------
+
+    async def _tick_calendar_via_hermes(
+        self, meta: WatcherMeta, *, mode: str
+    ) -> None:
+        """Poll calendar_ops via Hermes for conflict / invitation alerts.
+
+        First run records the high-water mark and skips notifying — same
+        seeding pattern as ``_tick_mail`` to avoid a flood of historical
+        alerts when a watcher is freshly registered. Subsequent ticks ask
+        Hermes to inspect changes since the last poll; the prompt YAML
+        instructs Hermes to emit ``NO_NOTIFICATION`` for empty windows so
+        we can short-circuit without DM'ing.
+
+        High-water (``last_run_at``) is only advanced on either no-op
+        responses or successful delivery — failed notifications get
+        retried in the next tick.
+        """
+        if self.hermes is None:
+            log.warning(
+                "watcher_runner.hermes_missing",
+                profile=meta.profile_id,
+                watcher=meta.name,
+            )
+            return
+
+        last_run = await self.repo.get_watcher_last_run(
+            meta.profile_id, meta.name
+        )
+        now = datetime.now(timezone.utc)
+
+        if last_run is None:
+            await self.repo.update_watcher_state(
+                meta.profile_id, meta.name,
+                last_dedup_key=now.isoformat(), account="",
+            )
+            log.info(
+                "watcher_runner.calendar_seeded",
+                profile=meta.profile_id,
+                watcher=meta.name,
+                high_water=now.isoformat(),
+            )
+            return
+
+        last_run_kst = last_run.astimezone(_KST)
+        now_kst = now.astimezone(_KST)
+        window = (
+            f"[감지 윈도우 (KST)] "
+            f"{last_run_kst.strftime('%Y-%m-%d %H:%M')} ~ "
+            f"{now_kst.strftime('%Y-%m-%d %H:%M')}"
+        )
+        prompt = f"{window}\n\n{meta.prompt}".strip()
+
+        timeout_ms = getattr(self.settings, "calendar_skill_timeout_ms", 180_000)
+        max_turns = getattr(self.settings, "calendar_skill_max_turns", 10)
+
+        try:
+            result = await self.hermes.run(
+                prompt,
+                model=getattr(self.settings, "calendar_skill_model", "") or None,
+                provider=getattr(self.settings, "calendar_skill_provider", "") or None,
+                profile=meta.profile_id,
+                preload_skills=list(meta.skills),
+                max_turns=max_turns,
+                timeout_ms=timeout_ms,
+            )
+        except HermesAdapterError as e:
+            log.warning(
+                "watcher_runner.calendar_hermes_failed",
+                profile=meta.profile_id,
+                watcher=meta.name,
+                err=str(e)[:200],
+            )
+            return  # leave high-water unchanged → retry next tick
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "watcher_runner.calendar_unexpected",
+                profile=meta.profile_id,
+                watcher=meta.name,
+            )
+            return
+
+        body = (result.text or "").strip()
+        normalized = body.strip().strip("`'\"")
+
+        if not body or normalized == _NO_NOTIFICATION_MARKER:
+            await self.repo.update_watcher_state(
+                meta.profile_id, meta.name,
+                last_dedup_key=now.isoformat(), account="",
+            )
+            log.info(
+                "watcher_runner.calendar_no_notification",
+                profile=meta.profile_id,
+                watcher=meta.name,
+            )
+            return
+
+        title = (
+            "⚠️ 일정 충돌 감지" if mode == "conflicts"
+            else "📨 새 초대 수신"
+        )
+        sent = await self._dispatch_to_delivery(meta, title=title, body=body)
+        if sent:
+            await self.repo.update_watcher_state(
+                meta.profile_id, meta.name,
+                last_dedup_key=now.isoformat(), account="",
+            )
+            log.info(
+                "watcher_runner.calendar_notified",
+                profile=meta.profile_id,
+                watcher=meta.name,
+                mode=mode,
+                length=len(body),
+            )
+
+    async def _dispatch_to_delivery(
+        self, meta: WatcherMeta, *, title: str, body: str,
+    ) -> bool:
+        """Deliver via DM (delivery.channel='dm') or webhook fallback.
+
+        Returns True on confirmed delivery, False otherwise. Callers use
+        the boolean to decide whether to advance the polling watermark.
+        """
+        channel = str(meta.delivery.get("channel", "")).lower()
+        target_env = str(meta.delivery.get("target_env") or "")
+        footer = f"{meta.profile_id} · {meta.name}"
+
+        if channel == "dm":
+            user_id_str = os.environ.get(target_env, "").strip()
+            if not user_id_str.isdigit():
+                log.error(
+                    "watcher_runner.dm_user_id_missing",
+                    env=target_env,
+                    profile=meta.profile_id,
+                    watcher=meta.name,
+                )
+                return False
+            if self.dm_dispatcher is None:
+                log.error(
+                    "watcher_runner.dm_dispatcher_missing",
+                    profile=meta.profile_id,
+                    watcher=meta.name,
+                )
+                return False
+            try:
+                await self.dm_dispatcher.send_dm(
+                    int(user_id_str),
+                    title=title,
+                    body=body,
+                    footer=footer,
+                )
+                return True
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "watcher_runner.dm_failed",
+                    profile=meta.profile_id,
+                    watcher=meta.name,
+                    err=str(e)[:200],
+                )
+                return False
+
+        webhook_url = os.environ.get(
+            target_env or "DISCORD_BRIEFING_WEBHOOK_URL", ""
+        ).strip()
+        if not webhook_url:
+            log.error(
+                "watcher_runner.webhook_missing",
+                env=target_env,
+                profile=meta.profile_id,
+                watcher=meta.name,
+            )
+            return False
+        payload = _build_embed(title=title, body=body, footer=footer)
+        status = await asyncio.to_thread(_post_webhook, webhook_url, payload)
+        return status == 204
 
 
 def _apply_filter(

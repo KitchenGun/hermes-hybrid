@@ -62,11 +62,14 @@ class DiscordBot(commands.Bot):
 
         if self.settings.watcher_enabled and self.watcher_runner is None:
             try:
+                from src.gateway.dm_dispatcher import DmDispatcher
                 self.watcher_runner = WatcherRunner(
                     settings=self.settings,
                     repo=self.repo,
                     profile_loader=self.orchestrator.profile_loader,
                     profiles_dir=self.settings.profiles_dir,
+                    dm_dispatcher=DmDispatcher(self),
+                    hermes=self.orchestrator.hermes,
                 )
                 await self.watcher_runner.start()
             except Exception as e:  # noqa: BLE001
@@ -135,6 +138,19 @@ class DiscordBot(commands.Bot):
         if not content:
             return
 
+        # Channel-pinned forced profile routing (e.g. ``#일기`` →
+        # journal_ops). When a configured channel matches, the message
+        # is routed straight to that profile, skipping rule/skill/factory
+        # /router. ``!heavy`` always wins so the operator can debug a
+        # journal channel without writing to its sheet.
+        forced_profile: str | None = None
+        channel_id = getattr(message.channel, "id", 0)
+        if (
+            self.settings.journal_channel_id
+            and channel_id == self.settings.journal_channel_id
+        ):
+            forced_profile = "journal_ops"
+
         # Heavy path opt-in: `!heavy <message>` → route to Claude Code CLI.
         # We strip the prefix here so the orchestrator sees the user's actual
         # prompt, and pass heavy=True so it skips rule/router/tier logic.
@@ -142,6 +158,7 @@ class DiscordBot(commands.Bot):
         low = content.lower()
         if low == _HEAVY_PREFIX or low.startswith(_HEAVY_PREFIX + " "):
             heavy = True
+            forced_profile = None  # heavy wins (escape hatch for journal channel)
             content = content[len(_HEAVY_PREFIX):].strip()
             if not content:
                 await message.channel.send(
@@ -151,7 +168,12 @@ class DiscordBot(commands.Bot):
 
         user_id = message.author.id
         session_id = self._sessions.get(user_id)
-        placeholder_text = "🔧 heavy (Claude)…" if heavy else "⏳ processing…"
+        if heavy:
+            placeholder_text = "🔧 heavy (Claude)…"
+        elif forced_profile:
+            placeholder_text = f"📝 {forced_profile}…"
+        else:
+            placeholder_text = "⏳ processing…"
         placeholder = await message.channel.send(placeholder_text)
 
         try:
@@ -162,6 +184,7 @@ class DiscordBot(commands.Bot):
                 session_id=session_id,
                 history=self._history[user_id][-8:],
                 heavy=heavy,
+                forced_profile=forced_profile,
             )
             elapsed = asyncio.get_event_loop().time() - start
 
@@ -179,6 +202,7 @@ class DiscordBot(commands.Bot):
                     cloud_calls=result.task.cloud_call_count,
                     elapsed_ms=int(elapsed * 1000),
                     heavy=heavy,
+                    forced_profile=forced_profile,
                 )
 
             if elapsed < SLOW_THRESHOLD_S:

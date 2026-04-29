@@ -185,3 +185,33 @@ class Repository:
                 (profile_id, watcher_name, account, last_dedup_key, now),
             )
             await db.commit()
+
+    async def get_watcher_last_run(
+        self, profile_id: str, watcher_name: str, account: str = ""
+    ) -> datetime | None:
+        """Return the polling high-water timestamp as tz-aware datetime.
+
+        Calendar watchers store the window end as ISO into the
+        ``last_dedup_key`` column (mail watchers store message ids there
+        — same column, different semantic per watcher type). We can't
+        reuse ``last_run_at`` because :meth:`update_watcher_state` rewrites
+        it to ``now`` on every save, which would defeat retry logic when
+        a tick fails before delivery.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT last_dedup_key FROM watcher_state
+                WHERE profile_id=? AND watcher_name=? AND account=?
+                """,
+                (profile_id, watcher_name, account),
+            ) as cur:
+                row = await cur.fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            return datetime.fromisoformat(row[0])
+        except ValueError:
+            # last_dedup_key isn't an ISO timestamp (mail watcher row, or
+            # corrupt data). Treat as no high-water yet.
+            return None
