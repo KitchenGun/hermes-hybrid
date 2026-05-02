@@ -8,7 +8,15 @@
 # ── 에이전트 설정 ────────────────────────────────────────────────
 agent:
   max_turns: 10
-  reasoning_effort: "low"        # none|minimal|low|medium|high|xhigh
+  # 2026-05-02: "none" 으로 내림. 이유 — Hermes codex transport(agent/transports/
+  # codex.py:107-117) 는 reasoning_effort != "none" 이면 항상 OpenAI Responses
+  # 요청에 `include=["reasoning.encrypted_content"]` 를 붙인다. gpt-4o-mini /
+  # gpt-oss:20b 등 비-reasoning 모델은 이 옵션을 받자마자 HTTP 400 ("Encrypted
+  # content is not supported with this model") 으로 거부 → 모든 cron 잡이 LLM
+  # 호출 단계에서 죽는다. "none" 은 hermes_constants.parse_reasoning_effort
+  # 가 {"enabled": False} 로 매핑하고, transport 가 `include=[]` 로 비워준다.
+  # reasoning 모델로 다시 올릴 때 effort 도 같이 되돌리면 됨.
+  reasoning_effort: "none"       # none|minimal|low|medium|high|xhigh
   tool_use_enforcement: "strict" # auto|true|false|[model-list]
 
 # ── LLM ──────────────────────────────────────────────────────────
@@ -16,11 +24,33 @@ agent:
 #   zai / kimi-coding / minimax / minimax-cn / custom
 # custom = OPENAI_BASE_URL + OPENAI_API_KEY (OpenAI 호환 엔드포인트). 기본
 # base_url은 api.openai.com이라 .env의 OPENAI_API_KEY로 바로 사용 가능.
+#
+# Local-first migration (2026-05-01, see docs/local-first-decisions.md):
+# Switched from gpt-4o to gpt-oss:20b — best `tools`-capable arm in the
+# bench (routing 80, korean 93.3, schedule_logging 95.3, tps 139.4). The
+# higher-routing gemma3:27b lacks tool calling, so it can't drive the
+# Google Calendar MCP server. Fallback to OpenAI gpt-4o stays available
+# whenever LOCAL_FIRST_MODE=False (orchestrator's effective_ollama_enabled
+# gate flips back to legacy surrogate path).
 model:
   provider: "custom"
-  model: "gpt-4o"
-  base_url: "https://api.openai.com/v1"
+  # Per-job optimization (2026-05-01 v3): kept on gpt-oss:20b after qwen3:8b
+  # smoke regression. qwen3:8b *bench* tied/won on routing/korean but is a
+  # thinking model that, in journal_ops smoke, patched SKILL.md and burned
+  # the turn budget on introspection instead of calling tools. Same risk
+  # would apply to calendar_ops's MCP tool calls. gpt-oss:20b is also a
+  # thinking model but its bench-to-behavior gap is smaller (verified by
+  # smoke). qwen2.5-coder:32b stays as fallback in model_registry.yaml.
+  model: "gpt-oss:20b"
+  base_url: "${OPENAI_BASE_URL}"
   api_mode: "chat_completions"
+  context_length: 65536
+  # See journal_ops/config.yaml for rationale. calendar_ops is a list/find/
+  # update tool pipeline; thinking traces don't help routing decisions.
+  extra_body:
+    enable_thinking: false
+    # 30m keep_alive avoids cold-start on back-to-back calendar queries.
+    keep_alive: "30m"
 
 # ── 터미널 백엔드 ─────────────────────────────────────────────────
 terminal:
@@ -30,6 +60,7 @@ terminal:
   persistent_shell: true
   env_passthrough:
     - DISCORD_BRIEFING_WEBHOOK_URL
+    - DISCORD_WEATHER_WEBHOOK_URL   # weather_briefing 잡 전용 (분리된 webhook)
     - GOOGLE_CALENDAR_ID
     - TIMEZONE
 

@@ -54,6 +54,12 @@ def _parse_args() -> argparse.Namespace:
         help="ISO8601 timestamp; default = now (UTC)",
     )
     p.add_argument(
+        "--webhook-env",
+        default="DISCORD_BRIEFING_WEBHOOK_URL",
+        help="환경변수 이름 (기본: DISCORD_BRIEFING_WEBHOOK_URL). 잡별로 다른 "
+             "webhook 으로 보낼 때 사용 (예: --webhook-env DISCORD_WEATHER_WEBHOOK_URL).",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate and print payload without sending",
@@ -148,10 +154,10 @@ def _send(url: str, payload: dict) -> int:
 def main() -> int:
     args = _parse_args()
 
-    webhook_url = os.environ.get("DISCORD_BRIEFING_WEBHOOK_URL", "").strip()
+    webhook_url = os.environ.get(args.webhook_env, "").strip()
     if not webhook_url and not args.dry_run:
         print(
-            "[post_webhook] DISCORD_BRIEFING_WEBHOOK_URL 환경변수 없음",
+            f"[post_webhook] {args.webhook_env} 환경변수 없음",
             file=sys.stderr,
         )
         return 2

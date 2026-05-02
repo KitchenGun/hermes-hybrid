@@ -1,6 +1,6 @@
 name: quick_block
 category: write
-description: "지금부터 N시간 집중 블록" 같은 즉시 blocking 시간 추가
+description: '"지금부터 N시간 집중 블록" 같은 즉시 blocking 시간 추가'
 
 trigger:
   type: on_demand

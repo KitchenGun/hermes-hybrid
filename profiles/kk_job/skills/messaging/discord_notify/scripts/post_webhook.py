@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-post_webhook.py — Discord webhook sender for kk_job profile.
-
-calendar_ops의 동일 스크립트와 동작·인자 호환.
+post_webhook.py — Discord webhook sender for calendar_ops profile.
 
 Usage:
-    echo "본문" | python post_webhook.py --title "주간 구인 다이제스트"
-    python post_webhook.py --title "..." --body-file ./digest.txt
-    python post_webhook.py --title "..." --color 0xED4245 --footer "kk_job"
+    echo "본문 내용" | python post_webhook.py --title "오늘 일정 브리핑"
+    python post_webhook.py --title "..." --body-file ./briefing.txt
+    python post_webhook.py --title "..." --color 0xED4245 --footer "error"
 
 Env:
     DISCORD_BRIEFING_WEBHOOK_URL  (required)
@@ -31,7 +29,7 @@ from typing import Optional
 from urllib import request as urlreq
 from urllib.error import HTTPError, URLError
 
-DEFAULT_COLOR = 0x5865F2
+DEFAULT_COLOR = 0x5865F2  # Discord blurple
 MAX_DESCRIPTION = 4000
 MAX_TITLE = 256
 MAX_FOOTER = 2048
@@ -56,6 +54,12 @@ def _parse_args() -> argparse.Namespace:
         help="ISO8601 timestamp; default = now (UTC)",
     )
     p.add_argument(
+        "--webhook-env",
+        default="DISCORD_BRIEFING_WEBHOOK_URL",
+        help="환경변수 이름 (기본: DISCORD_BRIEFING_WEBHOOK_URL). 잡별로 다른 "
+             "webhook 으로 보낼 때 사용 (예: --webhook-env DISCORD_WEATHER_WEBHOOK_URL).",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate and print payload without sending",
@@ -76,7 +80,13 @@ def _truncate(text: str, limit: int, suffix: str = "…") -> str:
     return text[: limit - len(suffix)] + suffix
 
 
-def _build_payload(title, body, color, footer, timestamp):
+def _build_payload(
+    title: str,
+    body: str,
+    color: int,
+    footer: Optional[str],
+    timestamp: Optional[str],
+) -> dict:
     ts = timestamp or datetime.now(timezone.utc).isoformat()
     embed = {
         "title": _truncate(title, MAX_TITLE),
@@ -120,13 +130,17 @@ def _send(url: str, payload: dict) -> int:
             if 500 <= e.code < 600:
                 time.sleep(1.0 * (attempt + 1))
                 continue
-            print(f"[post_webhook] HTTP {e.code}: {e.reason}", file=sys.stderr)
+            # 4xx 외 기타: 즉시 실패
+            print(
+                f"[post_webhook] HTTP {e.code}: {e.reason}",
+                file=sys.stderr,
+            )
             return e.code
         except URLError as e:
             last_err = e
             time.sleep(1.0 * (attempt + 1))
             continue
-        except Exception as e:
+        except Exception as e:  # pragma: no cover
             last_err = e
             break
 
@@ -140,9 +154,12 @@ def _send(url: str, payload: dict) -> int:
 def main() -> int:
     args = _parse_args()
 
-    webhook_url = os.environ.get("DISCORD_BRIEFING_WEBHOOK_URL", "").strip()
+    webhook_url = os.environ.get(args.webhook_env, "").strip()
     if not webhook_url and not args.dry_run:
-        print("[post_webhook] DISCORD_BRIEFING_WEBHOOK_URL 환경변수 없음", file=sys.stderr)
+        print(
+            f"[post_webhook] {args.webhook_env} 환경변수 없음",
+            file=sys.stderr,
+        )
         return 2
 
     try:

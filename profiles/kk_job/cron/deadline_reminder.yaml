@@ -32,20 +32,28 @@ ledger:
 
 prompt: |
   역할: 구인 리서처. `SOUL.md` 준수.
+  cron 잡은 cwd 보장 안 됨 — 모든 파일 경로는 **절대경로** 로 호출.
 
   작업:
-    1) runtime/bookmarks.json 로드 (북마크 공고 목록)
+    1) `read_file(path="/home/kang/.hermes/profiles/kk_job/runtime/bookmarks.json")`
+       으로 북마크 공고 목록 로드. 파일이 없거나 본문이 `[]` 또는 빈 문자열이면
+       단계 6 으로 점프해 "북마크 0건" 메시지를 webhook 으로 한 번 발송하고 종료.
     2) 현재 시각 기준 마감까지 72시간 이내 공고 필터링
     3) 만료된 공고는 "expired" 플래그만 갱신하고 알림 제외
-    4) 해당 공고 렌더링:
+    4) 매칭 0건이면 단계 5 스킵 후 응답에 "0건이라 webhook 스킵" 한 줄로 종료
+       (이미 지원 완료 표시된 공고도 제외)
+    5) 매칭 ≥1 건이면 본문 렌더 (각 공고 한 블록):
           💼 [회사명] 직무명
             마감: M월 D일 HH:MM (D-N)
             URL: ...
-    5) discord_notify 전송:
-          title: "💼 지원 마감 임박 (N건)"
-          color: 0xFEE75C
-          footer: "kk_job · deadline_reminder"
+    6) `terminal` 으로 post_webhook.py 직접 호출 (skill 의 자동 wrap 의존 X):
+       ```
+       terminal(command="cat > /tmp/deadline_reminder_body.txt <<'BODY_EOF'
+       <단계 5 본문 또는 '북마크 0건' 메시지>
+       BODY_EOF
+       python3 /home/kang/.hermes/profiles/kk_job/skills/messaging/discord_notify/scripts/post_webhook.py --title '💼 지원 마감 임박' --color 0xFEE75C --footer 'kk_job · deadline_reminder' --body-file /tmp/deadline_reminder_body.txt")
+       ```
 
-  제약:
-    - 0건이면 알림 스킵 (매일 "없음" 알림 방지)
-    - 이미 지원 완료 표시된 공고는 제외
+  안전:
+    - search_files / read_file 의 path 인자에 빈 문자열을 절대 넣지 말 것.
+      필요한 파일은 위의 절대경로를 그대로 사용.
