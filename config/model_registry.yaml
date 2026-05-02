@@ -1,0 +1,61 @@
+# Model Registry — known LLM arms.
+#
+# Each entry is an arm in the ScoreMatrix. The bandit picks among
+# ``available`` local arms per turn (an arm is "available" when its
+# Ollama tag is currently installed, or when the cloud provider's
+# auth/quota allows it).
+#
+# IMPORTANT: This file does NOT carry "role" labels (general, code,
+# heavy, etc.). Roles are the kind of prior knowledge v2 explicitly
+# rejects. The bench harness + live traffic populate ScoreMatrix; the
+# selector reads scores; the registry is just "what arms exist".
+#
+# Cost fields (cloud only) feed CloudPolicy's per-call estimation.
+
+local:
+  # ── Baseline (qwen2.5 family, kept so ScoreMatrix can prove improvement) ──
+  # 3B and 7B are kept for the classifier path (cheap, fast).
+  - { provider: ollama, name: "qwen2.5:3b-instruct" }
+  - { provider: ollama, name: "qwen2.5:7b-instruct" }
+  # 14B is the workhorse local model.
+  - { provider: ollama, name: "qwen2.5:14b-instruct" }
+  # Coder variants.
+  - { provider: ollama, name: "qwen2.5-coder:7b-instruct" }
+  - { provider: ollama, name: "qwen2.5-coder:32b-instruct" }
+
+  # ── 2025-2026 candidates registered for the local-first migration sweep ──
+  # Availability is verified via `ollama pull` at execution time; missing
+  # arms are auto-skipped by the bench runner (they just won't appear in
+  # the report). This list is the SUPERSET — pick the actual pulls based
+  # on disk + time budget. See docs/local-first-decisions.md for the
+  # per-profile model assignments after the sweep completes.
+  - { provider: ollama, name: "qwen3:14b" }                   # Qwen3 dense, tools+reasoning
+  - { provider: ollama, name: "qwen3:30b-a3b" }               # Qwen3 MoE (active 3B; memory-efficient)
+  - { provider: ollama, name: "gpt-oss:20b" }                 # OpenAI open-source, reasoning+tools
+  - { provider: ollama, name: "gemma3:27b-instruct" }         # Google, vision+tools, strong Korean
+  - { provider: ollama, name: "deepseek-r1:14b" }             # Reasoning specialist
+  - { provider: ollama, name: "phi4:14b" }                    # MS, instruct (16K ctx — verify Hermes 64K gate)
+  - { provider: ollama, name: "mistral-nemo:12b-instruct-2407" }  # Tool calling traditionally strong
+
+
+cloud:
+  # OpenAI — actual list prices as of 2024-12. Update when pricing changes.
+  - provider: openai
+    name: "gpt-4o-mini"
+    cost_input_per_1m: 0.15
+    cost_output_per_1m: 0.60
+  - provider: openai
+    name: "gpt-4o"
+    cost_input_per_1m: 2.50
+    cost_output_per_1m: 10.00
+
+  # Claude Code CLI via Max OAuth — marginal cost is $0 but session/
+  # hour quotas apply (CloudPolicy enforces in Phase 6).
+  - { provider: claude_cli, name: "haiku" }
+  - { provider: claude_cli, name: "sonnet" }
+  - { provider: claude_cli, name: "opus" }
+
+
+discovery:
+  ollama_poll_interval_seconds: 300   # 5 min — BenchScheduler watch loop
+  auto_bench_on_new_model: true

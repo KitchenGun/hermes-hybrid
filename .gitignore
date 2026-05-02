@@ -4,15 +4,26 @@ __pycache__/
 .venv/
 .env
 data/
+# Bench config (prompts YAML + execution unit tests) is part of the codebase.
+!data/bench/
+!data/bench/**
 dist/
 build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 *.log
+*.log.err
+logs/
+
+# Date-stamped backups never get committed (e.g. .env.bak.20260501,
+# config.yaml.bak.20260501). 의도적 수정 전 자동 백업이라 추적 가치 없음.
+*.bak.[0-9]*
+.env.bak*
 
 # Claude Code local settings (개인용, 팀 공유 settings.json은 허용)
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Hermes profiles — secrets and runtime state
 profiles/*/.env

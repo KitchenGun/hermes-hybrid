@@ -1,0 +1,126 @@
+# Bench harness config — Job Factory v2 empirical routing.
+#
+# Two parts:
+#   1. dimensions:      what to measure (8 axes), how to score (judge),
+#                       and where the prompts live (per-dimension YAML).
+#   2. job_type_to_dimension_weights:
+#                       how dimension scores combine into per-job_type
+#                       scores. Each row sums to 1.0 (normalized at load
+#                       time if not). These weights say "for THIS
+#                       job_type, dim X matters W%".
+#
+# This file is the ONLY hand-curated input that drives empirical routing.
+# Per-job_type model preferences are computed from observations — never
+# hand-mapped.
+
+dimensions:
+  korean:
+    weight: 0.15
+    judge: llm_judge
+    prompts_file: ../data/bench/korean.yaml
+
+  json:
+    weight: 0.20
+    judge: structural
+    prompts_file: ../data/bench/json.yaml
+
+  code_gen:
+    weight: 0.15
+    judge: execution
+    prompts_file: ../data/bench/code_gen.yaml
+
+  code_review:
+    weight: 0.10
+    judge: llm_judge
+    prompts_file: ../data/bench/code_review.yaml
+
+  summarize:
+    weight: 0.10
+    judge: llm_judge
+    prompts_file: ../data/bench/summarize.yaml
+
+  routing:
+    weight: 0.10
+    judge: label_match
+    prompts_file: ../data/bench/routing.yaml
+
+  long_context:
+    weight: 0.10
+    judge: llm_judge
+    prompts_file: ../data/bench/long_context.yaml
+
+  speed:
+    weight: 0.10
+    judge: latency
+    target_tokens_per_sec: 30.0
+    # Speed reuses one of the json prompts so the model produces a
+    # representative-length response. The latency scorer ignores quality
+    # and only measures throughput.
+    prompts_file: ../data/bench/speed.yaml
+
+
+# How dimension scores combine for each job_type. Each block defines the
+# weight that ONE job_type assigns to each dimension. A dimension with
+# weight 0 is ignored. Rows are normalized at load time.
+job_type_to_dimension_weights:
+
+  simple_chat:
+    korean: 0.40
+    speed: 0.40
+    summarize: 0.10
+    routing: 0.10
+
+  summarize:
+    summarize: 0.45
+    korean: 0.25
+    long_context: 0.20
+    speed: 0.10
+
+  code_review:
+    code_review: 0.40
+    code_gen: 0.20
+    json: 0.10
+    long_context: 0.20
+    speed: 0.10
+
+  code_generation:
+    code_gen: 0.55
+    code_review: 0.20
+    json: 0.10
+    speed: 0.15
+
+  architecture_design:
+    code_review: 0.30
+    long_context: 0.30
+    summarize: 0.20
+    korean: 0.10
+    speed: 0.10
+
+  web_research:
+    long_context: 0.40
+    summarize: 0.30
+    json: 0.15
+    korean: 0.15
+
+  document_transform:
+    json: 0.30
+    summarize: 0.30
+    long_context: 0.20
+    korean: 0.20
+
+  schedule_logging:
+    json: 0.55
+    korean: 0.25
+    routing: 0.15
+    speed: 0.05
+
+  image_asset_request:
+    routing: 0.40
+    json: 0.30
+    korean: 0.30
+
+  heavy_project_task:
+    code_gen: 0.30
+    code_review: 0.25
+    long_context: 0.25
+    summarize: 0.20

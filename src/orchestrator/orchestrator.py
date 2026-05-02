@@ -58,6 +58,35 @@ from src.validator import Validator
 
 log = get_logger(__name__)
 
+
+# Patterns that we will scrub from any HermesAdapterError text we surface to
+# Discord. Hermes stderr is mostly upstream provider responses (OpenAI / Ollama
+# / Anthropic) and rarely contains our own secrets, but the .env values are
+# loaded into the Hermes process so a stack trace could in principle echo them.
+# Cheap defense-in-depth: replace common secret shapes with a fixed token.
+_SECRET_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),                         # OpenAI / Anthropic-style API key
+    re.compile(r"ghp_[A-Za-z0-9]{20,}"),                           # GitHub PAT
+    re.compile(r"https://discord\.com/api/webhooks/\d+/[A-Za-z0-9_\-]+"),
+    re.compile(r"https://script\.google\.com/macros/s/[A-Za-z0-9_\-]+/exec"),
+]
+_DISCORD_ERROR_TAIL_CHARS = 350  # leave room for the wrapping markdown
+
+
+def _summarize_hermes_error(exc: BaseException) -> str:
+    """Trim and redact a HermesAdapterError message for Discord display.
+
+    Keeps the tail (where Hermes' stderr lives in our error messages),
+    strips secrets, and caps length so the wrapping ⚠️ + code block fits in a
+    single Discord message without truncation.
+    """
+    text = str(exc) or exc.__class__.__name__
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub("<redacted>", text)
+    if len(text) > _DISCORD_ERROR_TAIL_CHARS:
+        text = "…" + text[-(_DISCORD_ERROR_TAIL_CHARS - 1):]
+    return text
+
 _SYSTEM_PROMPT = (
     "You are a concise assistant inside a Discord bot. "
     "Answer directly. If the user asks for code, produce runnable code."
@@ -117,13 +146,20 @@ class Orchestrator:
         # profile job needs a Discord [확인]/[취소] gate before execution.
         self.profile_loader = ProfileLoader(settings.profiles_dir)
 
-        # JobFactory: 키워드 기반 프로필 매처 + 스켈레톤 자동 생성기.
+        # JobFactory v1: 키워드 기반 프로필 매처 + 스켈레톤 자동 생성기.
         # 항상 생성(비용 없음) — 매칭은 job_factory_enabled 플래그가 켜졌을 때만 실행.
         # allow_profile_creation은 create_profile() 호출 게이트를 제어한다.
         self.factory = JobFactory(
             settings.profiles_dir,
             allow_profile_creation=settings.allow_profile_creation,
         )
+
+        # JobFactory v2: empirical bandit dispatcher (Phases 1-6).
+        # Lazy-built on first access so test setups that never flip
+        # ``use_new_job_factory`` don't pay the registry/matrix load cost.
+        # The legacy paths above stay intact for the rollout window —
+        # they're only bypassed when ``use_new_job_factory=True``.
+        self._job_factory_v2: "JobFactoryDispatcher | None" = None
 
         # Lazy clients
         self._openai_main: OpenAIClient | None = None
@@ -428,7 +464,16 @@ class Orchestrator:
                 self._log_task_end(task, handled, t0)
                 return OrchestratorResult(task=task, response=resp, handled_by=handled)
 
-            # 1.7. JobFactory 프로필 매칭 (job_factory_enabled일 때만 실행)
+            # 1.6. JobFactory v2 — empirical bandit dispatcher (Phases 1-6).
+            # When ``use_new_job_factory`` is true, all post-gate routing
+            # (rule miss + skill miss) goes through the v2 dispatcher.
+            # The legacy v1 path below + Router + tier ladder are skipped
+            # entirely. Daily token budget still applies via the cloud
+            # policy's USD cap.
+            if self.settings.use_new_job_factory:
+                return await self._handle_via_job_factory_v2(task, t0)
+
+            # 1.7. JobFactory v1 프로필 매칭 (job_factory_enabled일 때만 실행)
             # "match"    → task.job_profile_id 태깅 후 라우터로 계속
             # "ambiguous" → 후보 목록 응답 반환 (단락)
             # "no_match"  → 기존 흐름 유지 (final_failure 시 힌트/생성)
@@ -658,7 +703,10 @@ class Orchestrator:
             return await self._run_local_via_hermes(task, worker=worker)
 
         # --- Legacy paths (unchanged) ---------------------------------------
-        if self.settings.ollama_enabled:
+        # ``effective_ollama_enabled`` = ``ollama_enabled OR local_first_mode``.
+        # Flipping LOCAL_FIRST_MODE alone reroutes here even if OLLAMA_ENABLED
+        # was never explicitly set (single-knob migration ergonomics).
+        if self.settings.effective_ollama_enabled:
             client = self._ollama_worker_client() if worker else self._ollama_local_client()
             resp = await client.generate(
                 self._messages(task),
@@ -705,7 +753,7 @@ class Orchestrator:
         HermesAdapter v2 via ``HermesProviderMismatch``) so claude-code is
         structurally unreachable from this lane.
         """
-        if self.settings.ollama_enabled:
+        if self.settings.effective_ollama_enabled:
             model = (
                 self.settings.ollama_worker_model if worker
                 else self.settings.ollama_work_model
@@ -969,6 +1017,123 @@ class Orchestrator:
         )
         return result.text, "claude-max-hermes"
 
+    # ---- JobFactory v2 (empirical bandit dispatcher) ----------------------
+
+    def _get_job_factory_v2(self):
+        """Lazy-built dispatcher. Built on first invocation when
+        ``use_new_job_factory=True``; otherwise never instantiated."""
+        if self._job_factory_v2 is None:
+            from src.job_factory.builder import build_job_factory_dispatcher
+            self._job_factory_v2 = build_job_factory_dispatcher(
+                self.settings,
+                claude_adapter=self.claude_code,
+            )
+            log.info("job_factory_v2.built")
+        return self._job_factory_v2
+
+    async def _handle_via_job_factory_v2(
+        self, task: TaskState, t0: float,
+    ) -> OrchestratorResult:
+        """Route through JobFactoryDispatcher (Phase 7 wiring).
+
+        Maps :class:`DispatchResult` → :class:`OrchestratorResult`. The
+        dispatcher's outcome cases:
+          * ``ok``              → task.status=succeeded
+          * ``exhausted``       → degraded (best-step text)
+          * ``no_local_models`` → degraded with explanation
+          * ``denied_cloud``    → degraded with cloud-cap explanation
+          * ``needs_approval``  → degraded note pointing at the approval
+                                  request (Phase 7 surfaces this; the
+                                  full HITL Discord-button wiring is
+                                  outside the dispatcher's scope and
+                                  would land in a future enhancement).
+        """
+        try:
+            dispatcher = self._get_job_factory_v2()
+        except Exception as e:  # noqa: BLE001
+            log.exception("job_factory_v2.build_failed")
+            task.status = "failed"
+            task.degraded = True
+            task.final_response = (
+                f"⚠️ Job Factory v2 init failed: `{type(e).__name__}`. "
+                "Falling back is not configured — set "
+                "USE_NEW_JOB_FACTORY=false to revert."
+            )
+            task.mark("finalized_at")
+            await self._persist(task)
+            self._log_task_end(task, "v2-init-error", t0)
+            return OrchestratorResult(
+                task=task, response=task.final_response, handled_by="v2-init-error",
+            )
+
+        result = await dispatcher.dispatch(task.user_message)
+
+        # Tag the task with v2 metadata for the ledger.
+        task.job_profile_id = result.job_type
+        if result.steps:
+            last = result.steps[-1]
+            handled_by = (
+                f"v2:{result.outcome}:"
+                f"{last.matrix_key}:{last.selection_reason}"
+            )
+        else:
+            handled_by = f"v2:{result.outcome}"
+
+        # Normalize outcome → task.status.
+        if result.outcome == "ok":
+            task.status = "succeeded"
+            task.final_response = result.final_text
+        elif result.outcome == "needs_approval":
+            ar = result.approval_request
+            task.status = "failed"  # not yet wired to HITL — degrade
+            task.degraded = True
+            if ar:
+                task.final_response = (
+                    f"🔒 승인 필요: `{ar.matrix_key}` 호출 전 "
+                    f"승인이 필요합니다 ({ar.reason}). "
+                    f"예상 비용: ${ar.estimated_cost_usd:.4f}."
+                )
+            else:
+                task.final_response = "🔒 승인 필요"
+        elif result.outcome == "denied_cloud":
+            task.status = "failed"
+            task.degraded = True
+            task.final_response = (
+                "⚠️ 클라우드 호출 한도에 도달했습니다. 잠시 후 다시 시도하거나 "
+                "로컬 모델 응답이 가능한 작업으로 변경하세요."
+            )
+        elif result.outcome == "no_local_models":
+            task.status = "failed"
+            task.degraded = True
+            task.final_response = (
+                "⚠️ 사용 가능한 로컬 모델이 없습니다. Ollama가 실행 중인지 "
+                "확인하거나 클라우드 escalation을 허용하는 job_type으로 "
+                "재시도하세요."
+            )
+        else:  # exhausted, fatal
+            task.status = "failed"
+            task.degraded = True
+            task.final_response = (
+                result.final_text
+                or "⚠️ 모든 시도가 품질 임계치 미달이라 응답을 확정하지 못했습니다."
+            )
+
+        # Token ledger: v2 cloud step's token usage is captured by the
+        # adapter's response.prompt_tokens/completion_tokens, but we
+        # don't surface those onto task.model_outputs here (would require
+        # plumbing through dispatcher). Instead, the CloudPolicy's
+        # daily_usd_cap acts as the cost ceiling. Phase 8 might add
+        # explicit ledger threading.
+
+        task.mark("finalized_at")
+        await self._persist(task)
+        self._log_task_end(task, handled_by, t0)
+        return OrchestratorResult(
+            task=task, response=task.final_response, handled_by=handled_by,
+        )
+
+    # ---- forced profile + heavy (existing) -------------------------------
+
     async def _handle_forced_profile(
         self, task: TaskState, t0: float
     ) -> OrchestratorResult:
@@ -1047,7 +1212,8 @@ class Orchestrator:
             task.status = "failed"
             task.degraded = True
             task.final_response = (
-                f"⚠️ `{task.forced_profile}` 실행 실패: `{type(e).__name__}`"
+                f"⚠️ `{task.forced_profile}` 실행 실패: `{type(e).__name__}`\n"
+                f"```\n{_summarize_hermes_error(e)}\n```"
             )
             handled_by = f"forced:{task.forced_profile}:error"
 

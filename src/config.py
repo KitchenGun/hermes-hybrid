@@ -101,6 +101,27 @@ class Settings(BaseSettings):
     ollama_router_model: str = "qwen2.5:7b-instruct"
     ollama_work_model: str = "qwen2.5:14b-instruct"
     ollama_worker_model: str = "qwen2.5-coder:32b-instruct"
+    # Bench harness LLMJudge backend. The judge grades model outputs on
+    # llm_judge dimensions (korean / code_review / summarize / long_context).
+    # Options:
+    #   "claude_cli" — uses ClaudeCLIAdapter (Max OAuth, $0). Cap-aware:
+    #                  cloud_policy.yaml's claude_auto_calls_per_day still
+    #                  applies, so big sweeps may need a temporary cap raise.
+    #   "ollama"    — uses ``ollama_judge_model`` locally. Free + unlimited
+    #                 but lower-quality grading. Default for BenchScheduler
+    #                 (the auto-loop) so we never burn Claude quota silently.
+    #   "openai"    — legacy; uses gpt-4o-mini via openai_api_key. Costs a
+    #                 few cents per sweep; disabled when key is empty.
+    bench_judge_backend: Literal["claude_cli", "ollama", "openai"] = "claude_cli"
+    ollama_judge_model: str = "qwen2.5:14b-instruct"  # used when bench_judge_backend="ollama"
+
+    # Local-first migration master flag. When True, the orchestrator's L0
+    # (router) / L2 (work) / L3 (worker) surrogate paths prefer local Ollama
+    # over the OpenAI surrogate even if openai_api_key is set. The OpenAI
+    # lazy clients stay registered as fallback so flipping this to False
+    # restores the legacy behavior without code changes. Off by default
+    # so this commit is reversible. Flip via env: LOCAL_FIRST_MODE=True.
+    local_first_mode: bool = False
 
     # Phase 1 rollout flag (off by default). When true, L2/L3 requests are
     # executed through HermesAdapter v2 — the plan/act/reflect engine — with
@@ -166,13 +187,24 @@ class Settings(BaseSettings):
     # Profiles directory (for Refiner / Job_Factory / HITL profile_loader)
     profiles_dir: Path = Path("./profiles")
 
-    # JobFactory — 두 단계 게이트.
+    # JobFactory v1 — 두 단계 게이트 (legacy: profile keyword matching).
     # 1) job_factory_enabled=True : _handle_locked()에서 factory.decide() 호출 시작.
     #    no_match 시 degraded 응답에 힌트 메시지 추가.
     # 2) allow_profile_creation=True : final_failure 때 프로필 스켈레톤 자동 생성.
     #    템플릿 출력 검증 후에만 활성화할 것.
     job_factory_enabled: bool = False
     allow_profile_creation: bool = False
+
+    # JobFactory v2 — empirical bandit routing (Phase 1~6 산출물).
+    # When true, _handle_locked() routes (after the heavy / forced_profile /
+    # rule / skill gates) to JobFactoryDispatcher instead of the legacy
+    # JobFactory v1 → Router → tier ladder. Off by default; flip per-user
+    # in settings.local.json or globally once Phase 8 rollout is complete.
+    # Legacy paths stay alive in code for 1-2 weeks of co-existence.
+    use_new_job_factory: bool = False
+    # Optional override path for the v2 score matrix (rarely changed).
+    # Default = data/job_factory/score_matrix.json relative to repo root.
+    score_matrix_path: Path = Path("./data/job_factory/score_matrix.json")
 
     # Watcher runtime — event/poll 기반 watcher YAML 실행 엔진.
     # 비활성화 시 watchers/*.yaml은 디스크에만 존재하고 폴링되지 않음.
@@ -211,6 +243,17 @@ class Settings(BaseSettings):
     # Hermes for this lane?" after factoring in the master switch. Callers
     # in the orchestrator read these via ``effective_*`` so the rollout
     # story stays: "flip use_hermes_everywhere once all per-lane gates hold."
+    @property
+    def effective_ollama_enabled(self) -> bool:
+        """True when Ollama should be used for local-tier work.
+
+        Local-first mode implies Ollama is enabled — flipping
+        ``LOCAL_FIRST_MODE=True`` alone is sufficient to reroute the L0/L2/L3
+        surrogate paths through Ollama without also setting
+        ``OLLAMA_ENABLED=True`` (single-knob ergonomics).
+        """
+        return self.ollama_enabled or self.local_first_mode
+
     @property
     def effective_use_hermes_for_local(self) -> bool:
         return self.use_hermes_for_local or self.use_hermes_everywhere

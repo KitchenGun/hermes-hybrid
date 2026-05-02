@@ -52,7 +52,8 @@ prompt: |
   ============================================================
   Step 1. 24-필드 스키마 추출
   ============================================================
-  사용자 발화에서 intent_schema.json의 ActivityIntent 구조로 추출.
+  사용자 발화에서 아래 정의된 24-필드 활동 기록 구조로 추출하라.
+  **schema 파일을 찾으려고 하지 말 것** — 아래 enum/규칙이 곧 schema다.
 
   ## 추출 원칙 (10개)
   1. 사용자의 문장을 일정 기록용 데이터로만 변환한다.
@@ -132,16 +133,14 @@ prompt: |
   ============================================================
   Step 3. sheets_append skill 호출 (반드시 terminal tool 호출)
   ============================================================
-  `skill_view` tool로 storage/sheets_append SKILL.md를 먼저 읽고,
-  Procedure 섹션을 그대로 실행한다.
-
-  요약 명령:
+  **skill_view를 먼저 부르지 말고 즉시 terminal로 아래 명령을 실행한다**:
   ```
   printf '%s' '<JSON>' | python3 \
     ~/.hermes/profiles/journal_ops/skills/storage/sheets_append/scripts/post_to_sheet.py
   ```
+  (`<JSON>`을 Step 1에서 추출한 순수 JSON으로 대체.)
 
-  exit code 0 + stdout `OK rows=N`을 확인한다.
+  exit code 0 + stdout `OK rows=N`을 확인한다. 다른 exit/stdout이면 실패로 간주.
 
   ============================================================
   Step 4. 결과 보고

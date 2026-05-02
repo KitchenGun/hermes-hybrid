@@ -1,0 +1,114 @@
+# Job Factory v2 — job_type definitions (POLICY ONLY).
+#
+# IMPORTANT: This file does NOT specify model preferences or fallback
+# chains. Those are emergent from the ScoreMatrix (data/job_factory/
+# score_matrix.json). Only boolean policy lives here:
+#   - cloud_allowed:           OpenAI escalation gate
+#   - claude_allowed:          Claude CLI escalation gate
+#   - requires_user_approval:  Discord-button HITL before cloud calls
+#   - max_attempts:            Local-model retry cap before escalation
+#   - quality_threshold:       Validator score above which response is OK
+#   - timeout_seconds:         Per-attempt LLM timeout
+#
+# To bias routing toward a specific model for some job_type, run the
+# bench harness — don't add it here.
+
+classifier:
+  fast_keyword_path: true
+  llm_model: "qwen2.5:3b-instruct"   # tiny, fast classifier
+  llm_timeout_seconds: 5
+  fallback_job_type: "simple_chat"
+
+
+job_types:
+  - name: simple_chat
+    keywords_ko: ["안녕", "반가워", "고마워", "어때"]
+    keywords_en: ["hi", "hello", "thanks", "what's up"]
+    max_attempts: 1
+    quality_threshold: 50
+    cloud_allowed: false        # short chat doesn't need GPT
+    claude_allowed: false
+    timeout_seconds: 30
+
+  - name: summarize
+    keywords_ko: ["요약", "줄여줘", "한 줄로"]
+    keywords_en: ["summarize", "tldr", "in short"]
+    max_attempts: 2
+    quality_threshold: 65
+    cloud_allowed: true
+    claude_allowed: false
+    timeout_seconds: 60
+
+  - name: code_review
+    keywords_ko: ["코드 리뷰", "버그 찾아", "검토해줘"]
+    keywords_en: ["review", "find bugs", "code review"]
+    max_attempts: 2
+    quality_threshold: 70
+    cloud_allowed: true
+    claude_allowed: true        # Claude shines at code review
+    timeout_seconds: 120
+
+  - name: code_generation
+    keywords_ko: ["코드 작성", "함수 만들어", "구현해줘"]
+    keywords_en: ["write code", "implement", "create function"]
+    max_attempts: 2
+    quality_threshold: 75
+    cloud_allowed: false        # GPT often weaker at code than Claude
+    claude_allowed: true
+    timeout_seconds: 120
+
+  - name: architecture_design
+    keywords_ko: ["아키텍처", "설계해줘", "구조 잡아"]
+    keywords_en: ["architecture", "design", "system design"]
+    max_attempts: 1
+    quality_threshold: 75
+    cloud_allowed: true
+    claude_allowed: true
+    requires_user_approval: false
+    timeout_seconds: 240
+
+  - name: web_research
+    keywords_ko: ["검색해줘", "찾아줘", "뉴스"]
+    keywords_en: ["search", "find news", "research"]
+    max_attempts: 1
+    quality_threshold: 65
+    cloud_allowed: true         # local has no web tools — must escalate
+    claude_allowed: false
+    timeout_seconds: 120
+
+  - name: document_transform
+    keywords_ko: ["변환", "포맷", "옮겨줘"]
+    keywords_en: ["transform", "convert", "format"]
+    max_attempts: 2
+    quality_threshold: 70
+    cloud_allowed: true
+    claude_allowed: false
+    timeout_seconds: 90
+
+  - name: schedule_logging
+    keywords_ko: ["기록", "오늘 한 일", "방금 했어", "활동"]
+    keywords_en: ["log activity", "track time", "journal"]
+    max_attempts: 2
+    quality_threshold: 70
+    cloud_allowed: true
+    claude_allowed: false
+    timeout_seconds: 60
+
+  - name: image_asset_request
+    keywords_ko: ["이미지", "그림", "에셋", "아이콘"]
+    keywords_en: ["image", "asset", "icon", "illustration"]
+    max_attempts: 1
+    quality_threshold: 60
+    cloud_allowed: true
+    claude_allowed: false
+    timeout_seconds: 60
+
+  - name: heavy_project_task
+    keywords_ko: ["전체 구현", "프로젝트 분석", "리팩터링", "구조 개선"]
+    keywords_en: ["entire project", "full refactor", "deep analysis"]
+    max_attempts: 1
+    quality_threshold: 80
+    cloud_allowed: false
+    claude_allowed: true
+    requires_user_approval: true     # heavy stuff needs Discord approval
+    timeout_seconds: 600

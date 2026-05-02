@@ -1,0 +1,87 @@
+name: find_event
+category: read
+description: 일정 검색 — 제목·키워드로 사용자의 모든 캘린더에서 찾아 표시 (event_id 포함)
+
+trigger:
+  type: on_demand
+  patterns:
+    - "찾아줘"
+    - "찾아"
+    - "검색해줘"
+    - "검색"
+    - "어디 있어"
+    - "어디 있지"
+    - "find event"
+    - "search event"
+    - "search calendar"
+
+tier:
+  max: L2
+  prefer: L2
+
+budget:
+  usd_per_run_cap: 0.01
+
+skills:
+  - google_calendar
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: log
+
+safety:
+  requires_confirmation: false   # 읽기 전용 — 확인 게이트 불필요
+  idempotent: true
+  max_retries: 1
+
+ledger:
+  tags: ["calendar", "read", "search"]
+
+prompt: |
+  역할: 개인 캘린더 비서. 일정을 찾아 결과만 보여준다 — 자동 수정·삭제 금지.
+
+  === Step 1. 키워드·시간 범위 추출 ===
+  발화에서 검색 대상을 추출:
+    - 키워드 q: 제목·핵심부 1~3개
+    - time_range: 발화에서 추론 가능하면 ISO8601, 없으면 현재−30일 ~ 현재+90일
+  예:
+    "슈퍼센트 과제 제출 일정 찾아줘"
+      → q="슈퍼센트 과제 제출", time_range=기본
+    "내일 회의 검색"
+      → q="회의", time_range=내일 00:00~23:59 KST
+    "5월에 잡힌 가족모임 어디 있지"
+      → q="가족모임", time_range=2026-05-01 ~ 2026-05-31
+
+  === Step 2. 다중 캘린더 검색 ===
+  SOUL.md "Calendar Coverage" 정책 준수.
+    1) **list-calendars** 호출 → 모든 calendar 수집
+       (accessRole이 reader/writer/owner인 것만, freeBusyReader 제외)
+    2) 각 calendar의 id에 대해 **search-events**(q=<키워드>, timeMin, timeMax) 호출
+    3) 결과를 (calendar_id, calendar_summary, event_id, summary, start, end, location, visibility)로 합침
+    4) 시작 시간 오름차순 정렬
+
+  === Step 3. 결과 보고 ===
+  0건:
+    🔍 "<키워드>" 검색 결과: 일정 없음
+    검색 범위: <N>개 캘린더, <윈도우 요약>
+
+  1건+:
+    🔍 "<키워드>" 검색 결과: <N>건
+      1) [<캘린더명>] M/D HH:MM — <제목>
+         id: `<event_id>`
+         (장소: ..., 있을 때만 표시)
+      2) [<캘린더명>] M/D (종일) — <제목>
+         id: `<event_id>`
+      ...
+
+    💡 다음 명령:
+       삭제: "<제목> 삭제해줘"
+       수정: "<제목> N시로 옮겨줘" / "<제목> 제목 바꿔줘"
+
+  제약:
+    - **event_id는 결과에 반드시 포함** — 후속 update/delete 잡이 동일 ID로 작업해야 함
+    - 비공개 이벤트(visibility=private)는 "🔒 비공개"로 마스킹, 세부 노출 금지
+    - 매칭 결과 20건 초과 시 처음 20건만 표시 + "결과가 많습니다. 키워드/날짜를 좁혀주세요" 안내
+    - 자동 수정·삭제 금지 (읽기 전용 잡)
