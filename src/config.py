@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     c1_claude_code_timeout_ms: int = 120_000      # C1 is per-turn planning, not deep
     c1_claude_code_concurrency: int = 3           # Haiku is light; allow real parallelism
 
+    # Game-mode Claude family default. When runtime_mode is "playtest" or
+    # "gaming", effective_c1_claude_code_model returns this instead of
+    # ``c1_claude_code_model``. Default = "sonnet" based on the 2026-05-03
+    # bench sweep (Sonnet judge): Sonnet was the most balanced model across
+    # all 10 job_types — 1st place in image_asset_request / heavy_project_task /
+    # document_transform / web_research / schedule_logging, never below 72.
+    # Haiku wins coding/simple chat; Opus never wins. See
+    # config/game_mode_routing.yaml for per-job_type details.
+    game_mode_claude_model: str = "sonnet"
+
     # Calendar skill — routes calendar/schedule queries to the calendar_ops
     # Hermes profile so the google-workspace skill (with OAuth) is active.
     # Disabled by default; flip on once the calendar_ops profile is
@@ -280,6 +290,21 @@ class Settings(BaseSettings):
         if not _runtime_mode_get().local_llm_should_run:
             return "claude_cli"
         return self.c1_backend
+
+    @property
+    def effective_c1_claude_code_model(self) -> str:
+        """Claude alias for C1 with runtime-mode override.
+
+        In ``playtest`` / ``gaming`` mode, returns :attr:`game_mode_claude_model`
+        (default ``"sonnet"``) so cloud-routed C1 calls during a game session
+        use the empirically best-balanced model. In ``dev`` mode, returns
+        :attr:`c1_claude_code_model` (default ``"haiku"``) — the legacy
+        cheap/fast alias for normal planning.
+        """
+        from src.runtime_mode import get as _runtime_mode_get
+        if not _runtime_mode_get().local_llm_should_run:
+            return self.game_mode_claude_model
+        return self.c1_claude_code_model
 
     @property
     def effective_use_hermes_for_local(self) -> bool:

@@ -885,14 +885,14 @@ class Orchestrator:
         result = await self.claude_code_c1.run(
             prompt=prompt,
             history=task.history_window,
-            model=self.settings.c1_claude_code_model,
+            model=self.settings.effective_c1_claude_code_model,
             timeout_ms=self.settings.c1_claude_code_timeout_ms,
             persist_session=False,
         )
         task.record_model_output(
             tier="C1",
             text=result.text,
-            model_name=result.model_name or self.settings.c1_claude_code_model,
+            model_name=result.model_name or self.settings.effective_c1_claude_code_model,
             prompt_tokens=result.input_tokens,
             completion_tokens=result.output_tokens,
         )

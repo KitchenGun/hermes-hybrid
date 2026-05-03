@@ -85,6 +85,18 @@ def _parse_args() -> argparse.Namespace:
         help="Bench this specific Ollama model (repeatable). Default: all installed.",
     )
     p.add_argument(
+        "--claude-model",
+        action="append",
+        default=None,
+        metavar="MODEL",
+        help=(
+            "Bench this Claude CLI model (haiku/sonnet/opus, repeatable). "
+            "Uses Max OAuth via ClaudeCodeAdapter — counts against the "
+            "session quota. Can be combined with --model to bench Ollama "
+            "and Claude family in one sweep."
+        ),
+    )
+    p.add_argument(
         "--no-update-matrix",
         action="store_true",
         help="Don't update ScoreMatrix — report only.",
@@ -176,27 +188,55 @@ async def _amain() -> int:
 
     settings = get_settings()
 
-    # 2. Discover Ollama models (or use --model overrides).
+    # 2. Resolve target models — Ollama (discovered or --model) plus
+    # any --claude-model entries. Both can be specified in one sweep so
+    # a single ScoreMatrix grid covers local + cloud arms.
+    ollama_models: list[str] = []
     if args.model:
-        target_models = list(args.model)
-    else:
-        target_models = await _discover_ollama_models(settings)
-        if not target_models:
+        ollama_models = list(args.model)
+    elif not args.claude_model:
+        # No --model and no --claude-model — fall back to discovery so
+        # the legacy "bench every installed Ollama model" default holds.
+        ollama_models = await _discover_ollama_models(settings)
+        if not ollama_models:
             log.error(
                 "no Ollama models found (server unreachable at %s "
-                "or no models pulled). Set --model explicitly or run "
-                "`ollama list` to verify.",
+                "or no models pulled). Set --model or --claude-model "
+                "explicitly, or run `ollama list` to verify.",
                 settings.ollama_base_url,
             )
             return 2
 
-    log.info("benching %d model(s): %s", len(target_models), target_models)
+    claude_models: list[str] = list(args.claude_model or [])
+    target_models = ollama_models + claude_models
+
+    if not target_models:
+        log.error("no target models — pass --model and/or --claude-model")
+        return 2
+
+    log.info(
+        "benching %d model(s): ollama=%s claude_cli=%s",
+        len(target_models), ollama_models, claude_models,
+    )
 
     # 3. Build adapters per target model.
     adapters = {}
-    for model_id in target_models:
+    for model_id in ollama_models:
         client = OllamaClient(settings.ollama_base_url, model_id)
         adapters[model_id] = OllamaAdapter(client)
+
+    if claude_models:
+        # Single ClaudeCodeAdapter shared across all Claude arms — the
+        # subprocess concurrency cap (settings.c1_claude_code_concurrency)
+        # then gates Max OAuth quota usage globally for this sweep,
+        # rather than per-model.
+        from src.claude_adapter.adapter import ClaudeCodeAdapter
+        from src.llm.adapters.claude_cli import ClaudeCLIAdapter
+        claude_base = ClaudeCodeAdapter(
+            settings, concurrency=settings.c1_claude_code_concurrency
+        )
+        for model_id in claude_models:
+            adapters[model_id] = ClaudeCLIAdapter(claude_base, model=model_id)
 
     # 4. Load score matrix (unless --no-update-matrix).
     matrix = None
