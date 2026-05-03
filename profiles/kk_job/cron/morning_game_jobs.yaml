@@ -1,0 +1,132 @@
+name: morning_game_jobs
+category: read
+description: 매일 07:40 KST 게임 프로그래머 공고 크롤링→매칭→Top5 Discord 송신
+
+trigger:
+  type: cron
+  schedule: "40 7 * * *"
+  timezone: Asia/Seoul
+
+tier:
+  max: C1
+  prefer: C1
+
+budget:
+  usd_per_run_cap: 0.10
+
+skills:
+  - job_crawler
+  - sheets_append
+  - discord_notify
+
+delivery:
+  channel: webhook
+  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  on_failure: retry
+
+safety:
+  requires_confirmation: false
+  idempotent: true
+  max_retries: 1
+  retry_delay_seconds: 180
+
+ledger:
+  tags: ["job", "game", "daily", "digest"]
+
+prompt: |
+  역할: 게임 프로그래머 구인 리서처. `SOUL.md` Safety Rules 준수.
+  cron 잡은 cwd 보장 안 됨 — 모든 파일 경로는 **절대경로**로 호출.
+
+  실행은 6단계, 각 단계 실패 시 다음 단계 graceful 진행 (전체 중단 X).
+
+  === Step 1. 크롤링 ===
+  terminal 도구로 한 번 실행:
+    python3 /home/kang/.hermes/profiles/kk_job/skills/research/job_crawler/scripts/crawl_game_jobs.py \
+      --keywords "게임 프로그래머,클라이언트 프로그래머,Unreal,언리얼,UE5,Game Programmer" \
+      --output /tmp/kk_job_raw.json \
+      --per-source-limit 30
+  실패해도 빈 배열이 저장되므로 Step 2로 계속.
+
+  === Step 2. 지원 이력 추출 ===
+  terminal:
+    python3 /home/kang/.hermes/profiles/kk_job/skills/research/job_crawler/scripts/extract_applied_companies.py \
+      --days 180 \
+      --output /tmp/kk_job_applied.json
+  실패 시 빈 배열 저장됨. 다음 단계로.
+
+  === Step 3. raw 시트 적재 + applied 마킹 ===
+  /tmp/kk_job_raw.json 을 read_file 로 읽어 다음을 수행:
+    1) /tmp/kk_job_applied.json 의 회사명 토큰 리스트 로드
+    2) 각 raw 항목의 company / title 에 applied 토큰이 부분 일치하면
+       applied=true 마킹
+    3) 결과를 /tmp/kk_job_raw_marked.json 에 write_file
+    4) terminal:
+       cat /tmp/kk_job_raw_marked.json | python3 \
+         /home/kang/.hermes/profiles/kk_job/skills/storage/sheets_append/scripts/post_to_sheet.py \
+         --tab raw
+       (JOB_SHEETS_WEBHOOK_URL 미설정 시 CSV 폴백, exit 0 반환)
+
+  === Step 4. 매칭 (LLM 직접 수행) ===
+  /tmp/kk_job_raw_marked.json 에서 다음 조건의 후보만 추림:
+    - applied == false
+    - expired == false
+    - 마감일이 오늘 이후 또는 "상시"
+
+  USER.md 의 매칭 가중치 사용:
+    - Unreal 메인 스택 일치 40%
+    - 클라이언트/게임플레이 직무 적합도 25%
+    - 연차 핏 (3년차 ±2년) 20%
+    - 출시 경험 우대 / 호러·인디·서바이벌 친화 10%
+    - 지역(서울/재택) 5%
+
+  각 후보에 0~100 정수 match_score 부여. 상위 5개 선별.
+  각 항목에 다음 필드 채움:
+    - date: 오늘 (YYYY-MM-DD)
+    - company, title, url: raw 그대로
+    - match_score: 0~100 정수
+    - match_reason: 2줄 이내, ✅ 시작
+    - mismatch: 1줄, 있을 때만 ⚠️ 시작 (없으면 빈 문자열)
+
+  결과를 /tmp/kk_job_curated.json 에 write_file (JSON 배열).
+
+  === Step 5. curated 시트 적재 ===
+  terminal:
+    cat /tmp/kk_job_curated.json | python3 \
+      /home/kang/.hermes/profiles/kk_job/skills/storage/sheets_append/scripts/post_to_sheet.py \
+      --tab curated
+
+  === Step 6. Discord 송신 ===
+  본문 작성 (각 공고 한 블록, 빈 줄로 구분):
+    🌅 게임 프로그래머 공고 추천 — YYYY-MM-DD (KST)
+
+    [회사명] 직무명 — 점수: NN
+    ✅ {match_reason}
+    ⚠️ {mismatch}    ← mismatch 빈 문자열이면 이 줄 생략
+    🔗 {url}
+
+  매칭 0건이면 본문은 다음 한 줄만:
+    🌅 게임 프로그래머 공고 추천 — YYYY-MM-DD (KST)
+    오늘 매칭 공고 없음. 키워드/소스 재점검 권장.
+
+  terminal:
+    cat > /tmp/kk_job_morning_body.txt <<'BODY_EOF'
+    <위 본문>
+    BODY_EOF
+    python3 /home/kang/.hermes/profiles/kk_job/skills/messaging/discord_notify/scripts/post_webhook.py \
+      --title '🌅 게임 프로그래머 공고 추천' \
+      --color 0x5865F2 \
+      --footer 'kk_job · morning_game_jobs' \
+      --body-file /tmp/kk_job_morning_body.txt
+
+  실패 시 (전체 흐름 중 어느 단계든 Python 스크립트가 exit != 0):
+    - stderr 로그를 본문에 첨부하여 에러 임베드 1회 송신:
+      title: '⚠️ morning_game_jobs 실패'
+      color: 0xED4245
+      footer: 'kk_job · morning_game_jobs · error'
+
+  제약:
+    - search_files / read_file 의 path 인자에 빈 문자열 금지.
+      반드시 위 절대경로 그대로 사용.
+    - 연봉 정보가 raw에 없으면 추측 금지 (출력 X).
+    - 회사 평판/문화 정보는 출처 없으면 포함 X.
+    - 5건 초과 X (사용자 인지 부하 관리).

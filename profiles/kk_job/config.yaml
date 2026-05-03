@@ -29,6 +29,7 @@ terminal:
     - DISCORD_BRIEFING_WEBHOOK_URL
     - BRAVE_SEARCH_API_KEY
     - GOOGLE_APPLICATION_CREDENTIALS
+    - JOB_SHEETS_WEBHOOK_URL
     - TIMEZONE
 
 # ── 메모리 (공식 필드명) ─────────────────────────────────────────
@@ -87,7 +88,9 @@ mcp_servers: {}
 skills:
   auto_load:
     - research/web_search
+    - research/job_crawler
     - productivity/document_writer
+    - storage/sheets_append
     - messaging/discord_notify
 
 # ── hermes-hybrid 확장 ───────────────────────────────────────────
