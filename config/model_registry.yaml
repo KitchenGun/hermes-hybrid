@@ -14,28 +14,20 @@
 
 local:
   # ── Baseline (qwen2.5 family, kept so ScoreMatrix can prove improvement) ──
-  # 3B and 7B are kept for the classifier path (cheap, fast).
-  - { provider: ollama, name: "qwen2.5:3b-instruct" }
+  # 7B and 14B are the workhorse local models.
   - { provider: ollama, name: "qwen2.5:7b-instruct" }
-  # 14B is the workhorse local model.
   - { provider: ollama, name: "qwen2.5:14b-instruct" }
-  # Coder variants.
-  - { provider: ollama, name: "qwen2.5-coder:7b-instruct" }
+  # Coder variant — currently only 32B installed.
   - { provider: ollama, name: "qwen2.5-coder:32b-instruct" }
 
   # ── 2025-2026 candidates registered for the local-first migration sweep ──
-  # Availability is verified via `ollama pull` at execution time; missing
-  # arms are auto-skipped by the bench runner (they just won't appear in
-  # the report). This list is the SUPERSET — pick the actual pulls based
-  # on disk + time budget. See docs/local-first-decisions.md for the
-  # per-profile model assignments after the sweep completes.
+  # Only entries actually present in `ollama list` as of the last cleanup
+  # are kept here. To add a new arm: run `ollama pull <tag>` first, then
+  # re-add it below — the bench runner can then start scoring it.
   - { provider: ollama, name: "qwen3:14b" }                   # Qwen3 dense, tools+reasoning
-  - { provider: ollama, name: "qwen3:30b-a3b" }               # Qwen3 MoE (active 3B; memory-efficient)
   - { provider: ollama, name: "gpt-oss:20b" }                 # OpenAI open-source, reasoning+tools
-  - { provider: ollama, name: "gemma3:27b-instruct" }         # Google, vision+tools, strong Korean
   - { provider: ollama, name: "deepseek-r1:14b" }             # Reasoning specialist
   - { provider: ollama, name: "phi4:14b" }                    # MS, instruct (16K ctx — verify Hermes 64K gate)
-  - { provider: ollama, name: "mistral-nemo:12b-instruct-2407" }  # Tool calling traditionally strong
 
 
 cloud:

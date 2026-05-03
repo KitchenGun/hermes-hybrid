@@ -15,7 +15,7 @@
 
 classifier:
   fast_keyword_path: true
-  llm_model: "qwen2.5:3b-instruct"   # tiny, fast classifier
+  llm_model: "qwen3:4b"              # tiny, fast classifier (~4B, installed)
   llm_timeout_seconds: 5
   fallback_job_type: "simple_chat"
 

@@ -1,7 +1,9 @@
-"""Register calendar_ops cron jobs with the Hermes CLI native scheduler.
+"""Register Hermes cron jobs with the CLI native scheduler.
 
 Idempotent: reads existing jobs first and skips already-registered names.
 Run from WSL: python3 /mnt/e/hermes-hybrid/scripts/register_cron_jobs.py
+              python3 /mnt/e/hermes-hybrid/scripts/register_cron_jobs.py --profile kk_job
+              python3 /mnt/e/hermes-hybrid/scripts/register_cron_jobs.py --profile all
 
 Why we patch jobs.json after `hermes cron create`:
 
@@ -16,6 +18,7 @@ the profile's config.yaml.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -28,6 +31,9 @@ PROFILES_ROOT = Path(__file__).resolve().parent.parent / "profiles"
 DELIVER_MAP = {"webhook": "discord", "dm": "local"}
 
 HERMES_HOME = Path("/home/kang/.hermes")
+
+# Profiles that have at least one cron YAML and should be processed by --all.
+CRON_PROFILES = ["calendar_ops", "kk_job", "journal_ops"]
 
 
 def _wsl_run(cmd: list[str]) -> tuple[int, str]:
@@ -170,8 +176,8 @@ def sync_jobs_prompts(profile: str, yaml_jobs: list[dict[str, Any]]) -> int:
     return patched
 
 
-def main() -> int:
-    profile = "calendar_ops"
+def sync_profile(profile: str) -> int:
+    """Sync a single profile's cron YAML to jobs.json. Returns # new registered."""
     print(f"[cron] Syncing jobs for profile '{profile}'...")
 
     existing = get_registered_names(profile)
@@ -204,7 +210,7 @@ def main() -> int:
                 f"{model_cfg['model']!r}, provider={model_cfg['provider']!r}."
             )
     else:
-        print("\n[cron] WARN: profile model config empty — skipping patch.")
+        print(f"\n[cron] WARN: profile '{profile}' model config empty — skipping patch.")
 
     # Sync prompts from current YAML files into jobs.json — Hermes only
     # honors the prompt at create-time, so YAML edits after registration
@@ -214,8 +220,27 @@ def main() -> int:
     if prompt_patched:
         print(f"[cron] Re-synced {prompt_patched} prompt(s) from YAML to jobs.json.")
 
-    print(f"\n[cron] Done — {registered} new job(s) registered, "
-          f"{len(jobs) - registered} skipped.")
+    print(f"[cron] '{profile}' done — {registered} new job(s) registered, "
+          f"{len(jobs) - registered} skipped.\n")
+    return registered
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--profile",
+        default="calendar_ops",
+        help=("Target profile name. Use 'all' to sync every profile in "
+              f"CRON_PROFILES ({', '.join(CRON_PROFILES)}). Default: calendar_ops."),
+    )
+    args = parser.parse_args()
+
+    targets = CRON_PROFILES if args.profile == "all" else [args.profile]
+    total = 0
+    for p in targets:
+        total += sync_profile(p)
+    print(f"[cron] Total: {total} new job(s) registered across "
+          f"{len(targets)} profile(s).")
     return 0
 
 
