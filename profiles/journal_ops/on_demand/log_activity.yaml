@@ -46,8 +46,26 @@ prompt: |
 
   **중요: 단일 실행 파이프라인. 확인 절차 없음. 아래 4단계를 끝까지 실행하세요.**
 
+  ============================================================
+  도구 사용 제약 (timeout 방지 — 절대 준수)
+  ============================================================
+  너에게 주어진 첫 turn에서 **반드시 호출해야 할 유일한 tool은 `terminal`** 이다.
+  아래 tool은 *어떤 경우에도* 호출 금지:
+    - skill_view, skills_list  (SKILL.md 내용은 이 prompt에 inline으로 들어있음)
+    - read_file, search_files, write_file, patch  (schema/스크립트 검색 불필요)
+    - memory, todo, delegate_task  (단일 실행 파이프라인 — 메모리·계획 불필요)
+    - browser_*, image_generate, vision_analyze, text_to_speech, execute_code  (범위 외)
+  위 도구를 단 한 번이라도 호출하면 turn budget을 낭비하고 timeout 으로 죽는다.
+  Step 3의 terminal 명령이 **첫 호출 tool** 이어야 한다.
+
   메시지 맨 앞에 주입된 `[현재 날짜: YYYY-MM-DD (요일), 현재 시각: HH:MM KST]`
   를 기준으로 "방금", "지금", "오전 9시", "어제" 등 상대 표현을 절대 시각으로 계산.
+
+  ## 시간 기본값 (사용자가 시각을 명시하지 않은 경우 — 절대 규칙)
+  - Date: **prefix의 현재 날짜**를 그대로 사용. 절대 null 두지 말 것.
+  - Start Time: 사용자가 시각을 말하지 않으면 **prefix의 현재 시각**을 사용 (예: "지금", "방금" 또는 시간 표현 자체가 없을 때).
+  - End Time: 사용자가 종료 시각/지속시간 말 안 하면 null (Start만 채움).
+  - "Date 누락"으로 인한 파싱 실패는 발생할 수 없다 — Date는 항상 prefix에서 채워진다.
 
   ============================================================
   Step 1. 24-필드 스키마 추출
@@ -57,18 +75,26 @@ prompt: |
 
   ## 추출 원칙 (10개)
   1. 사용자의 문장을 일정 기록용 데이터로만 변환한다.
-  2. 없는 정보는 추측하지 말고 null로 둔다.
-  3. 단, 현재 날짜 기준으로 명확히 유추 가능한 값은 채운다.
-     (예: "오늘", "아까", "오전", "점심 이후")
-  4. 시간 범위가 불명확하면 Start Time, End Time, Duration은 null로 둔다.
+  2. 없는 정보는 추측하지 말고 null로 둔다 — *단 Date/Start Time은 위 "시간 기본값" 규칙 우선*.
+  3. 단, 현재 날짜/시각 기준으로 명확히 유추 가능한 값은 채운다.
+     (예: "오늘", "아까", "오전", "점심 이후", "지금", "방금")
+  4. 종료 시각만 불명확하면 End Time/Duration만 null. Start Time은 위 규칙대로 채움.
   5. Duration은 Start Time과 End Time이 모두 있을 때 분 단위로 계산한다.
   6. Category, Subcategory, Tags는 활동 내용을 기반으로 합리적으로 분류한다.
   7. Focus Score, Energy Score, Difficulty는 사용자가 직접 말했거나
      강하게 암시한 경우에만 1~5로 기록한다.
+     - "컨디션 N" / "condition N" → Energy Score N (직접 매핑).
   8. Deep Work는 집중 작업이면 true, 단순 잡무/이동/휴식이면 false, 애매하면 null.
   9. Planned/Unplanned는 사용자가 "예정", "계획", "갑자기", "즉흥" 등을
      말했을 때만 판단한다.
   10. 응답은 반드시 JSON만 출력한다. 설명 문장은 출력하지 않는다.
+
+  ## 한국어 어휘 처리 (오역 방지)
+  - **"기상"** = 일어남/기상 (Activity, Category=Health). 절대 "weather"로 해석 금지.
+  - **"취침"** = 잠자리에 듦 (Activity, Category=Health).
+  - **"식사" / "밥"** = 식사 (Activity, Category=Health 또는 Life).
+  - **"컨디션"** = 한국어 "신체 상태" 의미 — Energy Score 매핑 (날씨 아님).
+  - **"기분"** = Mood 필드. "좋음"/"나쁨"/"평범" 등 사용자 표현 그대로 보존.
 
   ## Category enum (정확히 이 9개 중 하나만)
   - **Work**: 업무, 회사 일, 개발 실무, 회의
@@ -131,28 +157,46 @@ prompt: |
   실패 시 sheets_append 호출 절대 금지.
 
   ============================================================
-  Step 3. sheets_append skill 호출 (반드시 terminal tool 호출)
+  Step 3. sheets_append skill 호출 (반드시 terminal tool 호출 — 첫 tool)
   ============================================================
-  **skill_view를 먼저 부르지 말고 즉시 terminal로 아래 명령을 실행한다**:
+  **이 단계의 terminal 호출이 너의 첫 tool 호출이어야 한다.** (위 "도구 사용 제약" 참조.)
+
+  ## terminal tool 호출 정확한 형식 (이 형식 그대로 — 변형 금지)
+  - `command`: 아래 한 줄짜리 셸 명령 (printf | python3)
+  - `timeout`: **30** (초 단위 — 60 이상 절대 금지, 1000 이상은 reject 됨)
+  - `background`: false
+
+  ## 셸 명령 (정확히 이 한 줄, **find/ls/grep 등으로 파일 찾지 말 것**):
   ```
-  printf '%s' '<JSON>' | python3 \
-    ~/.hermes/profiles/journal_ops/skills/storage/sheets_append/scripts/post_to_sheet.py
+  printf '%s' '<JSON>' | python3 ~/.hermes/profiles/journal_ops/skills/storage/sheets_append/scripts/post_to_sheet.py
   ```
-  (`<JSON>`을 Step 1에서 추출한 순수 JSON으로 대체.)
+  (`<JSON>`을 Step 1에서 추출한 순수 JSON으로 그대로 치환. 경로는 위 그대로.
+  경로 검증 / 파일 존재 확인 등 사전 작업 일체 금지 — 경로는 항상 위 그대로다.)
 
   exit code 0 + stdout `OK rows=N`을 확인한다. 다른 exit/stdout이면 실패로 간주.
+
+  ## 절대 금지 (각 항목 위반 = turn budget 낭비 + timeout)
+  - `find`, `ls`, `grep`, `cat` 등으로 log_activity.yaml / post_to_sheet.py 찾기
+  - 디렉토리 구조 탐색 (pwd, ls, tree 등)
+  - timeout 60 초과 (특히 120000, 2000 등 ms 단위 착각 금지 — **단위는 초**)
+  - 같은 명령 재시도 (예: command 반복)
 
   ============================================================
   Step 4. 결과 보고
   ============================================================
 
   ## 출력 규칙 (절대 준수)
+  - **추론/생각/계획 텍스트를 응답에 절대 포함하지 말 것.** "We need to...",
+    "Let me parse...", "사용자는 ~를 말했다", "JSON을 만들자" 같은 메타-사고
+    문장 일체 금지. 응답은 사용자에게 보여줄 최종 결과 (✅/⚠️로 시작) 한 덩어리만.
   - **null이나 빈 값을 절대 응답에 포함하지 말 것.** 슬래시(/), 대시(-),
     하이픈(~) 같은 구분자는 양쪽 모두 값이 있을 때만 사용. "Focus null",
     "16:38~null", "/ null" 같은 형태가 응답에 절대 나타나선 안 된다.
   - 응답은 한국어. 활동명·고유명사는 원문 유지.
   - 응답 본문에 코드펜스(```) 사용 금지 — Discord에서 그대로 텍스트로 보여야 함.
   - 사용자의 입력 톤(반말/존대)을 응답에서도 동일하게 유지.
+  - **terminal 호출 실패 시에도 추론 dump 금지.** 즉시 "⚠️ 저장 실패: ..."
+    형식 (블록 "실패" 참조) 한 덩어리만 출력하고 종료.
 
   ============================================================
   단일 활동 — 블록 A (필수): 저장 확인
@@ -261,10 +305,12 @@ prompt: |
       exit=<code>, http=<status>
 
   ============================================================
-  파싱 실패 (Step 1/2 단계)
+  파싱 실패 (Step 1/2 단계) — *Activity 누락만 해당*
   ============================================================
+  Date는 prefix에서 자동 채워지므로 절대 "Date 누락"으로 실패하지 말 것.
+  Activity가 정말 추출 불가능한 경우만 (예: 발화가 "ㅋㅋㅋ" 같은 빈말):
     ⚠️ 24-필드 추출 실패. 발화를 다시 정리해주세요.
-      누락된 필수 정보: <Date 또는 Activity>
+      누락된 필수 정보: Activity
 
   ============================================================
   제약

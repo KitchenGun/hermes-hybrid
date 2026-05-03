@@ -34,12 +34,35 @@ agent:
   # Hermes reject hallucinated tool names and forces the model to either
   # call a real tool or fail loud — preventing silent data loss.
   tool_use_enforcement: "strict"
+  # 2026-05-03: 300s timeout root-cause fix. gpt-oss:20b was burning 5+
+  # turns calling skill_view / search_files / read_file even though the
+  # prompt and SOUL.md inline the entire procedure. 38s/turn × wasted
+  # turns → 300s timeout before terminal call. Hard-disable every toolset
+  # we don't need so the model literally cannot waste turns hunting for
+  # files. The job needs ONE call: terminal → post_to_sheet.py.
+  disabled_toolsets:
+    - skills           # skill_view, skill_manage, skills_list (procedure is inline)
+    - file             # read_file, write_file, patch, search_files (no schema hunting)
+    - browser          # browser_*, web_search (no web access)
+    - vision
+    - image_gen
+    - tts
+    - code_execution   # execute_code (terminal is enough)
+    - delegation       # delegate_task (single-turn pipeline)
+    - todo
+    - memory           # journal events themselves are the durable record
+    - session_search
+    - cronjob          # journal_ops doesn't manage its own cron
+    - clarify          # channel-pinned: no questions, just record
+    - moa
+    - messaging
+    - rl
 
 # Hermes가 아는 provider 목록: auto / openrouter / nous / openai-codex /
 #   zai / kimi-coding / minimax / minimax-cn / custom (calendar_ops 참조)
 #
 # 24-필드 JSON 추출은 instruction-following이 강한 모델이 필요하지만 비용을
-# 0으로 유지하기 위해 로컬 Ollama (qwen2.5:14b-instruct)를 사용한다.
+# 0으로 유지하기 위해 로컬 Ollama (qwen3:8b)를 사용한다.
 # Ollama는 OpenAI 호환 /v1 엔드포인트를 노출하므로 custom provider로 연결한다.
 #
 # base_url은 WSL → Windows host의 Ollama (default-gateway:11434/v1)를 가리킨다.
@@ -50,33 +73,42 @@ agent:
 # OPENAI_API_KEY를 진짜 키로 교체하면 된다.
 model:
   provider: "custom"
-  # Per-job optimization (2026-05-01 v3): rolled back from qwen3:8b to
-  # gpt-oss:20b. qwen3:8b *bench* score was higher (sched 97.8), but in
-  # the live smoke (session 20260501_211905_00c9fd) it spent 8 turns on
-  # introspection: it called skill_view, then patched SKILL.md via
-  # skill_manage (!), wrote to memory, and never invoked terminal /
-  # post_to_sheet.py. The bench dimensions don't grade tool-call discipline.
-  # gpt-oss:20b's smoke (20260501_173517_b23913): 4 calls (skill_view,
-  # read_file×2, terminal) and Sheet row appended. Behavioral fit > raw
-  # bench score for this profile.
-  model: "gpt-oss:20b"
+  # 2026-05-03: switched gpt-oss:20b → qwen3:8b.
+  #
+  # Why: gpt-oss:20b emits a 1-2KB chain-of-thought "thinking" block on
+  # every turn even with `extra_body.enable_thinking: false` (the flag is
+  # honored only by qwen3-family chat templates, not gpt-oss). Each turn
+  # cost ~38s of inference, and the final response generation alone often
+  # took >140s after the tool call returned — pushing total wall time
+  # past the orchestrator's 300s timeout even when the row HAD already
+  # been appended (sheet row present, but user sees "⚠️ 시간 초과").
+  #
+  # qwen3:8b is a vanilla instruction model: no thinking trace,
+  # ~3x faster per token, strong Korean, well-tuned for JSON extraction.
+  # The earlier "qwen2.5 hallucinates ⚠️ 저장 실패" failure mode is now
+  # blocked by `tool_use_enforcement: strict` plus `disabled_toolsets`
+  # (only `terminal` is exposed — the model literally cannot pretend to
+  # call sheets_append without going through post_to_sheet.py).
+  #
+  # The earlier "qwen3:8b spent 8 turns calling skill_view / skill_manage"
+  # failure is also blocked by `disabled_toolsets: [skills, file, ...]`.
+  #
+  # If qwen2.5:7b's instruction-following turns out weak on the 24-field
+  # extraction, step up to qwen3:8b (still no thinking).
+  model: "qwen3:8b"
   base_url: "${OPENAI_BASE_URL}"
   api_mode: "chat_completions"
+  # qwen2.5 native window is 32K but supports 128K via YaRN. Hermes enforces
+  # a 64K floor, so we declare 65536 here; Ollama applies YaRN under the hood.
   context_length: 65536
-  # Hermes v0.11+ extra_body forwarding (Ollama path): turn OFF the model's
-  # reasoning trace. journal_ops is a 4-step deterministic pipeline (extract
-  # → validate → append → reply) — thinking traces only ate the turn budget
-  # and, with qwen3:8b, sent the model into introspecting/patching SKILL.md
-  # instead of invoking terminal. gpt-oss:20b's tool-calling stayed correct
-  # even with thinking on, but disabling it cuts latency and removes the
-  # qwen3-style failure mode if we ever swap models.
   extra_body:
+    # qwen-family no-thinking flag (template-level). qwen2.5 doesn't emit
+    # thinking by default, but pass it explicitly so a future qwen3 swap
+    # stays consistent.
     enable_thinking: false
-    # Keep gpt-oss:20b resident in Ollama VRAM for 30 minutes after the
-    # last call. Default is 5m — short enough that most #일기 messages
-    # arrive cold, paying ~30s model-load on every Discord turn. 30m
-    # covers a typical journaling burst (multiple activities in one
-    # evening) so only the FIRST message of the day pays cold-start.
+    # Keep model resident for 30 min so a journaling burst (several
+    # activities in one evening) pays the load cost only once. Default
+    # 5m would cold-start most Discord messages.
     keep_alive: "30m"
 
 terminal:
@@ -102,6 +134,15 @@ compression:
   threshold: 0.50
   target_ratio: 0.20
   protect_last_n: 20
+
+# Auxiliary models (compression, summarization, vision). Hermes spawns its own
+# context-window check on the compression model; without an explicit override
+# it errors out for any sub-64K aux model. Pin to the same model as the main
+# agent and override the floor — single deterministic model per profile.
+auxiliary:
+  compression:
+    model: "qwen3:8b"
+    context_length: 65536
 
 approvals:
   mode: "off"                       # 핵심: HITL 없음

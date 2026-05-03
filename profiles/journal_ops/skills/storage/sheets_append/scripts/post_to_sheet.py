@@ -84,6 +84,32 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _canonicalize_keys(r: dict[str, Any]) -> dict[str, Any]:
+    """Map common case/snake variants ("date", "start_time", "deep_work") to
+    canonical Title-Case ("Date", "Start Time", "Deep Work"). Local LLMs
+    (gpt-oss:20b, qwen3) often emit lowercased or snake_cased keys despite
+    the Title-Case examples in the prompt; rejecting those just because of
+    case turned a working extraction into a "missing required field" failure
+    and a 300s timeout retry. Normalize defensively at the script boundary
+    so the LLM's output style doesn't gate row insertion.
+    """
+    canonical = {col.lower().replace(" ", "_").replace("/", "_"): col for col in COLUMNS}
+    out: dict[str, Any] = {}
+    for k, v in r.items():
+        # 1) exact Title-Case hit — keep
+        if k in canonical.values():
+            out[k] = v
+            continue
+        # 2) normalize: lowercase, strip spaces/underscores/slashes
+        norm = k.lower().replace(" ", "_").replace("/", "_").replace("-", "_")
+        col = canonical.get(norm)
+        if col is not None:
+            out[col] = v
+        else:
+            out[k] = v  # unknown key — preserve so caller can debug
+    return out
+
+
 def _normalize(rows: list[dict[str, Any]]) -> list[list[Any]]:
     """dict 리스트 → list-of-list (COLUMNS 순서 강제).
 
@@ -99,6 +125,7 @@ def _normalize(rows: list[dict[str, Any]]) -> list[list[Any]]:
                 file=sys.stderr,
             )
             continue
+        r = _canonicalize_keys(r)
         row: list[Any] = []
         for col in COLUMNS:
             val = r.get(col)
@@ -137,14 +164,19 @@ def _load_input() -> list[dict[str, Any]]:
 
 
 def _validate_required(rows: list[dict[str, Any]]) -> None:
-    """Required 필드 검증 — Date, Activity가 누락되면 exit 1."""
+    """Required 필드 검증 — Date, Activity가 누락되면 exit 1.
+
+    Runs on the canonicalized dict so case/underscore variants from the LLM
+    (date, start_time) match the Title-Case requirement.
+    """
     for i, r in enumerate(rows):
         if not isinstance(r, dict):
             continue
+        canon = _canonicalize_keys(r)
         missing = []
-        if not r.get("Date"):
+        if not canon.get("Date"):
             missing.append("Date")
-        if not r.get("Activity"):
+        if not canon.get("Activity"):
             missing.append("Activity")
         if missing:
             print(

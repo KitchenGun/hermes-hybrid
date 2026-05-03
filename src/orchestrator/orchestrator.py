@@ -93,6 +93,38 @@ _SYSTEM_PROMPT = (
 )
 
 
+# Forced-profile (channel-pinned) datetime prefix.
+#
+# journal_ops / calendar_ops / mail_ops profile prompts ALL assume the user
+# message arrives with `[현재 날짜: YYYY-MM-DD (요일), 현재 시각: HH:MM KST]`
+# already prepended (see profiles/*/on_demand/*.yaml `prompt:` blocks). The
+# orchestrator was passing user_message through raw, so the model had no
+# anchor for "지금" / "방금" / "오늘", produced "missing Date" failures, and
+# leaked its reasoning trace to Discord (see session_20260503_120600 — user
+# typed "기상 기분 좋음 컨디션 5" with no time, model couldn't fill Date,
+# tried hallucinated tools, gave up and dumped chain-of-thought as the
+# reply). Inject the prefix here so every channel-pinned profile gets the
+# anchor it expects without each profile having to plumb its own.
+#
+# Hard-coded KST (UTC+9, no DST) instead of zoneinfo.ZoneInfo("Asia/Seoul")
+# because Windows Python ships without a tz database — ZoneInfo would raise
+# ZoneInfoNotFoundError unless the `tzdata` package is installed. Korea has
+# observed UTC+9 since 1961 with no scheduled changes, so a fixed offset is
+# safe for this prompt-prefix use case.
+_KST = timezone(timedelta(hours=9), name="KST")
+_WEEKDAY_KO = ("월", "화", "수", "목", "금", "토", "일")
+
+
+def _format_kst_prefix(now: datetime | None = None) -> str:
+    """Return ``[현재 날짜: YYYY-MM-DD (요일), 현재 시각: HH:MM KST]``.
+
+    Test-injectable via ``now`` (otherwise reads wall clock in KST).
+    """
+    n = now if now is not None else datetime.now(_KST)
+    weekday = _WEEKDAY_KO[n.weekday()]
+    return f"[현재 날짜: {n:%Y-%m-%d} ({weekday}), 현재 시각: {n:%H:%M} KST]"
+
+
 @dataclass
 class OrchestratorResult:
     task: TaskState
@@ -1165,9 +1197,14 @@ class Orchestrator:
         task.mark("first_act_at")
 
         handled_by = f"forced:{task.forced_profile}"
+        # Inject `[현재 날짜: ... 현재 시각: ...]` so the profile prompt's
+        # "지금"/"방금"/"오늘" anchoring works. Without this, journal_ops
+        # rejects messages like "기상 기분 좋음 컨디션 5" with "missing Date"
+        # and the model dumps its reasoning trace as the user-visible reply.
+        prefixed_message = f"{_format_kst_prefix()} {task.user_message}"
         try:
             result = await self.hermes.run(
-                task.user_message,
+                prefixed_message,
                 model=None,           # defer to profile config.yaml
                 provider=None,        # defer to profile config.yaml
                 profile=task.forced_profile,

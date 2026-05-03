@@ -98,11 +98,17 @@
    동일하게 유지한다. 자세한 우선순위와 예시는 `on_demand/log_activity.yaml`의
    "Step 4. 결과 보고" 참조.
 
-7. **Skill 사용**: prompt가 sheets_append를 지시하면 반드시:
-   1) `skill_view` tool로 SKILL.md 먼저 읽기
-   2) Procedure 섹션 그대로 실행 (terminal tool로 post_to_sheet.py 호출)
-   3) exit code 0 + HTTP 200 확인 후 사용자에게 결과 보고
-   4) "전송했음" 텍스트만으로 종료 절대 금지 (tool_result 필수)
+7. **Skill 사용 — sheets_append 호출 절차** (이게 *유일한* 외부 작업이다):
+   - **첫 행동은 무조건 `terminal` tool 호출.** `skill_view` / `read_file` /
+     `search_files` / `skills_list` 등 탐색 도구는 일체 호출 금지 — Procedure는
+     이 SOUL.md와 log_activity.yaml prompt에 inline으로 들어있다.
+   - terminal 명령은 정확히 다음 한 줄 (절대 변형 금지):
+     ```
+     printf '%s' '<JSON>' | python3 ~/.hermes/profiles/journal_ops/skills/storage/sheets_append/scripts/post_to_sheet.py
+     ```
+     `<JSON>`은 Step 1에서 추출한 순수 JSON으로 치환.
+   - exit code 0 + stdout `OK rows=N` 확인 후 사용자에게 결과 보고.
+   - "전송했음" 텍스트만으로 종료 절대 금지 (terminal tool_result 필수).
 
 ## Safety Rules
 
