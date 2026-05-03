@@ -251,8 +251,35 @@ class Settings(BaseSettings):
         ``LOCAL_FIRST_MODE=True`` alone is sufficient to reroute the L0/L2/L3
         surrogate paths through Ollama without also setting
         ``OLLAMA_ENABLED=True`` (single-knob ergonomics).
+
+        Runtime-mode override: when ``runtime_mode.get().mode`` is
+        ``playtest`` or ``gaming``, Ollama is forced OFF so the GPU/VRAM
+        is free for the game / editor PIE. Flipping back to ``dev`` (via
+        CLI / hotkey / watcher / PIE webhook) restores routing without a
+        process restart. The static flags above remain unchanged.
         """
-        return self.ollama_enabled or self.local_first_mode
+        if not (self.ollama_enabled or self.local_first_mode):
+            return False
+        # Lazy import: runtime_mode has no Settings dependency, but
+        # importing at module top would create a tight coupling that
+        # makes Settings non-importable in early-init paths.
+        from src.runtime_mode import get as _runtime_mode_get
+        return _runtime_mode_get().local_llm_should_run
+
+    @property
+    def effective_c1_backend(self) -> Literal["openai", "claude_cli"]:
+        """C1 backend with runtime-mode override.
+
+        In ``playtest`` / ``gaming`` mode, force ``claude_cli`` (Max OAuth,
+        $0 marginal cost) so a long game session can't silently burn
+        OpenAI tokens. In ``dev`` mode, defer to the configured
+        :attr:`c1_backend`. The orchestrator reads this property instead
+        of ``c1_backend`` directly so the override applies everywhere.
+        """
+        from src.runtime_mode import get as _runtime_mode_get
+        if not _runtime_mode_get().local_llm_should_run:
+            return "claude_cli"
+        return self.c1_backend
 
     @property
     def effective_use_hermes_for_local(self) -> bool:

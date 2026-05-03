@@ -848,7 +848,7 @@ class Orchestrator:
         if self.settings.effective_use_hermes_for_c1:
             return await self._run_c1_via_hermes(task)
 
-        if self.settings.c1_backend == "claude_cli":
+        if self.settings.effective_c1_backend == "claude_cli":
             return await self._run_c1_via_claude_cli(task)
 
         resp = await self._openai_main_client().generate(self._messages(task))

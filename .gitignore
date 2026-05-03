@@ -16,6 +16,9 @@ build/
 *.log.err
 logs/
 
+# Runtime mode state (per-machine; written by src/runtime_mode.py)
+state/
+
 # Date-stamped backups never get committed (e.g. .env.bak.20260501,
 # config.yaml.bak.20260501). 의도적 수정 전 자동 백업이라 추적 가치 없음.
 *.bak.[0-9]*

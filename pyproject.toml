@@ -23,6 +23,14 @@ dependencies = [
 
 [project.optional-dependencies]
 ollama = ["ollama>=0.3.0"]
+# Runtime-mode game/playtest detection: watcher needs psutil to scan the
+# process list, hotkey daemon needs the `keyboard` lib for global hooks.
+# Both are Windows-desktop-only in practice; install with
+# ``pip install -e .[runtime-mode]`` on the gaming/dev box.
+runtime-mode = [
+    "psutil>=5.9.0",
+    "keyboard>=0.13.5",
+]
 mail = [
     "google-api-python-client>=2.130.0",
     "google-auth-oauthlib>=1.2.0",
