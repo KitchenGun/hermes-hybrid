@@ -298,6 +298,55 @@ def test_post_to_sheet_normalize_skips_non_dict():
     assert len(rows) == 1
 
 
+def test_post_to_sheet_merges_split_planned_unplanned():
+    """LLM sometimes emits {"Planned": null, "Unplanned": null} as two keys
+    instead of the single "Planned/Unplanned" column. Normalize must merge
+    them so the row aligns with the sheet header layout."""
+    mod = _load_post_to_sheet_module()
+    pu_idx = mod.COLUMNS.index("Planned/Unplanned")
+
+    # Both null → merged to single null cell, no leftover columns.
+    rows = mod._normalize([{
+        "Date": "2026-04-29",
+        "Activity": "운동",
+        "Planned": None,
+        "Unplanned": None,
+    }])
+    assert len(rows[0]) == 21
+    assert rows[0][pu_idx] == ""  # null → "" by _normalize
+
+    # Planned populated → merged value "Planned".
+    rows = mod._normalize([{
+        "Date": "2026-04-29",
+        "Activity": "운동",
+        "Planned": "Planned",
+        "Unplanned": None,
+    }])
+    assert rows[0][pu_idx] == "Planned"
+
+    # Unplanned populated → merged value "Unplanned".
+    rows = mod._normalize([{
+        "Date": "2026-04-29",
+        "Activity": "운동",
+        "Planned": None,
+        "Unplanned": "Unplanned",
+    }])
+    assert rows[0][pu_idx] == "Unplanned"
+
+
+def test_post_to_sheet_preserves_canonical_planned_unplanned():
+    """If the LLM correctly emits the single "Planned/Unplanned" key, the
+    merge step must leave it untouched."""
+    mod = _load_post_to_sheet_module()
+    pu_idx = mod.COLUMNS.index("Planned/Unplanned")
+    rows = mod._normalize([{
+        "Date": "2026-04-29",
+        "Activity": "운동",
+        "Planned/Unplanned": "Planned",
+    }])
+    assert rows[0][pu_idx] == "Planned"
+
+
 # ---- alert webhook (failure notification) tests ---------------------------
 
 
@@ -464,6 +513,22 @@ def test_invalid_json_exits_1():
     code, _out, err = _run_script("not valid json {", "--dry-run")
     assert code == 1
     assert "invalid JSON" in err
+
+
+def test_raw_control_chars_in_string_value_accepted():
+    """`json.loads(strict=False)` should let raw newlines/tabs survive inside
+    a string value — local LLMs occasionally pretty-print Notes with a real
+    newline, and we don't want to reject the whole row over that."""
+    payload = (
+        '{"Date":"2026-04-29","Activity":"코딩",'
+        '"Notes":"line one\nline two\twith tab"}'
+    )
+    code, out, _err = _run_script(payload, "--dry-run")
+    assert code == 0, _err
+    rendered = json.loads(out)
+    notes_idx = 16  # COLUMNS index for "Notes"
+    assert "line one" in rendered["rows"][0][notes_idx]
+    assert "line two" in rendered["rows"][0][notes_idx]
 
 
 def test_empty_stdin_exits_1():

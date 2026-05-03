@@ -84,6 +84,35 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _merge_planned_unplanned(r: dict[str, Any]) -> dict[str, Any]:
+    """Local LLMs sometimes split the single "Planned/Unplanned" column into
+    two separate boolean fields ({"Planned": null, "Unplanned": null}) — the
+    slash in the column name reads like an "or" instruction. Merge them back
+    into the canonical single field so the row aligns with the sheet header.
+    """
+    if "Planned/Unplanned" in r:
+        return r  # already canonical — leave as-is
+    p_keys = ("Planned", "planned")
+    u_keys = ("Unplanned", "unplanned")
+    has_split = any(k in r for k in p_keys + u_keys)
+    if not has_split:
+        return r
+    p_val = next((r[k] for k in p_keys if k in r), None)
+    u_val = next((r[k] for k in u_keys if k in r), None)
+    merged: Any = None
+    if isinstance(p_val, str) and p_val.strip():
+        merged = "Planned"
+    elif p_val is True:
+        merged = "Planned"
+    elif isinstance(u_val, str) and u_val.strip():
+        merged = "Unplanned"
+    elif u_val is True:
+        merged = "Unplanned"
+    cleaned = {k: v for k, v in r.items() if k not in p_keys + u_keys}
+    cleaned["Planned/Unplanned"] = merged
+    return cleaned
+
+
 def _canonicalize_keys(r: dict[str, Any]) -> dict[str, Any]:
     """Map common case/snake variants ("date", "start_time", "deep_work") to
     canonical Title-Case ("Date", "Start Time", "Deep Work"). Local LLMs
@@ -93,6 +122,7 @@ def _canonicalize_keys(r: dict[str, Any]) -> dict[str, Any]:
     and a 300s timeout retry. Normalize defensively at the script boundary
     so the LLM's output style doesn't gate row insertion.
     """
+    r = _merge_planned_unplanned(r)
     canonical = {col.lower().replace(" ", "_").replace("/", "_"): col for col in COLUMNS}
     out: dict[str, Any] = {}
     for k, v in r.items():
@@ -139,13 +169,19 @@ def _normalize(rows: list[dict[str, Any]]) -> list[list[Any]]:
 
 
 def _load_input() -> list[dict[str, Any]]:
-    """stdin에서 JSON 읽기. 단일 객체면 [obj]로 wrap."""
+    """stdin에서 JSON 읽기. 단일 객체면 [obj]로 wrap.
+
+    `strict=False` lets raw control characters (real newlines/tabs) survive
+    inside string values. Local LLMs occasionally pretty-print Notes with a
+    real newline instead of the escaped ``\\n`` sequence, and strict parsing
+    would reject the whole row over what's effectively a cosmetic glitch.
+    """
     raw = sys.stdin.read().strip()
     if not raw:
         print("[post_to_sheet] stdin empty", file=sys.stderr)
         sys.exit(1)
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, strict=False)
     except json.JSONDecodeError as e:
         print(f"[post_to_sheet] invalid JSON: {e}", file=sys.stderr)
         sys.exit(1)
