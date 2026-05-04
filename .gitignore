@@ -59,3 +59,9 @@ secrets/
 # 메타 프로파일의 runtime/ 은 보고서 산출물 — 매번 갱신, 추적 안 함.
 profiles/advisor_ops/runtime/
 profiles/installer_ops/runtime/
+
+# kk_job 프로파일의 runtime/ 은 cron 산출물 — probe HTML, raw/curated JSON,
+# Discord body 등 매 실행마다 갱신. skills/runtime/ 은 sheet_fallback CSV 등
+# 스킬 실행 중 생성되는 임시 산출물.
+profiles/kk_job/runtime/
+profiles/kk_job/skills/runtime/
