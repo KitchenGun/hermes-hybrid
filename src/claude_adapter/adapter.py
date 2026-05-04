@@ -107,6 +107,10 @@ class ClaudeCodeAdapter:
         timeout_ms: int | None = None,
         resume_session_id: str | None = None,
         persist_session: bool = False,
+        mcp_config_path: str | None = None,
+        allowed_tools: list[str] | None = None,
+        env_source_path: str | None = None,
+        append_system_prompt: str | None = None,
     ) -> ClaudeCodeResult:
         """Execute one Claude Code -p turn. Heavy path only.
 
@@ -128,6 +132,10 @@ class ClaudeCodeAdapter:
             model=model,
             resume_session_id=resume_session_id,
             persist_session=persist_session,
+            mcp_config_path=mcp_config_path,
+            allowed_tools=allowed_tools,
+            env_source_path=env_source_path,
+            append_system_prompt=append_system_prompt,
         )
         # When resuming, Claude Code already has the history — avoid re-sending
         # it (which would waste tokens and confuse the conversation).
@@ -233,6 +241,10 @@ class ClaudeCodeAdapter:
         model: str,
         resume_session_id: str | None = None,
         persist_session: bool = False,
+        mcp_config_path: str | None = None,
+        allowed_tools: list[str] | None = None,
+        env_source_path: str | None = None,
+        append_system_prompt: str | None = None,
     ) -> list[str]:
         args = [
             self.settings.claude_code_cli_path,
@@ -248,8 +260,40 @@ class ClaudeCodeAdapter:
         elif not persist_session:
             args.append("--no-session-persistence")
 
+        # MCP injection: callers like CalendarSkill register a stdio MCP
+        # server (e.g. cocal google_calendar) so the model can call its
+        # tools in this turn. ``--strict-mcp-config`` blocks any other
+        # ambient MCP from leaking in (user .claude.json etc.) keeping
+        # the tool surface deterministic.
+        if mcp_config_path:
+            args += [
+                "--mcp-config", mcp_config_path,
+                "--strict-mcp-config",
+            ]
+        if allowed_tools:
+            args += ["--allowedTools", *allowed_tools]
+        # Profile-specific instruction (e.g. journal_ops 24-필드 스키마 +
+        # sheets_append 절차). Passed via --append-system-prompt so Claude's
+        # built-in agent prompt stays intact while ours is layered on top.
+        # Claude prompt-caches the system prompt, so repeated turns are cheap.
+        if append_system_prompt:
+            args += ["--append-system-prompt", append_system_prompt]
+
         if self.settings.claude_code_cli_backend == "wsl_subprocess":
             inner = " ".join(shlex.quote(a) for a in args)
+            # Profile-scoped env (e.g. GOOGLE_SHEETS_WEBHOOK_URL for
+            # journal_ops, DISCORD_BRIEFING_WEBHOOK_URL for calendar_ops)
+            # lives in the Hermes profile .env. WSL bash -lc DOES source
+            # ~/.bashrc but NOT arbitrary profile .envs, so we explicitly
+            # load it before invoking claude. ``set -a`` exports all
+            # subsequent assignments; the ``[ -f … ]`` guard keeps the
+            # command working when the file is absent.
+            if env_source_path:
+                quoted = shlex.quote(env_source_path)
+                inner = (
+                    f"[ -f {quoted} ] && set -a && . {quoted} && set +a; "
+                    + inner
+                )
             return [
                 "wsl", "-d", self.settings.hermes_wsl_distro,
                 "bash", "-lc", inner,
