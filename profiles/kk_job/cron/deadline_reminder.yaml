@@ -19,7 +19,7 @@ skills:
 
 delivery:
   channel: webhook
-  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  target_env: DISCORD_KK_JOB_WEBHOOK_URL
   on_failure: retry
 
 safety:
@@ -51,7 +51,7 @@ prompt: |
        terminal(command="cat > /tmp/deadline_reminder_body.txt <<'BODY_EOF'
        <단계 5 본문 또는 '북마크 0건' 메시지>
        BODY_EOF
-       python3 /home/kang/.hermes/profiles/kk_job/skills/messaging/discord_notify/scripts/post_webhook.py --title '💼 지원 마감 임박' --color 0xFEE75C --footer 'kk_job · deadline_reminder' --body-file /tmp/deadline_reminder_body.txt")
+       python3 /home/kang/.hermes/profiles/kk_job/skills/messaging/discord_notify/scripts/post_webhook.py --title '💼 지원 마감 임박' --color 0xFEE75C --footer 'kk_job · deadline_reminder' --webhook-env DISCORD_KK_JOB_WEBHOOK_URL --body-file /tmp/deadline_reminder_body.txt")
        ```
 
   안전:

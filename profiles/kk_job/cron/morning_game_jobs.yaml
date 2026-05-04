@@ -21,7 +21,7 @@ skills:
 
 delivery:
   channel: webhook
-  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  target_env: DISCORD_KK_JOB_WEBHOOK_URL
   on_failure: retry
 
 safety:
@@ -125,6 +125,7 @@ prompt: |
       --title '🌅 게임 프로그래머 공고 추천' \
       --color 0x5865F2 \
       --footer 'kk_job · morning_game_jobs' \
+      --webhook-env DISCORD_KK_JOB_WEBHOOK_URL \
       --body-file /tmp/kk_job_morning_body.txt
 
   실패 시 (전체 흐름 중 어느 단계든 Python 스크립트가 exit != 0):

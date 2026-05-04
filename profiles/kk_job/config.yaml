@@ -31,6 +31,7 @@ terminal:
   persistent_shell: true
   env_passthrough:
     - DISCORD_BRIEFING_WEBHOOK_URL
+    - DISCORD_KK_JOB_WEBHOOK_URL
     - BRAVE_SEARCH_API_KEY
     - GOOGLE_APPLICATION_CREDENTIALS
     - JOB_SHEETS_WEBHOOK_URL
@@ -123,7 +124,7 @@ x-hermes-hybrid:
 
   delivery_defaults:
     channel: "webhook"
-    target_env: "DISCORD_BRIEFING_WEBHOOK_URL"
+    target_env: "DISCORD_KK_JOB_WEBHOOK_URL"
     on_failure: "retry"
 
   safety_defaults:

@@ -20,7 +20,7 @@ skills:
 
 delivery:
   channel: webhook
-  target_env: DISCORD_BRIEFING_WEBHOOK_URL
+  target_env: DISCORD_KK_JOB_WEBHOOK_URL
   on_failure: retry
 
 safety:
