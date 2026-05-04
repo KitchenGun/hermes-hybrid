@@ -71,7 +71,11 @@ def _load_body(path: Optional[str]) -> str:
     if path:
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
-    return sys.stdin.read()
+    # Read stdin as raw bytes and decode as UTF-8 explicitly. On Windows,
+    # sys.stdin's default codec is cp949, which mangles UTF-8 payloads
+    # piped via `echo "한글" | python …` — those garbled bytes then ship
+    # straight to Discord as mojibake.
+    return sys.stdin.buffer.read().decode("utf-8", errors="replace")
 
 
 def _truncate(text: str, limit: int, suffix: str = "…") -> str:
