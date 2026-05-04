@@ -64,37 +64,11 @@ def _claude_model_for(job_name: str) -> str:
 
 
 def _guard_prompt_for(job_name: str) -> str:
-    """Build the per-job LLM-policy guard — Claude CLI 항상 강제.
+    """Build the per-job system_mode wrap guard.
 
-    2026-05-04 v2: 이전 가드는 ``system_mode`` 가 ``"quiet"`` 일 때만 Claude
-    CLI로 우회했고 ``"active"`` 에서는 본문의 ollama 흐름을 따라갔다. 그 결과
-    active 모드에서는 여전히 ``OPENAI_BASE_URL`` 에 의존 → 게임 모드와의
-    불일관성과 GPU 자원 소모 (사용자가 에디터/빌드/플레이테스트로 GPU를 항상
-    쓰는 게임 엔진 개발자라 ollama 추론이 게임 시간을 좀먹는다). 이 가드는
-    모드 무관하게 항상 Claude CLI (Max OAuth, $0 marginal) 를 강제한다.
-    """
-    model = _claude_model_for(job_name)
-    return f"""=== Step 0. LLM 정책: Claude CLI 강제 (OPENAI_BASE_URL deprecated) ===
-이 잡 본문의 LLM 추론을 **Claude CLI** 로 직접 호출하라 (Max OAuth, $0
-marginal). 시스템 모드(active/quiet)와 무관하게 동일하게 동작한다 — ollama
-의존을 끊어 게임모드(quiet)에서도 정상 작동하고 active 모드의 GPU 자원도
-보호한다.
-
-  claude -p "<task body — JSON 결과만 출력>" \\
-    --model {model} \\
-    --output-format json
-
-본문의 후처리 단계(MCP/terminal/Discord/Kanban)는 그대로 진행. 즉 ollama
-호출만 Claude CLI로 대체, 외부 도구/IO는 동일.
-
-"""
-
-
-def _legacy_guard_for(job_name: str) -> str:
-    """이전 system_mode 분기 가드 (2026-05-04 v1).
-
-    inject_guard가 옛 가드를 인식해 strip한 뒤 새 가드를 끼우도록 하기 위해
-    이전 텍스트를 그대로 보존한다. 잡 이름별 ``model`` 값이 달라 동적 빌드.
+    When system_mode is "quiet" (user is in-game, ollama OFF), the cron job's
+    LLM step routes to Claude CLI (Max OAuth, $0 marginal) at the job-specific
+    model tier. When "active", proceeds with the YAML's normal flow.
     """
     model = _claude_model_for(job_name)
     return f"""=== Step 0. system_mode 가드 (Claude CLI wrap) ===
@@ -115,20 +89,13 @@ terminal: python3 /mnt/e/hermes-hybrid/scripts/system_mode.py get
 
 
 def inject_guard(prompt: str, job_name: str) -> str:
-    """Prepend the LLM-policy guard to a cron prompt. Empty prompt passes
-    through. Idempotent: if the *current* guard is already present, returns
-    as-is. If the legacy guard is found it is stripped first so we never
-    end up with two conflicting guards stacked.
-    """
+    """Prepend the system_mode wrap guard to a cron prompt. Empty prompt
+    passes through. Idempotent: if guard already present, returns as-is."""
     if not prompt:
         return prompt
-    new_guard = _guard_prompt_for(job_name)
-    if new_guard in prompt:
+    if "Step 0. system_mode 가드" in prompt:
         return prompt
-    legacy = _legacy_guard_for(job_name)
-    if legacy in prompt:
-        prompt = prompt.replace(legacy, "", 1)
-    return new_guard + prompt
+    return _guard_prompt_for(job_name) + prompt
 
 
 def _wsl_run(cmd: list[str]) -> tuple[int, str]:
