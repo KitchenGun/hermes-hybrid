@@ -28,8 +28,20 @@ $LogErr = Join-Path $LogDir "bot-$Stamp.err.log"
 Write-Host "[run] Starting hermes-hybrid Discord gateway..." -ForegroundColor Cyan
 Write-Host "[run] Logs: $LogOut (stdout) / $LogErr (stderr)" -ForegroundColor Cyan
 
-# stdout 은 Tee-Object 로 콘솔+파일 동시에. stderr 는 별도 .err.log 로 분리해
-# 에러 grep 이 쉽게. 파이썬 출력 줄 버퍼링 — `-u` 로 un-buffered 강제하지
-# 않으면 Tee 로 들어오는 시점이 늦어 디스크 로그 시각이 어긋난다.
+# stdout/stderr 둘 다 파일로 redirect.
+#
+# 인코딩 주의: Windows PowerShell 5.1 의 ``Tee-Object`` / ``>`` 는 기본이
+# UTF-16 LE (BOM 포함) 라 wsl/cat/grep 으로 봇 로그를 들여다볼 때 NUL 바이트
+# 가 섞여 가독성이 0이 된다. UTF-8 로 강제해야 ``tail -f``, ``Select-String``,
+# ``rg`` 가 정상 동작한다.
+#
+# stderr 분리: PowerShell 5.1 native exe stderr 를 pipeline 안에서 redirect
+# 하면 NativeCommandError 로 wrap 되어 ``$?`` 가 false 로 떨어지고 종료 코드
+# 도 의미가 바뀐다. cmd /c 안에서 1>/2> 로 redirect 하면 OS 레벨 redirect 라
+# 그런 wrap 없이 깔끔하다. 그래서 봇 실행은 cmd /c 로 감싼다.
+#
+# 콘솔 출력 미러: Task Scheduler 컨텍스트에선 어차피 콘솔이 사용자에게 안
+# 보이므로 ``Tee`` 의 콘솔 mirror 를 포기한다. 인터랙티브 디버깅 시에는
+# 별도 창에서 ``Get-Content -Wait`` 또는 wsl ``tail -f`` 로 따라간다.
 $env:PYTHONUNBUFFERED = "1"
-python -u scripts\run_bot.py 2> $LogErr | Tee-Object -FilePath $LogOut
+cmd /c "python -u scripts\run_bot.py 1>""$LogOut"" 2>""$LogErr"""

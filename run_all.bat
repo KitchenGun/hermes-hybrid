@@ -36,77 +36,24 @@ echo        Spawning hidden WSL session keep-alive (microsoft/WSL#10205 workarou
 start "hermes-wsl-keepalive" /B wsl -d Ubuntu --user kang -- bash -lc "while true; do sleep 60; done"
 echo.
 
-REM ---- 2.5. Gateway override (script -qfc pseudo-TTY) + enable ----
-REM Hermes gateway exits with code 1 immediately when started without a
-REM controlling TTY (per `hermes gateway --help`, "run is recommended for
-REM WSL"). systemd by default has no TTY, so we wrap ExecStart in
-REM `script -qfc` which provides a pseudo-TTY. Without this wrapper, the
-REM gateway crash-loops at startup banner and cron tick never fires.
-REM See ARCHITECTURE.md "Hermes runtime — gateway vs dashboard".
-echo [2.5/5] Installing gateway TTY-wrapper override + enabling service...
-wsl -d Ubuntu -- bash -lc "mkdir -p ~/.config/systemd/user/hermes-gateway-calendar_ops.service.d && cat > ~/.config/systemd/user/hermes-gateway-calendar_ops.service.d/override.conf <<'OVR'
-[Service]
-ExecStart=
-ExecStart=/usr/bin/script -qfc \"/home/kang/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile calendar_ops gateway run --replace\" /home/kang/.hermes/profiles/calendar_ops/logs/gateway.log
-OVR
-mkdir -p /home/kang/.hermes/profiles/calendar_ops/logs
-systemctl --user daemon-reload
-systemctl --user reset-failed hermes-gateway-calendar_ops.service 2>/dev/null
-systemctl --user enable --now hermes-gateway-calendar_ops.service"
-wsl -d Ubuntu -- bash -lc "systemctl --user is-active hermes-gateway-calendar_ops.service"
+REM ---- 2.5/2.6. Gateway systemd-user units (calendar_ops + kk_job) ----
+REM Why this is one shell-out instead of two cmd-quoted heredocs:
+REM   cmd.exe terminates a double-quoted argument at the first line break,
+REM   so the previous form embedded `[Service]` / `Environment=` / `[Install]`
+REM   etc. directly in the batch parser, where each line was attempted as a
+REM   cmd command and failed with "is not recognized". Net result: gateway
+REM   units silently never got refreshed. The .sh script does the heredocs
+REM   under bash where they actually work, and we just shell out once.
+REM
+REM   Hermes gateway exits 1 without a controlling TTY, so the script wraps
+REM   ExecStart in `script -qfc` to provide a pseudo-TTY. See
+REM   ARCHITECTURE.md "Hermes runtime — gateway vs dashboard".
+echo [2.5/5] Installing gateway systemd-user units (calendar_ops + kk_job)...
+wsl -d Ubuntu -- bash /mnt/e/hermes-hybrid/scripts/install_gateway_units.sh
 if errorlevel 1 (
-    echo        WARN: gateway not active. Check: wsl -d Ubuntu -- journalctl --user -u hermes-gateway-calendar_ops -n 30
+    echo        WARN: install_gateway_units.sh failed. Check: wsl -d Ubuntu -- journalctl --user -u hermes-gateway-calendar_ops -n 30
 ) else (
-    echo        Gateway active — cron tick is alive.
-)
-echo.
-
-REM ---- 2.6. kk_job gateway: same pattern (unit + TTY override + enable) ----
-REM kk_job has its own gateway so morning_game_jobs cron (07:10 KST) can fire.
-REM Unit file is created here too (calendar_ops's unit was placed manually);
-REM cat > is idempotent so re-running run_all.bat is safe.
-echo [2.6/5] Installing kk_job gateway service + override...
-wsl -d Ubuntu -- bash -lc "cat > ~/.config/systemd/user/hermes-gateway-kk_job.service <<'UNIT'
-[Unit]
-Description=Hermes Agent Gateway - kk_job profile
-After=network.target
-StartLimitIntervalSec=600
-StartLimitBurst=5
-
-[Service]
-Type=simple
-ExecStart=/home/kang/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile kk_job gateway run --replace
-WorkingDirectory=/home/kang/.hermes/hermes-agent
-Environment=\"PATH=/home/kang/.hermes/hermes-agent/venv/bin:/home/kang/.hermes/hermes-agent/node_modules/.bin:/home/kang/.hermes/node/bin:/home/kang/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"
-Environment=\"VIRTUAL_ENV=/home/kang/.hermes/hermes-agent/venv\"
-Environment=\"HERMES_HOME=/home/kang/.hermes/profiles/kk_job\"
-Restart=on-failure
-RestartSec=30
-RestartForceExitStatus=75
-KillMode=mixed
-KillSignal=SIGTERM
-ExecReload=/bin/kill -USR1 \$MAINPID
-TimeoutStopSec=60
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target
-UNIT
-mkdir -p ~/.config/systemd/user/hermes-gateway-kk_job.service.d && cat > ~/.config/systemd/user/hermes-gateway-kk_job.service.d/override.conf <<'OVR'
-[Service]
-ExecStart=
-ExecStart=/usr/bin/script -qfc \"/home/kang/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile kk_job gateway run --replace\" /home/kang/.hermes/profiles/kk_job/logs/gateway.log
-OVR
-mkdir -p /home/kang/.hermes/profiles/kk_job/logs
-systemctl --user daemon-reload
-systemctl --user reset-failed hermes-gateway-kk_job.service 2>/dev/null
-systemctl --user enable --now hermes-gateway-kk_job.service"
-wsl -d Ubuntu -- bash -lc "systemctl --user is-active hermes-gateway-kk_job.service"
-if errorlevel 1 (
-    echo        WARN: kk_job gateway not active. Check: wsl -d Ubuntu -- journalctl --user -u hermes-gateway-kk_job -n 30
-) else (
-    echo        kk_job gateway active.
+    echo        Gateway units installed/refreshed.
 )
 echo.
 
