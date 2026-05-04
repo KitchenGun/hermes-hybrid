@@ -13,12 +13,18 @@ agent:
 
 # ── LLM ──────────────────────────────────────────────────────────
 model:
-  # 2026-05-04: switched from openai/gpt-4o → custom/gpt-oss:20b.
-  # Reason: 'openai' isn't a hermes-recognized provider on this install
-  # (only 'custom' for Ollama is wired up; same as calendar_ops/journal_ops).
-  # Re-evaluate when Nous portal or an OpenAI key is wired into hermes.
+  # 2026-05-04 v5: qwen3:14b → qwen2.5-coder:32b-instruct. qwen3 thinking
+  # template 회피 + kk_job 의 분석 잡에 코드 친화 모델. bench: korean 86 /
+  # json 100 / summarize 74 / code_review 55 / latency 14s. 14s 는 cold
+  # start 우려가 있지만 keep_alive=30m 로 한 번 warm 시킨 후 연속 사용.
+  # 또는 qwen3-coder:30b (MoE) 후속 검증.
   provider: "custom"
-  model: "gpt-oss:20b"
+  model: "qwen2.5-coder:32b-instruct"
+  base_url: "${OPENAI_BASE_URL}"
+  api_mode: "chat_completions"
+  context_length: 65536
+  extra_body:
+    keep_alive: "30m"
 
 # ── 터미널 백엔드 ─────────────────────────────────────────────────
 terminal:
@@ -54,9 +60,11 @@ approvals:
                                  # 이력서 저장/전송은 확인 필수
 
 # ── 보조 모델 ─────────────────────────────────────────────────────
+# qwen3:14b native context 40K → Hermes 64K 최소요건 미달. YaRN override.
 auxiliary:
   compression:
-    provider: "auto"
+    model: "qwen2.5-coder:32b-instruct"
+    context_length: 65536
     timeout: 120
   vision:
     provider: "auto"
