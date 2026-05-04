@@ -8,16 +8,28 @@
 # ── 에이전트 설정 ────────────────────────────────────────────────
 agent:
   max_turns: 10
-  # 2026-05-02: "none" 으로 내림. 이유 — Hermes codex transport(agent/transports/
-  # codex.py:107-117) 는 reasoning_effort != "none" 이면 항상 OpenAI Responses
-  # 요청에 `include=["reasoning.encrypted_content"]` 를 붙인다. gpt-4o-mini /
-  # gpt-oss:20b 등 비-reasoning 모델은 이 옵션을 받자마자 HTTP 400 ("Encrypted
-  # content is not supported with this model") 으로 거부 → 모든 cron 잡이 LLM
-  # 호출 단계에서 죽는다. "none" 은 hermes_constants.parse_reasoning_effort
-  # 가 {"enabled": False} 로 매핑하고, transport 가 `include=[]` 로 비워준다.
-  # reasoning 모델로 다시 올릴 때 effort 도 같이 되돌리면 됨.
   reasoning_effort: "none"       # none|minimal|low|medium|high|xhigh
   tool_use_enforcement: "strict" # auto|true|false|[model-list]
+  # 2026-05-05: 44 tools 중 비핵심 27개 비활성. morning_briefing 세션에서
+  # qwen2.5-coder:32b 가 너무 많은 tool 정의에 confuse 되어 ``mcp_google_
+  # calendar_list_events(...)`` 를 plain text 로 emit (실제 tool_call 안
+  # wrap)하는 현상. journal_ops 와 같은 패턴으로 cocal MCP + terminal +
+  # discord_notify 만 노출 → 모델 confusion 차단 + token budget 절약.
+  disabled_toolsets:
+    - browser           # cocal MCP 가 calendar 모두 처리, 웹 안 씀
+    - file              # read_file/write_file/patch/search_files (절차는 prompt 인라인)
+    - vision
+    - image_gen
+    - tts
+    - code_execution    # terminal 로 충분
+    - delegation        # cron 잡은 single-turn 파이프라인
+    - todo
+    - memory            # cron 1회성, 메모리 무관
+    - session_search
+    - skills            # SKILL.md 는 auto_load → user prompt 에 inline
+    - clarify           # cron 은 사용자 질문 받지 않음
+    - moa
+    - rl
 
 # ── LLM ──────────────────────────────────────────────────────────
 # Hermes가 아는 provider 목록: auto / openrouter / nous / openai-codex /
@@ -34,22 +46,19 @@ agent:
 # gate flips back to legacy surrogate path).
 model:
   provider: "custom"
-  # Per-job optimization (2026-05-01 v3): kept on gpt-oss:20b after qwen3:8b
-  # smoke regression. qwen3:8b *bench* tied/won on routing/korean but is a
-  # thinking model that, in journal_ops smoke, patched SKILL.md and burned
-  # the turn budget on introspection instead of calling tools. Same risk
-  # would apply to calendar_ops's MCP tool calls. gpt-oss:20b is also a
-  # thinking model but its bench-to-behavior gap is smaller (verified by
-  # smoke). qwen2.5-coder:32b stays as fallback in model_registry.yaml.
-  model: "gpt-oss:20b"
+  # 2026-05-04 v5: qwen3:8b → qwen2.5:14b-instruct.
+  # qwen3 family 는 chat template 에 thinking 이 강제 활성화돼 ``extra_body
+  # .enable_thinking: false`` 가 ollama API 요청에 잘 전달되어도 모델이
+  # thinking trace 를 stream 으로 흘려 cron 잡이 multi-turn 누적 시간 폭증
+  # (weather_briefing 4분+ no-completion 관찰). qwen2.5 family 는 native
+  # no-thinking instruction 모델. bench: korean 76 / json 100 / summarize
+  # 63 / latency ~2s (warm). 한국어 점수 약간 낮지만 weather/briefing/wrap
+  # 같은 단순 format 잡엔 충분.
+  model: "qwen2.5:14b-instruct"
   base_url: "${OPENAI_BASE_URL}"
   api_mode: "chat_completions"
   context_length: 65536
-  # See journal_ops/config.yaml for rationale. calendar_ops is a list/find/
-  # update tool pipeline; thinking traces don't help routing decisions.
   extra_body:
-    enable_thinking: false
-    # 30m keep_alive avoids cold-start on back-to-back calendar queries.
     keep_alive: "30m"
 
 # ── 터미널 백엔드 ─────────────────────────────────────────────────
@@ -84,9 +93,16 @@ approvals:
                                  # write 잡은 잡 YAML에서 requires_confirmation=true
 
 # ── 보조 모델 ─────────────────────────────────────────────────────
+# Hermes 는 compression aux model 의 context window 가 최소 64K 여야 한다고
+# 검증한다. qwen3:8b 의 native window 는 40,960 tokens 라 그대로 두면 cron
+# job 시작 시 ``ValueError: Auxiliary compression model qwen3:8b has a context
+# window of 40,960 tokens, which is below the minimum 64,000`` 로 abort.
+# qwen3 family 는 YaRN 으로 128K 까지 확장 가능하므로 ``context_length`` 를
+# 65536 으로 override (journal_ops 가 같은 사유로 같은 override 사용 중).
 auxiliary:
   compression:
-    provider: "auto"
+    model: "qwen2.5:14b-instruct"
+    context_length: 65536
     timeout: 120
   vision:
     provider: "auto"
