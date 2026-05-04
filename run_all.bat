@@ -9,15 +9,20 @@ echo ==========================================
 echo.
 
 REM ---- 1. Ollama ----
+REM 봇의 preflight 가 ``OLLAMA_ENABLED=true`` 일 때 ``http://localhost:11434``
+REM 에 즉시 probe 한다. 처음 부팅에서 shell:startup 의 Ollama.lnk 보다 봇이
+REM 먼저 떠버리면 preflight error 로 봇이 종료. 여기서 ollama 가 listen 할
+REM 때까지 wait 해서 race 를 차단한다.
 echo [1/3] Starting Ollama server...
 tasklist /FI "IMAGENAME eq ollama.exe" 2>nul | find /I "ollama.exe" >nul
 if %errorlevel%==0 (
-    echo        Ollama already running. Skipping.
+    echo        Ollama already running. Skipping launch.
 ) else (
     start "ollama-serve" /MIN cmd /c "ollama serve"
-    echo        Launched in minimized window. Waiting 3s for warmup...
-    timeout /t 3 /nobreak >nul
+    echo        Launched in minimized window.
 )
+echo        Waiting up to 30s for port 11434 to listen...
+powershell -NoProfile -Command "$ok=$false; for($i=0; $i -lt 30; $i++){ try { (Invoke-WebRequest -Uri 'http://localhost:11434/api/tags' -TimeoutSec 1 -UseBasicParsing) | Out-Null; $ok=$true; break } catch { Start-Sleep -Seconds 1 } }; if($ok){ Write-Host '       Ollama is up.' -ForegroundColor Green } else { Write-Host '       WARN: Ollama did not respond — bot preflight will likely fail' -ForegroundColor Yellow; exit 1 }"
 echo.
 
 REM ---- 2. WSL warm-up + persistent session keep-alive ----
