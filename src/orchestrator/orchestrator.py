@@ -1160,16 +1160,48 @@ class Orchestrator:
         # and the model dumps its reasoning trace as the user-visible reply.
         prefixed_message = f"{_format_kst_prefix()} {task.user_message}"
 
-        # 2026-05-04: Claude CLI 우회 분기. journal_ops 같이 ollama 의존
-        # 프로파일이 게임모드(quiet)에서도 동작하도록 Hermes 서브프로세스 대신
-        # ``claude -p`` subprocess + bash 도구로 sheets_append를 직접 호출.
-        # 분기 후의 try/except는 Hermes / Claude CLI 양쪽 예외를 함께 받는다.
-        use_claude_cli = (
-            task.forced_profile == "journal_ops"
-            and self.settings.journal_ops_use_claude_cli
-        )
+        # 2026-05-04: 로컬 우선 + Claude CLI fallback 정책 (사용자 의도).
+        #   1) Hermes via Ollama 로 먼저 시도.
+        #   2) ``HermesTimeout`` / ``HermesAdapterError`` (게임모드 quiet 으로
+        #      ollama 가 꺼졌거나, hermes-gateway 가 죽었거나, 모델이 처리 불가)
+        #      → Claude CLI subprocess + bash 도구로 fallback.
+        #   3) ``HermesAuthError`` 는 fallback 무의미 (인증 자체 문제) — 그대로
+        #      실패 처리.
+        # journal_ops 같은 forced_profile 도 예외 없이 동일 정책. 강제 플래그
+        # 없음 — 로컬이 동작하면 항상 로컬, 안 되면 자동 우회.
         try:
-            if use_claude_cli:
+            try:
+                result = await self.hermes.run(
+                    prefixed_message,
+                    model=None,           # defer to profile config.yaml
+                    provider=None,        # defer to profile config.yaml
+                    profile=task.forced_profile,
+                    max_turns=self.settings.hermes_max_turns,
+                    timeout_ms=self.settings.hermes_timeout_ms,
+                )
+                task.status = "succeeded"
+                task.final_response = result.text or "✅ 처리됨 (응답 없음)"
+                self._last_hermes_turns = result.turns_used
+                task.record_model_output(
+                    tier=task.current_tier,
+                    text=result.text,
+                    model_name=result.primary_model or result.model_name,
+                    prompt_tokens=result.prompt_tokens,
+                    completion_tokens=result.completion_tokens,
+                )
+            except (HermesTimeout, HermesAdapterError) as primary_err:
+                # 로컬 LLM 실패 — Claude CLI 로 fallback. 현재는 journal_ops
+                # 만 fallback prompt(``log_activity.yaml``) 가 정의돼 있다.
+                # 다른 forced_profile 이 추가되면 ``profile_loader`` 에서
+                # 잡 이름을 매핑해 같은 헬퍼를 재사용한다.
+                if task.forced_profile != "journal_ops":
+                    raise
+                log.warning(
+                    "forced_profile.fallback_to_claude_cli",
+                    profile=task.forced_profile,
+                    err_type=type(primary_err).__name__,
+                    err=str(primary_err)[:200],
+                )
                 text, primary_model, prompt_tok, completion_tok = (
                     await self._run_forced_profile_via_claude_cli(
                         task, prefixed_message
@@ -1184,48 +1216,15 @@ class Orchestrator:
                     prompt_tokens=prompt_tok,
                     completion_tokens=completion_tok,
                 )
-                handled_by = f"forced:{task.forced_profile}:claude_cli"
-                # 아래 Hermes 분기와 공유하는 정리 단계로 빠진다.
-                task.mark("finalized_at")
-                await self._persist(task)
-                if self.repo is not None:
-                    cloud_tokens = sum(
-                        mo.prompt_tokens + mo.completion_tokens
-                        for mo in task.model_outputs
-                        if mo.tier in ("C1", "C2")
-                    )
-                    if cloud_tokens > 0:
-                        await self.repo.add_tokens(task.user_id, cloud_tokens)
-                self._log_task_end(task, handled_by, t0)
-                return OrchestratorResult(
-                    task=task, response=task.final_response, handled_by=handled_by
-                )
-            result = await self.hermes.run(
-                prefixed_message,
-                model=None,           # defer to profile config.yaml
-                provider=None,        # defer to profile config.yaml
-                profile=task.forced_profile,
-                max_turns=self.settings.hermes_max_turns,
-                timeout_ms=self.settings.hermes_timeout_ms,
-            )
-            task.status = "succeeded"
-            task.final_response = result.text or "✅ 처리됨 (응답 없음)"
-            self._last_hermes_turns = result.turns_used
-            task.record_model_output(
-                tier=task.current_tier,
-                text=result.text,
-                model_name=result.primary_model or result.model_name,
-                prompt_tokens=result.prompt_tokens,
-                completion_tokens=result.completion_tokens,
-            )
+                handled_by = f"forced:{task.forced_profile}:claude_cli_fallback"
         except ClaudeCodeAuthError as e:
             log.warning("forced_profile.claude_auth", profile=task.forced_profile, err=str(e))
             task.record_error("tool_error", f"claude auth/quota: {e}", tier=task.current_tier)
             task.status = "failed"
             task.degraded = True
             task.final_response = (
-                f"⚠️ `{task.forced_profile}` Claude CLI 인증/쿼터 실패. "
-                "Max OAuth 토큰 또는 사용량 한도를 확인하세요."
+                f"⚠️ `{task.forced_profile}` Claude CLI fallback 도 인증/쿼터 "
+                "실패. Max OAuth 토큰 또는 사용량 한도를 확인하세요."
             )
             handled_by = f"forced:{task.forced_profile}:claude_auth"
         except ClaudeCodeTimeout as e:
@@ -1234,7 +1233,7 @@ class Orchestrator:
             task.status = "failed"
             task.degraded = True
             task.final_response = (
-                f"⚠️ `{task.forced_profile}` Claude CLI 시간 초과."
+                f"⚠️ `{task.forced_profile}` Claude CLI fallback 도 시간 초과."
             )
             handled_by = f"forced:{task.forced_profile}:claude_timeout"
         except ClaudeCodeAdapterError as e:
@@ -1243,8 +1242,8 @@ class Orchestrator:
             task.status = "failed"
             task.degraded = True
             task.final_response = (
-                f"⚠️ `{task.forced_profile}` Claude CLI 실패: `{type(e).__name__}`\n"
-                f"```\n{str(e)[:400]}\n```"
+                f"⚠️ `{task.forced_profile}` Claude CLI fallback 실패: "
+                f"`{type(e).__name__}`\n```\n{str(e)[:400]}\n```"
             )
             handled_by = f"forced:{task.forced_profile}:claude_error"
         except HermesAuthError as e:

@@ -41,8 +41,11 @@ from src.hermes_adapter.adapter import (
     HermesProviderMismatch,
     HermesTimeout,
 )
+from src.obs import get_logger
 
 from .base import Skill, SkillContext, SkillMatch
+
+log = get_logger(__name__)
 
 _KST = timezone(timedelta(hours=9))  # Asia/Seoul은 DST 없음, 항상 UTC+9
 _DAYS_KR = ["월", "화", "수", "목", "금", "토", "일"]
@@ -132,26 +135,44 @@ class CalendarSkill(Skill):
         # 날짜 컨텍스트를 앞에 붙여 LLM의 요일/날짜 오계산을 방지한다.
         query = _date_ctx() + query
 
-        # 2026-05-04: Claude CLI + cocal MCP 직접 호출 경로 (게임모드에서도 동작).
-        # 기존 Hermes 경로는 ``calendar_skill_use_claude_cli=False`` 일 때만 사용.
-        if s.calendar_skill_use_claude_cli:
+        # 2026-05-04: 로컬 우선 + Claude CLI fallback 정책.
+        #   1) Hermes via Ollama 로 먼저 시도. active 모드에서는 무료 + 빠름.
+        #   2) HermesTimeout / HermesAdapterError (ollama 다운 — 게임모드 quiet
+        #      포함 — 또는 LLM 이 처리 못하는 상황) 가 발생하면 Claude CLI +
+        #      cocal MCP 경로로 fallback. Max OAuth ($0 marginal) 라 비용 부담
+        #      없이 신뢰성 보강.
+        # 인증/예산 등 retry 해도 결과가 안 바뀌는 예외(HermesAuthError,
+        # HermesProviderMismatch, HermesBudgetExceeded, HermesMalformedResult)
+        # 는 fallback 시도 안 하고 그대로 propagate — 가짜 성공이 metric 을
+        # 더럽히는 걸 막고, ``task.status="failed"`` + ``degraded=True`` 표식이
+        # 정확히 남는다.
+        try:
+            return await self._invoke_via_hermes(query, ctx)
+        except (HermesTimeout, HermesAdapterError) as e:
+            # 로컬 LLM 실패 — Claude CLI 로 fallback.
+            log.warning(
+                "calendar_skill.fallback_to_claude_cli",
+                err_type=type(e).__name__,
+                err=str(e)[:200],
+            )
             return await self._invoke_via_claude_cli(query, ctx)
-        return await self._invoke_via_hermes(query, ctx)
 
     async def _invoke_via_claude_cli(
         self, query: str, ctx: SkillContext
     ) -> str:
-        """Claude CLI subprocess + cocal google_calendar MCP.
+        """Claude CLI subprocess + cocal google_calendar MCP — Hermes 실패 시
+        fallback 경로. ``invoke()`` 의 except 블록에서만 호출된다.
 
-        Why this path:
-          - Hermes의 ``provider: ollama`` 는 게임모드(quiet)에서 ollama가
-            꺼져 있으면 동작하지 않는다.
-          - Hermes의 ``provider: anthropic`` 은 Max OAuth subscription의
-            1M-context beta 비호환 + token quota 풀이 Claude CLI subprocess
-            와 다른 것으로 보여 게이트웨이 호출이 4xx로 실패한다.
-          - ``claude -p ... --mcp-config <json> --strict-mcp-config`` 는
-            Max OAuth($0)로 동작하면서 cocal MCP의 list-events / create-event
-            등을 Claude가 직접 호출 가능. 게임모드와 무관.
+        Hermes 실패 케이스:
+          - 게임모드(system_mode=quiet) 에서 ollama 가 꺼진 상태 → 호출 즉시
+            ``HermesAdapterError`` (connection refused).
+          - active 모드인데 ollama 가 LLM 답변을 못 만들거나 timeout
+            (``HermesTimeout``) 으로 끊긴 경우.
+          - hermes-gateway 자체가 죽었거나 binary 가 missing 한 setup 오류.
+
+        Max OAuth ($0 marginal) 로 동작하면서 ``--mcp-config`` 로 cocal
+        google_calendar MCP 를 turn 단위로 attach. 비용/quota 부담 없이 1차
+        실패를 흡수한다.
         """
         from src.claude_adapter.adapter import (
             ClaudeCodeAdapter,
@@ -206,11 +227,11 @@ class CalendarSkill(Skill):
     async def _invoke_via_hermes(
         self, query: str, ctx: SkillContext
     ) -> str:
-        """Legacy 경로: Hermes ``-p calendar_ops`` 서브프로세스 호출.
+        """Primary 경로: Hermes ``-p calendar_ops`` (= 로컬 ollama) 호출.
 
-        ``calendar_skill_use_claude_cli=False`` 일 때만 진입. 게임모드(quiet)
-        에서 ollama가 꺼져 있으면 실패한다 — 이 시나리오를 의식적으로
-        피하려면 위 ``_invoke_via_claude_cli`` 경로를 쓰면 된다.
+        ``invoke()`` 가 항상 이 경로부터 시도한다. ``HermesTimeout`` /
+        ``HermesAdapterError`` 로 떨어지면 caller 가 잡아서 Claude CLI
+        fallback 으로 내려보낸다 (게임모드 quiet, ollama 다운 등).
         """
         s = ctx.settings
         orch = ctx.orchestrator

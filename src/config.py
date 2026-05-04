@@ -84,24 +84,21 @@ class Settings(BaseSettings):
     calendar_skill_timeout_ms: int = 180_000
     calendar_skill_max_turns: int = 5        # write/복잡 쿼리용
     calendar_skill_read_max_turns: int = 3   # read 전용: plan + API + respond
-    # 2026-05-04: Hermes 우회 경로. Hermes의 ollama provider는 게임모드(quiet)
-    # 에서 죽고, anthropic provider는 Max OAuth 1M-context beta 미지원 + token
-    # quota 풀이 다른 듯해 게이트웨이 호출이 실패함. CalendarSkill을 Claude CLI
-    # subprocess + cocal MCP --mcp-config 로 직접 돌리면 두 모드 모두에서 동작.
-    # 빈 문자열이면 기존 Hermes 경로 (legacy) 사용.
-    calendar_skill_use_claude_cli: bool = False
+    # 2026-05-04: Claude CLI fallback 경로 설정 (강제 플래그 아님).
+    # ``CalendarSkill.invoke`` 가 항상 Hermes 부터 시도하고, ollama 가 죽거나
+    # (게임모드 quiet) timeout 일 때만 이 값들을 가지고 ``claude -p`` 로
+    # fallback. 강제 사용을 토글하는 use_claude_cli 같은 플래그는 사용자
+    # 의도에 따라 폐기.
     calendar_skill_claude_model: str = "haiku"  # Max OAuth 호환 alias
     # WSL 측 절대경로. Repo 안 git-tracked 파일을 가리킨다 (/mnt/<drive>/...).
     calendar_skill_mcp_config_path: str = (
         "/mnt/e/hermes-hybrid/profiles/calendar_ops/claude_mcp.json"
     )
 
-    # forced_profile (channel-pinned) 경로의 Claude CLI 우회 — calendar_ops
-    # 와 동일 동기. journal_ops는 기존에 ``-p journal_ops`` Hermes 호출로
-    # ollama via OPENAI_BASE_URL을 썼다. 게임모드(quiet)에서 ollama가 꺼지면
-    # 봇이 일기 채널 메시지를 처리하지 못한다. Claude CLI subprocess + bash
-    # 도구로 동일한 sheets_append를 호출하면 모드 무관하게 작동한다.
-    journal_ops_use_claude_cli: bool = False
+    # forced_profile (channel-pinned) 경로의 Claude CLI fallback 설정 —
+    # 위 calendar 와 동일 정책. journal_ops 가 일기 채널 forced_profile 에
+    # 진입하면 1차로 Hermes via Ollama, 실패시 Claude CLI 로 fallback.
+    # ``journal_ops_use_claude_cli`` 같은 강제 플래그는 사용자 의도에 따라 폐기.
     journal_ops_claude_model: str = "haiku"
     # log_activity.yaml의 prompt를 system prompt로 합쳐 보낸다. job 이름이
     # 다른 잡으로 바뀌면 이 값을 바꾼다 (단일 on_demand 잡이라 현재는 고정).
