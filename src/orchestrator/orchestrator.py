@@ -1336,6 +1336,10 @@ class Orchestrator:
             persist_session=False,
             append_system_prompt=system_prompt,
             env_source_path=s.journal_ops_env_source_path,
+            # Claude ``-p`` 모드는 인터랙티브 권한 prompt 를 못 띄우므로
+            # sheets_append 가 의존하는 Bash 도구를 명시적으로 허용해야
+            # 봇 응답이 "permission prompt 수락 …" 같은 안내로 끝나지 않는다.
+            allowed_tools=s.journal_ops_allowed_tools,
         )
         return (
             result.text,

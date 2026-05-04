@@ -111,6 +111,20 @@ class Settings(BaseSettings):
     journal_ops_env_source_path: str = (
         "/home/kang/.hermes/profiles/journal_ops/.env"
     )
+    # ``-p`` (print) 모드의 Claude CLI 는 도구 사용 시 권한 prompt 를 띄울 수
+    # 없으니, sheets_append 가 의존하는 ``Bash`` 같은 기본 도구를 명시적으로
+    # 허용 목록에 올려야 한다. 안 그러면 봇 응답이 "permission prompt 를
+    # 수락하면 자동 저장됩니다" 같은 안내 텍스트로 끝나고 시트엔 한 줄도
+    # 안 들어간다. 콤마 분리 — 다른 도구가 필요하면 ``Bash,Read`` 형태로 추가.
+    journal_ops_allowed_tools_csv: str = "Bash"
+
+    @property
+    def journal_ops_allowed_tools(self) -> list[str]:
+        return [
+            t.strip()
+            for t in self.journal_ops_allowed_tools_csv.split(",")
+            if t.strip()
+        ]
 
     # Ollama (optional) — when disabled, R3 surrogate path is used.
     ollama_enabled: bool = False
