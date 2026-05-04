@@ -83,11 +83,8 @@ async def run_preflight(settings: Settings, *, require_gateway_stopped: bool) ->
             "Set user IDs or explicitly set REQUIRE_ALLOWLIST=false to disable the gate."
         )
 
-    # API keys
-    if not settings.openai_api_key:
-        warnings.append("OPENAI_API_KEY not set - C1 + L2/L3 surrogates unavailable")
-    if not settings.anthropic_api_key:
-        warnings.append("ANTHROPIC_API_KEY not set - C2 unavailable")
+    # 2026-05-04: OpenAI/Anthropic API key checks removed (legacy purged).
+    # Claude CLI uses Max OAuth and is checked via Hermes CLI reachability below.
 
     # Hermes CLI reachability
     ok, reason = await check_hermes_available(settings)

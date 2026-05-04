@@ -54,20 +54,9 @@ async def test_hermes_cli_missing_is_hard_error(settings: Settings, monkeypatch)
     assert any("hermes" in e.lower() for e in report.errors)
 
 
-@pytest.mark.asyncio
-async def test_missing_api_keys_warn_not_fail(settings: Settings, monkeypatch):
-    settings.openai_api_key = ""
-    settings.anthropic_api_key = ""
-
-    async def fake_wsl(_s, _cmd, timeout=10.0):
-        return 0, "ok", ""
-
-    monkeypatch.setattr(pf, "_wsl_run", fake_wsl)
-
-    report = await pf.run_preflight(settings, require_gateway_stopped=False)
-    assert report.ok is True  # warnings only
-    assert any("OPENAI" in w for w in report.warnings)
-    assert any("ANTHROPIC" in w for w in report.warnings)
+# 2026-05-04: test_missing_api_keys_warn_not_fail removed when OpenAI/Anthropic
+# preflight warnings were dropped (API legacy purged — Claude CLI uses Max OAuth
+# checked via Hermes CLI reachability, not API keys).
 
 
 @pytest.mark.asyncio

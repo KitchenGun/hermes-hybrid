@@ -29,20 +29,16 @@ from src.job_factory.registry import (
 )
 from src.llm.adapters.claude_cli import ClaudeCLIAdapter
 from src.llm.adapters.ollama import OllamaAdapter
-from src.llm.adapters.openai import OpenAIAdapter
 
 
 # ---- fixtures -------------------------------------------------------------
 
 
-def _settings(
-    *, ollama_enabled: bool = True, openai_key: str = "sk-test",
-) -> Settings:
+def _settings(*, ollama_enabled: bool = True) -> Settings:
     return Settings(
         _env_file=None,  # type: ignore[call-arg]
         discord_bot_token="",
         require_allowlist=False,
-        openai_api_key=openai_key,
         ollama_enabled=ollama_enabled,
         ollama_base_url="http://localhost:11434",
     )
@@ -99,23 +95,7 @@ def test_build_local_adapters_skips_unknown_provider(caplog):
 # ---- build_cloud_adapters -------------------------------------------------
 
 
-def test_build_cloud_adapters_with_openai_key():
-    settings = _settings(openai_key="sk-test")
-    models = _model_registry(cloud=[
-        ("openai", "gpt-4o-mini"),
-        ("openai", "gpt-4o"),
-    ])
-    adapters = build_cloud_adapters(settings, models)
-    assert "openai/gpt-4o-mini" in adapters
-    assert "openai/gpt-4o" in adapters
-    assert all(isinstance(a, OpenAIAdapter) for a in adapters.values())
-
-
-def test_build_cloud_adapters_skips_openai_when_no_key():
-    settings = _settings(openai_key="")
-    models = _model_registry(cloud=[("openai", "gpt-4o-mini")])
-    adapters = build_cloud_adapters(settings, models)
-    assert adapters == {}
+# 2026-05-04: OpenAI cloud adapter tests removed when API legacy was purged.
 
 
 def test_build_cloud_adapters_skips_claude_when_no_adapter():
@@ -143,17 +123,19 @@ def test_build_cloud_adapters_with_claude_adapter():
     assert all(isinstance(a, ClaudeCLIAdapter) for a in adapters.values())
 
 
-def test_build_cloud_adapters_mixed_providers():
-    settings = _settings(openai_key="sk-test")
+def test_build_cloud_adapters_unknown_provider_skipped():
+    """2026-05-04: with OpenAI removed, an unknown cloud provider just logs
+    a warning and is skipped. Claude CLI is the only working cloud lane."""
+    settings = _settings()
     models = _model_registry(cloud=[
-        ("openai", "gpt-4o-mini"),
+        ("unknown_cloud", "x"),
         ("claude_cli", "haiku"),
     ])
     class _StubClaude: pass
     adapters = build_cloud_adapters(
         settings, models, claude_adapter=_StubClaude(),
     )
-    assert isinstance(adapters["openai/gpt-4o-mini"], OpenAIAdapter)
+    assert "unknown_cloud/x" not in adapters
     assert isinstance(adapters["claude_cli/haiku"], ClaudeCLIAdapter)
 
 
@@ -182,7 +164,7 @@ def test_build_validator_with_judge():
     """default bench_judge_backend=claude_cli falls back to ollama when no
     claude_adapter is supplied; with ollama_enabled=True that yields an
     Ollama-based judge axis."""
-    settings = _settings(openai_key="sk-test")
+    settings = _settings()
     jobs = _registry([JobType(name="simple_chat")])
     v = build_validator(settings, jobs)
     axis_names = {a.name for a in v.axes}
@@ -193,7 +175,7 @@ def test_build_validator_with_judge():
 
 def test_build_validator_no_judge_when_openai_backend_and_no_key():
     """bench_judge_backend='openai' + empty key → judge axis dropped."""
-    settings = _settings(openai_key="").model_copy(
+    settings = _settings().model_copy(
         update={"bench_judge_backend": "openai"},
     )
     jobs = _registry([JobType(name="simple_chat")])
@@ -240,8 +222,10 @@ def test_build_dispatcher_end_to_end_with_real_configs(tmp_path):
     assert isinstance(dispatcher, JobFactoryDispatcher)
     # Local adapters built from real model_registry.yaml.
     assert len(dispatcher._local_adapters) > 0
-    # Cloud adapters: openai built (we set a fake key); claude not (no adapter).
-    assert any(
+    # 2026-05-04: OpenAI cloud entries removed from model_registry.yaml.
+    # Claude CLI is the only cloud lane but the default builder path
+    # doesn't wire a claude_adapter, so cloud_adapters stays empty.
+    assert not any(
         k.startswith("openai/") for k in dispatcher._cloud_adapters
     )
     assert not any(

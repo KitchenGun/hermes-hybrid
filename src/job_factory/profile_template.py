@@ -71,9 +71,9 @@ agent:
 model:
   provider: "ollama"
   model: "qwen2.5:14b-instruct"
-  fallback:
-    provider: "openai"
-    model: "gpt-4o-mini"
+  # 2026-05-04: cloud fallback removed when OpenAI legacy was purged. Cloud
+  # escalation for cron jobs is handled by the register_cron_jobs.py wrap
+  # guard which calls Claude CLI directly when system_mode is "quiet".
 
 terminal:
   backend: local

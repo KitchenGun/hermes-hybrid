@@ -50,9 +50,7 @@ from src.job_factory.bench.scorers import LLMJudgeScorer  # noqa: E402
 from src.job_factory.bench.types import BenchReport  # noqa: E402
 from src.job_factory.score_matrix import ScoreMatrix  # noqa: E402
 from src.llm.adapters.ollama import OllamaAdapter  # noqa: E402
-from src.llm.adapters.openai import OpenAIAdapter  # noqa: E402
 from src.llm.ollama_client import OllamaClient  # noqa: E402
-from src.llm.openai_client import OpenAIClient  # noqa: E402
 
 log = logging.getLogger("bench_local_models")
 

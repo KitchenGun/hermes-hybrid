@@ -1,4 +1,4 @@
-# CloudPolicy — gate every cloud / Claude call.
+# CloudPolicy — gate every Claude CLI call.
 #
 # Counters are in-process (reset on bot restart). The orchestrator's
 # existing SQLite token ledger (Repository.add_tokens) provides the
@@ -6,31 +6,28 @@
 #
 # Setting any cap to 0 disables that check. To allow truly unlimited
 # Claude calls (development only), set both claude_* caps to 0.
-
-# ── OpenAI rate caps ─────────────────────────────────────────────
-openai_calls_per_hour: 60        # ~1/min average
-openai_calls_per_day: 1000
+#
+# 2026-05-04: OpenAI/Anthropic API legacy fully removed. Claude CLI
+# (Max OAuth, $0 marginal cost) is the only cloud lane. Caps below are
+# Max session quota guards.
 
 # ── Claude CLI auto rate caps ────────────────────────────────────
-# These are SEPARATE from the manual `!heavy` counters in the legacy
-# orchestrator. Auto-triggered Claude (via Job Factory escalation) is
-# capped tighter so we don't burn the Max session quota silently.
+# Auto-triggered Claude (via Job Factory escalation, cron prompt wrap,
+# bench LLMJudge) is capped so we don't burn the Max session quota.
 #
-# NOTE (local-first migration, 2026-05): bench_judge_backend="claude_cli"
-# (the new default) routes LLMJudge calls through this same counter. A
-# full bench sweep (≥10 arms × 4 judge dimensions × ≥5 prompts each)
-# overflows 50/day. When running a manual bench, raise per_day to 200
-# for the duration; restore to 50 once the sweep completes. The auto
-# BenchScheduler must use bench_judge_backend="ollama" so the cap stays
-# meaningful for actual escalation.
+# NOTE: bench_judge_backend="claude_cli" (the default) routes LLMJudge
+# calls through this same counter. A full bench sweep (≥10 arms × 4
+# dimensions × ≥5 prompts) overflows 50/day. When running a manual
+# bench, raise per_day to 200 for the duration; restore to 50 once
+# done. The auto BenchScheduler must use bench_judge_backend="ollama"
+# so the cap stays meaningful for actual escalation.
 claude_auto_calls_per_hour: 10
 claude_auto_calls_per_day: 50
 
-# ── USD cost cap (24h rolling) ───────────────────────────────────
-# Combined input + output spend across all OpenAI calls. Estimate-
-# based — actual spend may differ slightly. Conservative; raise if
-# you need more headroom.
-daily_usd_cap: 5.0
+# ── Claude CLI concurrency / session protection ──────────────────
+# Per-process cap on simultaneous Claude CLI sessions to avoid Max
+# session contention. Tighter than the legacy concurrency settings.
+claude_cli_concurrent_max: 3
 
 # ── Approval thresholds ─────────────────────────────────────────
 # Triggers needs_approval (Discord button) regardless of JobType
@@ -39,7 +36,8 @@ approval_estimated_tokens_above: 10000
 approval_estimated_cost_above_usd: 0.50
 
 # ── Token estimation heuristics ──────────────────────────────────
-# Used when adapter doesn't report tokens upfront.
-estimated_chars_per_token: 4              # OpenAI ballpark
+# Used when adapter doesn't report tokens upfront. Claude tokens are
+# similar order-of-magnitude to OpenAI's tokenizer (4 chars/token).
+estimated_chars_per_token: 4
 minimum_estimated_input_tokens: 200       # don't under-count tiny prompts
 estimated_output_tokens: 500              # ballpark response length

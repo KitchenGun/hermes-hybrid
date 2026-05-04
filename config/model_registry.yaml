@@ -31,18 +31,9 @@ local:
 
 
 cloud:
-  # OpenAI — actual list prices as of 2024-12. Update when pricing changes.
-  - provider: openai
-    name: "gpt-4o-mini"
-    cost_input_per_1m: 0.15
-    cost_output_per_1m: 0.60
-  - provider: openai
-    name: "gpt-4o"
-    cost_input_per_1m: 2.50
-    cost_output_per_1m: 10.00
-
-  # Claude Code CLI via Max OAuth — marginal cost is $0 but session/
-  # hour quotas apply (CloudPolicy enforces in Phase 6).
+  # Claude Code CLI via Max OAuth — marginal cost is $0, but session/
+  # hour quotas apply (CloudPolicy enforces). 2026-05-04: OpenAI entries
+  # removed when API legacy was purged; Claude CLI is the only cloud lane.
   - { provider: claude_cli, name: "haiku" }
   - { provider: claude_cli, name: "sonnet" }
   - { provider: claude_cli, name: "opus" }

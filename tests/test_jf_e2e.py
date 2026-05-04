@@ -136,7 +136,6 @@ def _settings_v2_on(tmp_path: Path) -> Settings:
         _env_file=None,  # type: ignore[call-arg]
         discord_bot_token="",
         require_allowlist=False,
-        openai_api_key="sk-test",
         ollama_enabled=False,
         state_db_path=tmp_path / "test.db",
         use_new_job_factory=True,    # Phase 7 flag ON
@@ -148,7 +147,6 @@ def _settings_v2_off(tmp_path: Path) -> Settings:
         _env_file=None,  # type: ignore[call-arg]
         discord_bot_token="",
         require_allowlist=False,
-        openai_api_key="sk-test",
         ollama_enabled=False,
         state_db_path=tmp_path / "test.db",
         use_new_job_factory=False,   # default

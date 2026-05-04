@@ -7,7 +7,7 @@ This is the only place that knows how to combine all 11 components:
   3. ScoreMatrix            ← data/job_factory/score_matrix.json
   4. EpsilonGreedySelector  ← over the matrix
   5. Local LLM adapters     ← OllamaClient per local entry
-  6. Cloud LLM adapters     ← OpenAIClient/ClaudeCodeAdapter per cloud entry
+  6. Cloud LLM adapters     ← ClaudeCodeAdapter per cloud entry
   7. Classifier LLM adapter ← tiny Ollama model (qwen2.5:3b by default)
   8. JobClassifier          ← keyword + LLM fallback
   9. CompositeValidator     ← Length + Structural + (LLMJudge if openai key)
@@ -53,9 +53,7 @@ from src.job_factory.validator import (
 from src.llm.adapters.base import LLMAdapter
 from src.llm.adapters.claude_cli import ClaudeCLIAdapter
 from src.llm.adapters.ollama import OllamaAdapter
-from src.llm.adapters.openai import OpenAIAdapter
 from src.llm.ollama_client import OllamaClient
-from src.llm.openai_client import OpenAIClient
 
 log = logging.getLogger(__name__)
 
@@ -213,24 +211,15 @@ def build_cloud_adapters(
     claude_adapter: ClaudeCodeAdapter | None = None,
 ) -> dict[str, LLMAdapter]:
     """Construct cloud adapters per the registry, skipping any whose
-    auth/service isn't configured.
+    adapter isn't configured.
 
-    Skip rules:
-      * OpenAI entries: skipped if ``settings.openai_api_key`` is empty.
-      * Claude CLI entries: skipped if ``claude_adapter`` is None.
+    2026-05-04: OpenAI legacy removed. Claude CLI is the only cloud lane.
+    Entries are skipped if ``claude_adapter`` is None (i.e., orchestrator
+    didn't wire one in).
     """
     out: dict[str, LLMAdapter] = {}
     for entry in models.cloud:
-        if entry.provider == "openai":
-            if not settings.openai_api_key:
-                log.info(
-                    "jf.builder.openai_skipped",
-                    extra={"matrix_key": entry.matrix_key, "reason": "no api key"},
-                )
-                continue
-            client = OpenAIClient(settings.openai_api_key, entry.name)
-            out[entry.matrix_key] = OpenAIAdapter(client)
-        elif entry.provider == "claude_cli":
+        if entry.provider == "claude_cli":
             if claude_adapter is None:
                 log.info(
                     "jf.builder.claude_skipped",
@@ -255,7 +244,7 @@ def build_classifier_adapter(
 
     Returns None if Ollama isn't enabled — keyword fast path still works,
     fallback to ``classifier.fallback_job_type`` covers the rest."""
-    if not settings.effective_ollama_enabled:
+    if not settings.ollama_routable:
         return None
     client = OllamaClient(
         settings.ollama_base_url,
@@ -359,8 +348,8 @@ def _build_judge_adapter(
       * ``"ollama"`` — use OllamaAdapter with ``ollama_judge_model``. Free,
         unlimited, lower quality than Claude. The ONLY safe choice for the
         auto BenchScheduler — Claude Max quota would otherwise drain.
-      * ``"openai"`` — legacy gpt-4o-mini grader. Returns None if
-        ``openai_api_key`` is empty.
+
+    2026-05-04: ``"openai"`` backend removed when API legacy was purged.
 
     Returns None when no backend is available; CompositeValidator drops
     the llm_judge axis silently in that case.
@@ -378,7 +367,7 @@ def _build_judge_adapter(
             return ClaudeCLIAdapter(claude_adapter, settings.c1_claude_code_model)
 
     if backend == "ollama":
-        if not settings.effective_ollama_enabled:
+        if not settings.ollama_routable:
             log.warning(
                 "jf.builder.judge_ollama_disabled",
                 extra={"reason": "ollama_enabled=False and local_first_mode=False"},
@@ -386,16 +375,6 @@ def _build_judge_adapter(
             return None
         client = OllamaClient(settings.ollama_base_url, settings.ollama_judge_model)
         return OllamaAdapter(client)
-
-    if backend == "openai":
-        if not settings.openai_api_key:
-            return None
-        client = OpenAIClient(
-            settings.openai_api_key,
-            # Fixed cheap surrogate — judge calls add up over time.
-            settings.openai_model_local_surrogate,
-        )
-        return OpenAIAdapter(client)
 
     return None
 

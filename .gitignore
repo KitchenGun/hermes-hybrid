@@ -16,7 +16,7 @@ build/
 *.log.err
 logs/
 
-# Runtime mode state (per-machine; written by src/runtime_mode.py)
+# Per-machine runtime state (state DB, runtime artifacts).
 state/
 
 # Date-stamped backups never get committed (e.g. .env.bak.20260501,
@@ -48,3 +48,14 @@ secrets/
 !profiles/*/memories/.gitkeep
 !profiles/*/sessions/.gitkeep
 !profiles/*/logs/.gitkeep
+
+# advisor_ops + installer_ops는 메타 프로파일이라 메모리(USER.md/MEMORY.md)도
+# 코드의 일부 (사용자 컨텍스트 + 정책). 다른 프로파일과 달리 추적함.
+!profiles/advisor_ops/memories/
+!profiles/advisor_ops/memories/**
+!profiles/installer_ops/memories/
+!profiles/installer_ops/memories/**
+
+# 메타 프로파일의 runtime/ 은 보고서 산출물 — 매번 갱신, 추적 안 함.
+profiles/advisor_ops/runtime/
+profiles/installer_ops/runtime/

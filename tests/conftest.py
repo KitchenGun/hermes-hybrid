@@ -15,8 +15,6 @@ def settings(tmp_path) -> Settings:
         discord_bot_token="",
         discord_allowed_user_ids="",
         require_allowlist=False,
-        openai_api_key="sk-test-openai",
-        anthropic_api_key="sk-test-anthropic",
         ollama_enabled=False,
         state_db_path=tmp_path / "test.db",
     )

@@ -30,7 +30,7 @@ agent:
 # bench (routing 80, korean 93.3, schedule_logging 95.3, tps 139.4). The
 # higher-routing gemma3:27b lacks tool calling, so it can't drive the
 # Google Calendar MCP server. Fallback to OpenAI gpt-4o stays available
-# whenever LOCAL_FIRST_MODE=False (orchestrator's effective_ollama_enabled
+# whenever LOCAL_FIRST_MODE=False (orchestrator's ollama_routable
 # gate flips back to legacy surrogate path).
 model:
   provider: "custom"

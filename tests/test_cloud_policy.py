@@ -1,4 +1,11 @@
-"""Tests for src/job_factory/policy.py."""
+"""Tests for src/job_factory/policy.py.
+
+2026-05-04: OpenAI rate-cap tests removed when the API legacy was purged.
+Claude CLI is the only cloud lane; rate caps are exercised against
+claude_cli entries. Cost-cap tests use synthetic high prices on claude_cli
+entries to exercise the daily_usd_cap logic (claude_cli is $0 in
+production but the policy logic stays valid for any future paid arm).
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -68,7 +75,6 @@ def test_sliding_counter_records_and_counts():
     c.record(ts=100.0)
     c.record(ts=110.0)
     c.record(ts=120.0)
-    # All within window from t=120 (window is ts > t-60 = 60).
     assert c.count(now=120.0) == 3
 
 
@@ -77,7 +83,6 @@ def test_sliding_counter_prunes_expired():
     c.record(ts=100.0)
     c.record(ts=110.0)
     c.record(ts=120.0)
-    # At t=200, only entries > 140 are in window. None of these qualify.
     assert c.count(now=200.0) == 0
 
 
@@ -86,7 +91,6 @@ def test_sliding_counter_partial_prune():
     c.record(ts=100.0)
     c.record(ts=150.0)
     c.record(ts=170.0)
-    # At t=180, window is > 120 → 150 and 170 qualify.
     assert c.count(now=180.0) == 2
 
 
@@ -95,31 +99,28 @@ def test_sliding_counter_partial_prune():
 
 def test_config_default_when_missing(tmp_path):
     cfg = CloudPolicyConfig.from_yaml(tmp_path / "nope.yaml")
-    # Defaults present.
-    assert cfg.openai_calls_per_hour == 60
+    assert cfg.claude_auto_calls_per_hour == 10
     assert cfg.daily_usd_cap == 5.0
 
 
 def test_config_loads_overrides(tmp_path):
     p = tmp_path / "policy.yaml"
     p.write_text(yaml.safe_dump({
-        "openai_calls_per_hour": 5,
+        "claude_auto_calls_per_hour": 5,
         "claude_auto_calls_per_day": 100,
         "daily_usd_cap": 1.5,
     }), encoding="utf-8")
     cfg = CloudPolicyConfig.from_yaml(p)
-    assert cfg.openai_calls_per_hour == 5
+    assert cfg.claude_auto_calls_per_hour == 5
     assert cfg.claude_auto_calls_per_day == 100
     assert cfg.daily_usd_cap == 1.5
-    # Untouched fields keep defaults.
-    assert cfg.openai_calls_per_day == 1000
 
 
 def test_config_invalid_yaml_falls_back_to_defaults(tmp_path):
     p = tmp_path / "policy.yaml"
     p.write_text("[\nbroken yaml", encoding="utf-8")
     cfg = CloudPolicyConfig.from_yaml(p)
-    assert cfg.openai_calls_per_hour == 60  # default
+    assert cfg.claude_auto_calls_per_hour == 10  # default
 
 
 def test_real_cloud_policy_yaml_loads():
@@ -127,8 +128,6 @@ def test_real_cloud_policy_yaml_loads():
     p = project_root / "config" / "cloud_policy.yaml"
     assert p.exists()
     cfg = CloudPolicyConfig.from_yaml(p)
-    # Sanity: caps reasonable.
-    assert cfg.openai_calls_per_hour > 0
     assert cfg.claude_auto_calls_per_hour > 0
 
 
@@ -138,8 +137,8 @@ def test_real_cloud_policy_yaml_loads():
 def test_allow_when_all_caps_unset():
     """All caps = 0 → never deny."""
     cfg = CloudPolicyConfig(
-        openai_calls_per_hour=0,
-        openai_calls_per_day=0,
+        claude_auto_calls_per_hour=0,
+        claude_auto_calls_per_day=0,
         daily_usd_cap=0,
         approval_estimated_tokens_above=0,
         approval_estimated_cost_above_usd=0,
@@ -147,7 +146,7 @@ def test_allow_when_all_caps_unset():
     p = CloudPolicy(config=cfg)
     v = p.evaluate(
         job=_job(),
-        entry=_entry("openai", "gpt-4o", cost_input=2.5, cost_output=10),
+        entry=_entry("claude_cli", "sonnet"),
         prompt_text="hello",
     )
     assert v.outcome == "allow"
@@ -156,8 +155,8 @@ def test_allow_when_all_caps_unset():
 def test_allow_local_provider_skips_rate_caps():
     """Ollama/local entries shouldn't even consult rate caps."""
     cfg = CloudPolicyConfig(
-        openai_calls_per_hour=0,  # would deny if applied to ollama
-        openai_calls_per_day=0,
+        claude_auto_calls_per_hour=0,
+        claude_auto_calls_per_day=0,
     )
     p = CloudPolicy(config=cfg)
     v = p.evaluate(
@@ -171,111 +170,82 @@ def test_allow_local_provider_skips_rate_caps():
 # ---- Rate caps ------------------------------------------------------------
 
 
-def test_openai_hourly_cap_denies_after_threshold():
+def test_claude_hourly_cap_denies_after_threshold():
     cfg = CloudPolicyConfig(
-        openai_calls_per_hour=3,
-        openai_calls_per_day=0,
-        daily_usd_cap=0,
-        approval_estimated_tokens_above=0,
-        approval_estimated_cost_above_usd=0,
-    )
-    clock = _FakeClock()
-    p = CloudPolicy(config=cfg, clock=clock)
-    entry = _entry("openai", "gpt-4o-mini", cost_input=0.15, cost_output=0.60)
-
-    # 3 allowed.
-    for _ in range(3):
-        v = p.evaluate(job=_job(), entry=entry)
-        assert v.outcome == "allow"
-        p.record_call(entry)
-
-    # 4th denied.
-    v = p.evaluate(job=_job(), entry=entry)
-    assert v.outcome == "deny"
-    assert v.triggered_rule == "openai_hourly_cap"
-
-
-def test_openai_hourly_cap_window_resets():
-    cfg = CloudPolicyConfig(
-        openai_calls_per_hour=2,
-        openai_calls_per_day=0,
-        daily_usd_cap=0,
-        approval_estimated_tokens_above=0,
-        approval_estimated_cost_above_usd=0,
-    )
-    clock = _FakeClock()
-    p = CloudPolicy(config=cfg, clock=clock)
-    entry = _entry("openai", "gpt-4o-mini")
-
-    p.record_call(entry)
-    p.record_call(entry)
-    # Cap reached.
-    assert p.evaluate(job=_job(), entry=entry).outcome == "deny"
-
-    # Advance past the hour window.
-    clock.advance(_SECONDS_PER_HOUR + 1)
-    assert p.evaluate(job=_job(), entry=entry).outcome == "allow"
-
-
-def test_claude_caps_independent_of_openai():
-    cfg = CloudPolicyConfig(
-        openai_calls_per_hour=2,
-        claude_auto_calls_per_hour=2,
-        openai_calls_per_day=0,
+        claude_auto_calls_per_hour=3,
         claude_auto_calls_per_day=0,
         daily_usd_cap=0,
         approval_estimated_tokens_above=0,
         approval_estimated_cost_above_usd=0,
     )
-    p = CloudPolicy(config=cfg)
-    openai = _entry("openai", "x")
-    claude = _entry("claude_cli", "sonnet")
+    clock = _FakeClock()
+    p = CloudPolicy(config=cfg, clock=clock)
+    entry = _entry("claude_cli", "sonnet")
 
-    # Burn OpenAI cap.
-    p.record_call(openai)
-    p.record_call(openai)
-    assert p.evaluate(job=_job(), entry=openai).outcome == "deny"
-    # Claude still ok.
-    assert p.evaluate(job=_job(), entry=claude).outcome == "allow"
+    for _ in range(3):
+        v = p.evaluate(job=_job(), entry=entry)
+        assert v.outcome == "allow"
+        p.record_call(entry)
+
+    v = p.evaluate(job=_job(), entry=entry)
+    assert v.outcome == "deny"
+    assert v.triggered_rule == "claude_hourly_cap"
 
 
-def test_daily_cap_denies():
+def test_claude_hourly_cap_window_resets():
     cfg = CloudPolicyConfig(
-        openai_calls_per_hour=0,
-        openai_calls_per_day=2,
+        claude_auto_calls_per_hour=2,
+        claude_auto_calls_per_day=0,
+        daily_usd_cap=0,
+        approval_estimated_tokens_above=0,
+        approval_estimated_cost_above_usd=0,
+    )
+    clock = _FakeClock()
+    p = CloudPolicy(config=cfg, clock=clock)
+    entry = _entry("claude_cli", "haiku")
+
+    p.record_call(entry)
+    p.record_call(entry)
+    assert p.evaluate(job=_job(), entry=entry).outcome == "deny"
+
+    clock.advance(_SECONDS_PER_HOUR + 1)
+    assert p.evaluate(job=_job(), entry=entry).outcome == "allow"
+
+
+def test_claude_daily_cap_denies():
+    cfg = CloudPolicyConfig(
+        claude_auto_calls_per_hour=0,
+        claude_auto_calls_per_day=2,
         daily_usd_cap=0,
         approval_estimated_tokens_above=0,
         approval_estimated_cost_above_usd=0,
     )
     p = CloudPolicy(config=cfg)
-    entry = _entry("openai", "x")
+    entry = _entry("claude_cli", "haiku")
     p.record_call(entry)
     p.record_call(entry)
     v = p.evaluate(job=_job(), entry=entry)
     assert v.outcome == "deny"
-    assert v.triggered_rule == "openai_daily_cap"
+    assert v.triggered_rule == "claude_daily_cap"
 
 
 # ---- Cost cap -------------------------------------------------------------
 
 
 def test_daily_usd_cap_denies_when_estimate_would_overrun():
+    """Cost cap test — using arbitrary high prices on a claude_cli entry to
+    exercise the cost-tracking logic. Production claude_cli has cost_*=0
+    (Max OAuth) but the policy logic remains valid for any future paid arm."""
     cfg = CloudPolicyConfig(
-        openai_calls_per_hour=0,
-        openai_calls_per_day=0,
+        claude_auto_calls_per_hour=0,
+        claude_auto_calls_per_day=0,
         daily_usd_cap=0.10,
         approval_estimated_tokens_above=0,
         approval_estimated_cost_above_usd=0,
-        # Estimation defaults: 200 in + 500 out = 700 tokens.
     )
     p = CloudPolicy(config=cfg)
-    # gpt-4o pricing: $2.50/1M in, $10/1M out.
-    # 200/1M * $2.50 + 500/1M * $10 = $0.0005 + $0.005 = $0.0055 per call.
-    expensive = _entry("openai", "gpt-4o", cost_input=2.5, cost_output=10)
+    expensive = _entry("claude_cli", "x", cost_input=2.5, cost_output=10)
 
-    # Pre-load $0.099 of fake spend → next call's $0.0055 would push to $0.1045.
-    # But 0.099 + 0.0055 < 0.10 + 0.0055 = 0.1055, > 0.10, so denied.
-    # Easiest setup: record 18 calls @ 0.0055 = $0.099.
     for _ in range(18):
         p.record_call(expensive, actual_cost_usd=0.0055)
 
@@ -286,28 +256,28 @@ def test_daily_usd_cap_denies_when_estimate_would_overrun():
 
 def test_daily_usd_cap_allows_when_within_budget():
     cfg = CloudPolicyConfig(
-        openai_calls_per_hour=0,
-        openai_calls_per_day=0,
+        claude_auto_calls_per_hour=0,
+        claude_auto_calls_per_day=0,
         daily_usd_cap=10.0,           # plenty of headroom
         approval_estimated_tokens_above=0,
         approval_estimated_cost_above_usd=0,
     )
     p = CloudPolicy(config=cfg)
-    entry = _entry("openai", "gpt-4o-mini", cost_input=0.15, cost_output=0.60)
+    entry = _entry("claude_cli", "haiku")
     v = p.evaluate(job=_job(), entry=entry)
     assert v.outcome == "allow"
 
 
 def test_estimated_cost_field_populated():
     cfg = CloudPolicyConfig(
-        openai_calls_per_hour=0,
-        openai_calls_per_day=0,
+        claude_auto_calls_per_hour=0,
+        claude_auto_calls_per_day=0,
         daily_usd_cap=0,
         approval_estimated_tokens_above=0,
         approval_estimated_cost_above_usd=0,
     )
     p = CloudPolicy(config=cfg)
-    entry = _entry("openai", "gpt-4o", cost_input=2.5, cost_output=10)
+    entry = _entry("claude_cli", "sonnet", cost_input=2.5, cost_output=10)
     v = p.evaluate(job=_job(), entry=entry)
     assert v.estimated_cost_usd > 0
 
@@ -317,14 +287,14 @@ def test_estimated_cost_field_populated():
 
 def test_job_requires_approval_triggers_needs_approval():
     cfg = CloudPolicyConfig(
-        openai_calls_per_hour=0,
-        openai_calls_per_day=0,
+        claude_auto_calls_per_hour=0,
+        claude_auto_calls_per_day=0,
         daily_usd_cap=0,
     )
     p = CloudPolicy(config=cfg)
     v = p.evaluate(
         job=_job(requires_user_approval=True),
-        entry=_entry("openai", "gpt-4o-mini"),
+        entry=_entry("claude_cli", "haiku"),
     )
     assert v.outcome == "needs_approval"
     assert v.triggered_rule == "job_requires_approval"
@@ -332,8 +302,8 @@ def test_job_requires_approval_triggers_needs_approval():
 
 def test_estimated_tokens_threshold_triggers_approval():
     cfg = CloudPolicyConfig(
-        openai_calls_per_hour=0,
-        openai_calls_per_day=0,
+        claude_auto_calls_per_hour=0,
+        claude_auto_calls_per_day=0,
         daily_usd_cap=0,
         approval_estimated_tokens_above=300,
         approval_estimated_cost_above_usd=0,
@@ -344,7 +314,7 @@ def test_estimated_tokens_threshold_triggers_approval():
     # 200 + 200 = 400 > 300 → approval.
     v = p.evaluate(
         job=_job(),
-        entry=_entry("openai", "gpt-4o-mini"),
+        entry=_entry("claude_cli", "haiku"),
     )
     assert v.outcome == "needs_approval"
     assert v.triggered_rule == "estimated_tokens_threshold"
@@ -352,17 +322,17 @@ def test_estimated_tokens_threshold_triggers_approval():
 
 def test_estimated_cost_threshold_triggers_approval():
     cfg = CloudPolicyConfig(
-        openai_calls_per_hour=0,
-        openai_calls_per_day=0,
+        claude_auto_calls_per_hour=0,
+        claude_auto_calls_per_day=0,
         daily_usd_cap=0,
         approval_estimated_tokens_above=0,
         approval_estimated_cost_above_usd=0.001,
     )
     p = CloudPolicy(config=cfg)
-    # gpt-4o: ~$0.0055/call > $0.001 → approval.
+    # ~$0.0055/call > $0.001 → approval.
     v = p.evaluate(
         job=_job(),
-        entry=_entry("openai", "gpt-4o", cost_input=2.5, cost_output=10),
+        entry=_entry("claude_cli", "sonnet", cost_input=2.5, cost_output=10),
     )
     assert v.outcome == "needs_approval"
     assert v.triggered_rule == "estimated_cost_threshold"
@@ -375,13 +345,12 @@ def test_record_call_does_not_track_local():
     p = CloudPolicy()
     entry = _entry("ollama", "qwen2.5")
     p.record_call(entry)
-    assert p.stats()["openai_hour"] == 0
     assert p.stats()["claude_hour"] == 0
 
 
 def test_record_call_with_cost_advances_daily_usd():
     p = CloudPolicy()
-    entry = _entry("openai", "gpt-4o-mini")
+    entry = _entry("claude_cli", "sonnet")
     p.record_call(entry, actual_cost_usd=0.15)
     p.record_call(entry, actual_cost_usd=0.10)
     assert p.stats()["daily_cost_usd"] == pytest.approx(0.25)
@@ -390,7 +359,7 @@ def test_record_call_with_cost_advances_daily_usd():
 def test_record_call_cost_window_resets():
     clock = _FakeClock()
     p = CloudPolicy(clock=clock)
-    entry = _entry("openai", "gpt-4o")
+    entry = _entry("claude_cli", "sonnet")
     p.record_call(entry, actual_cost_usd=1.0)
     assert p.stats()["daily_cost_usd"] == pytest.approx(1.0)
     # Past the day window.
@@ -401,15 +370,12 @@ def test_record_call_cost_window_resets():
 # ---- stats() / observability ---------------------------------------------
 
 
-def test_stats_counts_per_provider():
+def test_stats_counts_claude_calls():
     p = CloudPolicy()
-    openai = _entry("openai", "x")
     claude = _entry("claude_cli", "sonnet")
-    p.record_call(openai)
-    p.record_call(openai)
+    p.record_call(claude)
+    p.record_call(claude)
     p.record_call(claude)
     s = p.stats()
-    assert s["openai_hour"] == 2
-    assert s["openai_day"] == 2
-    assert s["claude_hour"] == 1
-    assert s["claude_day"] == 1
+    assert s["claude_hour"] == 3
+    assert s["claude_day"] == 3

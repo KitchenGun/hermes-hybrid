@@ -37,13 +37,11 @@ from src.hermes_adapter import (
     HermesTimeout,
 )
 from src.llm import (
-    AnthropicClient,
     LLMAuthError,
     LLMConnectionError,
     LLMRateLimitError,
     LLMTimeoutError,
     OllamaClient,
-    OpenAIClient,
 )
 from src.job_factory.factory import JobFactory, JobFactoryError
 from src.obs import bind_task_id, get_logger
@@ -193,11 +191,8 @@ class Orchestrator:
         # they're only bypassed when ``use_new_job_factory=True``.
         self._job_factory_v2: "JobFactoryDispatcher | None" = None
 
-        # Lazy clients
-        self._openai_main: OpenAIClient | None = None
-        self._openai_surrogate_local: OpenAIClient | None = None
-        self._openai_surrogate_worker: OpenAIClient | None = None
-        self._anthropic: AnthropicClient | None = None
+        # Lazy clients (2026-05-04: OpenAI/Anthropic clients removed —
+        # Claude CLI uses Max OAuth via ClaudeCodeAdapter, not these.)
         self._ollama_local: OllamaClient | None = None
         self._ollama_worker: OllamaClient | None = None
 
@@ -734,71 +729,49 @@ class Orchestrator:
         if self.settings.effective_use_hermes_for_local:
             return await self._run_local_via_hermes(task, worker=worker)
 
-        # --- Legacy paths (unchanged) ---------------------------------------
-        # ``effective_ollama_enabled`` = ``ollama_enabled OR local_first_mode``.
-        # Flipping LOCAL_FIRST_MODE alone reroutes here even if OLLAMA_ENABLED
-        # was never explicitly set (single-knob migration ergonomics).
-        if self.settings.effective_ollama_enabled:
-            client = self._ollama_worker_client() if worker else self._ollama_local_client()
-            resp = await client.generate(
-                self._messages(task),
-                max_tokens=(
-                    self.settings.surrogate_max_tokens_worker if worker
-                    else self.settings.surrogate_max_tokens_local
-                ),
+        # --- Direct ollama path (single local lane post-2026-05-04) --------
+        # OpenAI surrogate path removed. ollama is the only local lane. If
+        # ollama unavailable, raise so the orchestrator escalates to C1
+        # (Claude CLI Max OAuth, $0).
+        if not self.settings.ollama_routable:
+            raise LLMConnectionError(
+                "Local lane requires ollama (set OLLAMA_ENABLED=true or "
+                "LOCAL_FIRST_MODE=true). OpenAI surrogate was removed."
             )
-            task.record_model_output(
-                tier=task.current_tier, text=resp.text, model_name=resp.model,
-                prompt_tokens=resp.prompt_tokens, completion_tokens=resp.completion_tokens,
-            )
-            return resp.text, "worker" if worker else "local"
-
-        # Surrogate path — explicitly marked as cloud but NOT via Hermes, NOT Claude.
-        client = self._openai_surrogate_worker_client() if worker else self._openai_surrogate_local_client()
-        cap = (
-            self.settings.surrogate_max_tokens_worker if worker
-            else self.settings.surrogate_max_tokens_local
+        client = self._ollama_worker_client() if worker else self._ollama_local_client()
+        resp = await client.generate(
+            self._messages(task),
+            max_tokens=(
+                self.settings.surrogate_max_tokens_worker if worker
+                else self.settings.surrogate_max_tokens_local
+            ),
         )
-        resp = await client.generate(self._messages(task), max_tokens=cap)
         task.record_model_output(
             tier=task.current_tier, text=resp.text, model_name=resp.model,
             prompt_tokens=resp.prompt_tokens, completion_tokens=resp.completion_tokens,
         )
-        tag = "worker-surrogate" if worker else "local-surrogate"
-        return resp.text, tag
+        return resp.text, "worker" if worker else "local"
 
     async def _run_local_via_hermes(
         self, task: TaskState, *, worker: bool
     ) -> tuple[str, str]:
-        """Phase 1 path: L2/L3 through HermesAdapter v2.
+        """Phase 1 path: L2/L3 through HermesAdapter v2 with ollama pinned.
 
-        Provider selection:
-          - ``ollama_enabled=True`` → provider='ollama', model = work/worker
-            model from settings (the same model the legacy path would have
-            picked, so latency is comparable).
-          - Else → provider='openai', model = surrogate model. Hermes still
-            runs the plan/act/reflect loop but with OpenAI as the tool-call
-            LLM — which is equivalent to the legacy surrogate for single-turn
-            answers but lets us smoke the Hermes wiring end-to-end.
-
-        In either case we pin the provider with ``--provider`` (enforced in
-        HermesAdapter v2 via ``HermesProviderMismatch``) so claude-code is
-        structurally unreachable from this lane.
+        2026-05-04: OpenAI surrogate provider removed. ollama is the only
+        backend reachable from this lane. If ollama is unavailable, raises
+        :class:`LLMConnectionError` so the orchestrator escalates to C1.
         """
-        if self.settings.effective_ollama_enabled:
-            model = (
-                self.settings.ollama_worker_model if worker
-                else self.settings.ollama_work_model
+        if not self.settings.ollama_routable:
+            raise LLMConnectionError(
+                "Hermes-driven local lane requires ollama. "
+                "OpenAI surrogate was removed."
             )
-            provider = "ollama"
-            tag = "worker-hermes" if worker else "local-hermes"
-        else:
-            model = (
-                self.settings.openai_model_worker_surrogate if worker
-                else self.settings.openai_model_local_surrogate
-            )
-            provider = "openai"
-            tag = "worker-hermes-surrogate" if worker else "local-hermes-surrogate"
+        model = (
+            self.settings.ollama_worker_model if worker
+            else self.settings.ollama_work_model
+        )
+        provider = "ollama"
+        tag = "worker-hermes" if worker else "local-hermes"
 
         # Bump prefix is injected into the query the same way _messages()
         # builds the user content for legacy lanes — Hermes gets one clean
@@ -828,35 +801,18 @@ class Orchestrator:
     async def _run_c1(self, task: TaskState) -> tuple[str, str]:
         """C1: planning tier.
 
-        Three paths (first match wins):
-          1. ``USE_HERMES_FOR_C1=true`` → HermesAdapter v2 with
-             provider='openai' pinned. Phase 2 rollout; off by default.
-          2. ``C1_BACKEND=claude_cli`` → direct Claude Code CLI with the
-             Haiku model. Zero per-token cost (Max OAuth), immune to
-             OpenAI TPM limits. Added after the 2026-04-21 incident where
-             the 72-skill Hermes system prompt blew past the 30k TPM cap.
-             Unlike C2, this lane does NOT persist sessions — C1 is a
-             single-turn planner, and heavy-session reuse is reserved for
-             `!heavy`.
-          3. Else → direct GPT-4o (unchanged legacy path).
+        Two paths (first match wins):
+          1. ``USE_HERMES_FOR_C1=true`` → HermesAdapter v2 with ollama pinned.
+             Phase 2 rollout; off by default.
+          2. Else → direct Claude CLI with the Haiku model (Max OAuth, $0).
 
-        Claude **can** be reached from this lane via path #2, but only
-        the lightweight Haiku model and only when the operator explicitly
-        flips ``C1_BACKEND=claude_cli``. Heavy Sonnet/Opus usage stays
-        gated behind `!heavy` regardless.
+        2026-05-04: OpenAI direct path removed. Claude CLI is the default
+        and only direct cloud lane. Sonnet/Opus stays gated behind `!heavy`.
         """
         if self.settings.effective_use_hermes_for_c1:
             return await self._run_c1_via_hermes(task)
 
-        if self.settings.effective_c1_backend == "claude_cli":
-            return await self._run_c1_via_claude_cli(task)
-
-        resp = await self._openai_main_client().generate(self._messages(task))
-        task.record_model_output(
-            tier="C1", text=resp.text, model_name=resp.model,
-            prompt_tokens=resp.prompt_tokens, completion_tokens=resp.completion_tokens,
-        )
-        return resp.text, "cloud-gpt"
+        return await self._run_c1_via_claude_cli(task)
 
     async def _run_c1_via_claude_cli(self, task: TaskState) -> tuple[str, str]:
         """C1 through the Claude Code CLI with the Haiku model.
@@ -885,40 +841,41 @@ class Orchestrator:
         result = await self.claude_code_c1.run(
             prompt=prompt,
             history=task.history_window,
-            model=self.settings.effective_c1_claude_code_model,
+            model=self.settings.c1_claude_code_model,
             timeout_ms=self.settings.c1_claude_code_timeout_ms,
             persist_session=False,
         )
         task.record_model_output(
             tier="C1",
             text=result.text,
-            model_name=result.model_name or self.settings.effective_c1_claude_code_model,
+            model_name=result.model_name or self.settings.c1_claude_code_model,
             prompt_tokens=result.input_tokens,
             completion_tokens=result.output_tokens,
         )
         return result.text, "cloud-claude-cli"
 
     async def _run_c1_via_hermes(self, task: TaskState) -> tuple[str, str]:
-        """Phase 2 path: C1 through HermesAdapter v2 with OpenAI pinned.
+        """Phase 2 path: C1 through HermesAdapter v2 with ollama pinned.
 
         Same structure as :meth:`_run_local_via_hermes` (Phase 1 lane), just
-        with the main ``openai_model`` instead of a surrogate and a larger
-        turn cap — C1 is the planning tier, so plan/act/reflect actually
-        earns its cost here (unlike L2/L3 where it's mostly a smoke test).
+        with a larger turn cap — C1 is the planning tier, so plan/act/reflect
+        actually earns its cost here.
 
-        Provider is pinned to ``"openai"``. The adapter raises
-        :class:`HermesProviderMismatch` if Hermes drifts to anything else,
-        so Claude remains structurally unreachable from the auto-escalation
-        ladder.
+        2026-05-04: provider switched openai → ollama after OpenAI legacy was
+        removed. Hermes plan/act/reflect runs against the ollama work model.
         """
+        if not self.settings.ollama_routable:
+            raise LLMConnectionError(
+                "C1 Hermes lane requires ollama. OpenAI legacy was removed."
+            )
         query = task.user_message
         if task.bump_prefix:
             query = f"{task.bump_prefix}\n\n{task.user_message}"
 
         result = await self.hermes.run(
             query,
-            model=self.settings.openai_model,
-            provider="openai",
+            model=self.settings.ollama_work_model,
+            provider="ollama",
             max_turns=self.settings.hermes_max_turns,
         )
         self._last_hermes_turns = result.turns_used
@@ -929,7 +886,7 @@ class Orchestrator:
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
         )
-        return result.text, "cloud-gpt-hermes"
+        return result.text, "ollama-hermes"
 
     async def _run_c2(self, task: TaskState) -> tuple[str, str]:
         """C2: Claude via Claude Code CLI (Max subscription OAuth).
@@ -1525,34 +1482,6 @@ class Orchestrator:
                 log.warning("repo.save_failed", err=str(e))
 
     # ---- lazy client builders ----
-
-    def _openai_main_client(self) -> OpenAIClient:
-        if self._openai_main is None:
-            self._openai_main = OpenAIClient(
-                self.settings.openai_api_key, self.settings.openai_model
-            )
-        return self._openai_main
-
-    def _openai_surrogate_local_client(self) -> OpenAIClient:
-        if self._openai_surrogate_local is None:
-            self._openai_surrogate_local = OpenAIClient(
-                self.settings.openai_api_key, self.settings.openai_model_local_surrogate
-            )
-        return self._openai_surrogate_local
-
-    def _openai_surrogate_worker_client(self) -> OpenAIClient:
-        if self._openai_surrogate_worker is None:
-            self._openai_surrogate_worker = OpenAIClient(
-                self.settings.openai_api_key, self.settings.openai_model_worker_surrogate
-            )
-        return self._openai_surrogate_worker
-
-    def _anthropic_client(self) -> AnthropicClient:
-        if self._anthropic is None:
-            self._anthropic = AnthropicClient(
-                self.settings.anthropic_api_key, self.settings.anthropic_model
-            )
-        return self._anthropic
 
     def _ollama_local_client(self) -> OllamaClient:
         if self._ollama_local is None:

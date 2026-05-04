@@ -27,7 +27,6 @@ def live_settings() -> Settings:
         _env_file=None,  # type: ignore[call-arg]
         discord_bot_token="", discord_allowed_user_ids="",
         require_allowlist=False,
-        openai_api_key="sk-test", anthropic_api_key="sk-test",
         ollama_enabled=True,
     )
 

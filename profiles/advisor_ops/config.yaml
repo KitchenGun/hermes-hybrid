@@ -1,0 +1,130 @@
+# advisor_ops — 잡 인벤토리 분석 + 도구(Skills/MCP/Plugins/Hooks/Models) 추천 보고
+#
+# 역할:
+#   다른 프로파일들(kk_job, journal_ops, calendar_ops, mail_ops, ...)의 잡 yaml과
+#   skills/ 트리를 스캔하여, 누락되거나 더 적합한 도구·MCP·Skill·Hook·모델 후보를
+#   리서치하고, 사용자가 그대로 Claude Code에 붙여넣을 수 있는 "설치 프롬프트"
+#   텍스트만 생성한다. 자동 설치는 절대 금지 — SOUL.md Safety Rules 참조.
+#
+# 사용 흐름:
+#   1) (cron) 일요일 04:00 KST 풀스캔 → Discord 보고 + runtime/install_prompt_<date>.md 저장
+#   2) (on_demand) "어드바이저 분석" 명령으로 수동 트리거
+#
+# 핵심 제약:
+#   - 보고 전용 — file write는 runtime/ 하위로 한정
+
+# ===== Hermes 공식 스키마 =====
+agent:
+  max_turns: 12                  # 분석 + 리서치 + 출력의 3-stage라 여유 필요
+  reasoning_effort: "medium"     # 추천 정확도 우선
+  tool_use_enforcement: "auto"
+  # 어드바이저는 분석 + web 검색 + 출력만 하면 충분.
+  # 다른 도구는 잠궈서 모델이 turn을 낭비하지 않게 한다.
+  disabled_toolsets:
+    - vision
+    - image_gen
+    - tts
+    - code_execution             # terminal로 충분
+    - delegation
+    - cronjob                    # advisor가 cron을 만지지 않는다
+    - moa
+    - rl
+
+# 1차: 로컬 qwen-coder가 yaml 파싱·인벤토리 (무료, 빠름)
+# 2차: 정밀 추천이 필요하면 bump_rules로 gpt-4o로 escalate
+model:
+  provider: "ollama"
+  model: "qwen2.5-coder:32b-instruct"
+
+terminal:
+  backend: local
+  cwd: "."
+  timeout: 120
+  persistent_shell: true
+  env_passthrough:
+    - DISCORD_BRIEFING_WEBHOOK_URL
+    - BRAVE_SEARCH_API_KEY
+    - HERMES_RUNTIME_HOME
+    - HERMES_PROFILE_HOME
+    - TIMEZONE
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+
+compression:
+  enabled: true
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 20
+
+approvals:
+  mode: "manual"                 # 추천 출력 전 사용자 확인 가능
+
+auxiliary:
+  compression:
+    provider: "auto"
+    timeout: 120
+  web_extract:
+    provider: "auto"
+    timeout: 360
+
+display:
+  verbosity: "normal"
+  emoji: true
+  tool_progress: "all"
+
+security:
+  redact_secrets: true
+
+delegation:
+  enabled: false
+
+web:
+  backend: "brave"               # 도구 후보 리서치용
+
+mcp_servers: {}                  # advisor 자체는 MCP 미사용
+
+skills:
+  auto_load:
+    - analysis/job_inventory
+
+# ===== hermes-hybrid 확장 =====
+x-hermes-hybrid:
+  profile_id: "advisor_ops"
+  timezone: "Asia/Seoul"
+
+  tier_policy:
+    max_tier: "C1"               # gpt-4o까지 허용, C2(Claude) 금지
+    prefer_tier: "L3"             # qwen-coder가 1차 분석
+    heavy_policy: "never"
+    bump_rules:
+      - on: "research_intensive"
+        to: "C1"                  # web 검색 + 정밀 추천 필요 시
+      - on: "ambiguous_recommendation"
+        to: "C1"
+
+  budget:
+    cap_usd_per_day: 0.30
+    cap_usd_per_run: 0.15
+    alert_threshold_ratio: 0.8
+
+  ledger:
+    enabled: true
+    default_tags: ["advisor", "tooling", "meta"]
+
+  delivery_defaults:
+    channel: "webhook"
+    target_env: "DISCORD_BRIEFING_WEBHOOK_URL"
+    on_failure: "alert"
+
+  safety_defaults:
+    write_requires_confirmation: true   # 자동 설치 방지
+    write_max_retries: 0
+    read_max_retries: 2
+    analyze_max_retries: 1
+
+  runtime_home: "${HERMES_RUNTIME_HOME}"
+  profile_home: "${HERMES_PROFILE_HOME}"

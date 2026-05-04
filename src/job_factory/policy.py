@@ -104,18 +104,22 @@ class _SlidingCounter:
 class CloudPolicyConfig:
     """Knobs loaded from ``config/cloud_policy.yaml``.
 
-    All caps are inclusive: e.g., ``openai_calls_per_hour=10`` means the
-    11th call is denied. Setting any cap to 0 disables that check.
+    All caps are inclusive: e.g., ``claude_auto_calls_per_hour=10`` means
+    the 11th call is denied. Setting any cap to 0 disables that check.
+
+    2026-05-04: OpenAI rate caps removed when API legacy was purged.
+    Claude CLI is the only cloud lane.
     """
 
-    # OpenAI rate caps.
-    openai_calls_per_hour: int = 60
-    openai_calls_per_day: int = 1000
-
-    # Claude CLI rate caps. Auto-triggered Claude differs from manual
-    # `!heavy` (separate counters in the legacy orchestrator).
+    # Claude CLI rate caps. Auto-triggered Claude (Job Factory escalation,
+    # cron prompt wrap, bench LLMJudge) differs from manual `!heavy`
+    # (separate counters in the legacy orchestrator).
     claude_auto_calls_per_hour: int = 10
     claude_auto_calls_per_day: int = 50
+
+    # Per-process cap on simultaneous Claude CLI sessions (Max session
+    # contention guard).
+    claude_cli_concurrent_max: int = 3
 
     # USD caps (input + output combined, estimated from cost_per_1m).
     daily_usd_cap: float = 5.0
@@ -154,10 +158,9 @@ class CloudPolicyConfig:
             return float(v) if isinstance(v, (int, float)) else default
 
         return cls(
-            openai_calls_per_hour=_i("openai_calls_per_hour", 60),
-            openai_calls_per_day=_i("openai_calls_per_day", 1000),
             claude_auto_calls_per_hour=_i("claude_auto_calls_per_hour", 10),
             claude_auto_calls_per_day=_i("claude_auto_calls_per_day", 50),
+            claude_cli_concurrent_max=_i("claude_cli_concurrent_max", 3),
             daily_usd_cap=_f("daily_usd_cap", 5.0),
             approval_estimated_tokens_above=_i(
                 "approval_estimated_tokens_above", 10_000
@@ -198,8 +201,6 @@ class CloudPolicy:
         self._cfg = config or CloudPolicyConfig()
         self._clock = clock
 
-        self._openai_hour = _SlidingCounter(_SECONDS_PER_HOUR)
-        self._openai_day = _SlidingCounter(_SECONDS_PER_DAY)
         self._claude_hour = _SlidingCounter(_SECONDS_PER_HOUR)
         self._claude_day = _SlidingCounter(_SECONDS_PER_DAY)
 
@@ -306,10 +307,7 @@ class CloudPolicy:
         ``evaluate`` (best-effort — not perfectly accurate)."""
         now = self._clock()
         provider = entry.provider
-        if provider == "openai":
-            self._openai_hour.record(now)
-            self._openai_day.record(now)
-        elif provider == "claude_cli":
+        if provider == "claude_cli":
             self._claude_hour.record(now)
             self._claude_day.record(now)
         else:
@@ -325,8 +323,6 @@ class CloudPolicy:
         """Snapshot of current counters (for ledger / observability)."""
         now = self._clock()
         return {
-            "openai_hour": self._openai_hour.count(now=now),
-            "openai_day": self._openai_day.count(now=now),
             "claude_hour": self._claude_hour.count(now=now),
             "claude_day": self._claude_day.count(now=now),
             "daily_cost_usd": self._daily_cost_usd(now=now),
@@ -336,34 +332,7 @@ class CloudPolicy:
 
     def _check_rate_caps(self, provider: str) -> PolicyVerdict | None:
         now = self._clock()
-        if provider == "openai":
-            if (
-                self._cfg.openai_calls_per_hour > 0
-                and self._openai_hour.count(now=now)
-                >= self._cfg.openai_calls_per_hour
-            ):
-                return PolicyVerdict(
-                    outcome="deny",
-                    reason=(
-                        f"OpenAI hourly cap reached "
-                        f"({self._cfg.openai_calls_per_hour}/hour)"
-                    ),
-                    triggered_rule="openai_hourly_cap",
-                )
-            if (
-                self._cfg.openai_calls_per_day > 0
-                and self._openai_day.count(now=now)
-                >= self._cfg.openai_calls_per_day
-            ):
-                return PolicyVerdict(
-                    outcome="deny",
-                    reason=(
-                        f"OpenAI daily cap reached "
-                        f"({self._cfg.openai_calls_per_day}/day)"
-                    ),
-                    triggered_rule="openai_daily_cap",
-                )
-        elif provider == "claude_cli":
+        if provider == "claude_cli":
             if (
                 self._cfg.claude_auto_calls_per_hour > 0
                 and self._claude_hour.count(now=now)

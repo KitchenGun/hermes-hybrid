@@ -12,8 +12,6 @@ dependencies = [
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "httpx>=0.25.0",
-    "openai>=1.0.0",
-    "anthropic>=0.20.0",
     "jsonschema>=4.0.0",
     "structlog>=24.0.0",
     "python-dotenv>=1.0.0",
@@ -23,14 +21,9 @@ dependencies = [
 
 [project.optional-dependencies]
 ollama = ["ollama>=0.3.0"]
-# Runtime-mode game/playtest detection: watcher needs psutil to scan the
-# process list, hotkey daemon needs the `keyboard` lib for global hooks.
-# Both are Windows-desktop-only in practice; install with
-# ``pip install -e .[runtime-mode]`` on the gaming/dev box.
-runtime-mode = [
-    "psutil>=5.9.0",
-    "keyboard>=0.13.5",
-]
+# system_mode game watcher: stdlib-only (uses tasklist on Windows), so no
+# extra deps needed. The optional psutil/keyboard hooks were removed when
+# the 3-mode runtime_mode system was deprecated (2026-05-04).
 mail = [
     "google-api-python-client>=2.130.0",
     "google-auth-oauthlib>=1.2.0",

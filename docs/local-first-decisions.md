@@ -53,7 +53,7 @@ Baseline (kept so ScoreMatrix can prove improvement):
 | mail_ops | Python mail_skill (orchestrator-side) | gpt-4o-mini (config dead — skill bypasses Hermes) | no |
 | kk_job | (no caller in src/orchestrator or src/gateway) | gpt-4o + ollama:coder:32b fallback | no |
 
-→ Only journal_ops + calendar_ops actually consume their `model:` field via Hermes CLI. mail_ops + kk_job profile model edits are cosmetic — the real OpenAI surrogate exit for those is the Python `mail_skill` and the orchestrator's `_openai_surrogate_*` lazy clients (already gated by `effective_ollama_enabled`).
+→ Only journal_ops + calendar_ops actually consume their `model:` field via Hermes CLI. mail_ops + kk_job profile model edits are cosmetic — the real OpenAI surrogate exit for those is the Python `mail_skill` and the orchestrator's `_openai_surrogate_*` lazy clients (already gated by `ollama_routable`).
 
 ## Bench results — baseline + deepseek-r1:14b (2026-05-01T08:11Z)
 
@@ -152,7 +152,7 @@ The split is router (tiny, fast) + worker (medium, behavior-safe) + judge (mediu
 |---------|--------------|-----|-------|
 | **journal_ops** | **gpt-oss:20b** | tool_calls=4 in smoke (sheets_append fired, `OK rows=1`); schedule_logging 95.3, korean 93.3, tps 139.4, context 131K | strict mode kept; `max_turns: 8`; prompt simplified (don't search for `intent_schema.json`, skip `skill_view` before terminal) |
 | **calendar_ops** | **gpt-oss:20b** | only `tools`-capable arm with korean ≥90 + routing ≥80 + sub-2s json latency; OAuth check passed in smoke | direct hermes-CLI call still confuses tool routing (46 tools declared); the calendar_skill orchestrator path provides the actual prompt scaffolding |
-| mail_ops | (no change — config dead) | Python mail_skill bypasses profile model; orchestrator surrogate now uses Ollama via `effective_ollama_enabled` | n/a |
+| mail_ops | (no change — config dead) | Python mail_skill bypasses profile model; orchestrator surrogate now uses Ollama via `ollama_routable` | n/a |
 | kk_job | (no change — config dead) | not invoked in current bot wiring | rebench when wired |
 
 ### Orchestrator surrogate (`.env`)
@@ -179,4 +179,4 @@ calendar_ops `session_20260501_173623_41e5ca.json` — **partial**:
 - `git checkout profiles/ config/ src/` reverts all code/profile changes
 - `cp .env.bak.20260501 .env` reverts settings
 - `cp ~/.hermes/profiles/<p>/.env.bak.* ~/.hermes/profiles/<p>/.env` reverts WSL profile env
-- Toggle `LOCAL_FIRST_MODE=False` to fall back to OpenAI surrogate path without code revert (effective_ollama_enabled still True if OLLAMA_ENABLED=true)
+- Toggle `LOCAL_FIRST_MODE=False` to fall back to OpenAI surrogate path without code revert (ollama_routable still True if OLLAMA_ENABLED=true)

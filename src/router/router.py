@@ -28,26 +28,20 @@ log = get_logger(__name__)
 
 Route = Literal["local", "worker", "cloud"]
 
-# FIX#1: Router may recommend a concrete *provider* for downstream wiring, but
-# the set is deliberately restricted to providers that go through Hermes /
-# OpenAI. ``claude-code`` is NOT a member — it can only be reached via the
-# explicit ``!heavy`` path. Encoding this as a ``Literal`` means a regression
-# that tries to add ``claude-code`` to the Router will fail type checks, not
-# silently burn Max quota at runtime.
-Provider = Literal["ollama", "openai"]
+# FIX#1: Router emits a concrete provider for downstream wiring. After the
+# 2026-05-04 OpenAI removal, ollama is the only Router-emitted provider —
+# cloud route still exists at the Route level but the orchestrator's _run_c1
+# path handles cloud by directly invoking Claude CLI (Max OAuth, $0), bypassing
+# the Router. ``claude-code`` deliberately NOT in this Literal so a regression
+# can't accidentally route auto-traffic through Max quota at the Router layer.
+Provider = Literal["ollama"]
 
 
 def _route_to_provider(route: Route, *, ollama_enabled: bool) -> Provider:
-    """Resolve a route to the provider that should serve it.
-
-    - ``local`` / ``worker`` → ``ollama`` when enabled, else ``openai``
-      (surrogate path, still not claude-code).
-    - ``cloud`` → ``openai`` (C1 surrogate / main). Claude is never reached
-      via the router.
-    """
-    if route in ("local", "worker") and ollama_enabled:
-        return "ollama"
-    return "openai"
+    """Resolve a route to the provider. After OpenAI removal, ollama is the
+    only Router-emitted provider; cloud route is still emitted but its serving
+    backend (Claude CLI) is selected by the orchestrator, not the Router."""
+    return "ollama"
 
 
 @dataclass(frozen=True)
@@ -57,10 +51,9 @@ class RouterDecision:
     reason: str
     requires_planning: bool
     # FIX#1: recommended provider, constrained by the ``Provider`` Literal to
-    # exclude ``claude-code`` at the type level. Defaults to ``openai`` so
-    # call sites that construct ``RouterDecision`` directly (tests, tooling)
-    # never accidentally emit ``claude-code``.
-    provider: Provider = "openai"
+    # exclude ``claude-code`` at the type level. Defaults to ``ollama`` after
+    # 2026-05-04 OpenAI removal — Router never emits cloud-direct providers.
+    provider: Provider = "ollama"
 
     def to_dict(self) -> dict:
         return {

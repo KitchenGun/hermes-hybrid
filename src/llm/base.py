@@ -59,20 +59,3 @@ class LLMClient(Protocol):
         max_tokens: int = 2048,
         temperature: float = 0.2,
     ) -> LLMResponse: ...
-
-
-def classify_openai_exception(e: Exception) -> LLMError:
-    """Map OpenAI/Anthropic SDK exceptions to our typed errors."""
-    name = type(e).__name__.lower()
-    msg = str(e)
-    if "timeout" in name or "timeout" in msg.lower():
-        return LLMTimeoutError(msg)
-    if "ratelimit" in name or "429" in msg:
-        return LLMRateLimitError(msg)
-    if "authentic" in name or "401" in msg or "403" in msg or "unauthorized" in msg.lower():
-        return LLMAuthError(msg)
-    if "connect" in name or "apiconnection" in name:
-        return LLMConnectionError(msg)
-    if "internalserver" in name or "serviceunavailable" in name or "500" in msg or "502" in msg or "503" in msg:
-        return LLMServerError(msg)
-    return LLMError(msg)

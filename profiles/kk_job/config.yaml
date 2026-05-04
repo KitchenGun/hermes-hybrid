@@ -19,9 +19,6 @@ model:
   # Re-evaluate when Nous portal or an OpenAI key is wired into hermes.
   provider: "custom"
   model: "gpt-oss:20b"
-  fallback:
-    provider: "custom"
-    model: "qwen2.5-coder:32b-instruct"
 
 # ── 터미널 백엔드 ─────────────────────────────────────────────────
 terminal:

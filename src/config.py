@@ -44,45 +44,25 @@ class Settings(BaseSettings):
     hermes_concurrency: int = 3  # R13: cap parallel subprocess calls
     gateway_service_name: str = "hermes-gateway"  # for R6 pre-check
 
-    # Cloud LLMs
-    openai_api_key: str = ""
-    openai_model: str = "gpt-4o"
-    openai_model_local_surrogate: str = "gpt-4o-mini"   # R3: local tier surrogate (Ollama off)
-    openai_model_worker_surrogate: str = "gpt-4o"        # R3: worker tier surrogate
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-opus-4-7"
-
     # Claude Code CLI (heavy path — uses Max subscription OAuth, zero API cost)
+    # 2026-05-04: OpenAI/Anthropic API legacy fully removed — Claude CLI is the
+    # only cloud lane. ollama is the only local lane.
     claude_code_cli_backend: Literal["wsl_subprocess", "local_subprocess"] = "wsl_subprocess"
     claude_code_cli_path: str = "/home/kang/.local/bin/claude"
     claude_code_model: str = "sonnet"  # alias; "opus" / full name also accepted
     claude_code_timeout_ms: int = 300_000  # heavy tasks can take minutes
     claude_code_concurrency: int = 1  # Max session has per-hour limits; don't stampede
 
-    # C1 backend selector. When OpenAI TPM/quota limits make the legacy
-    # gpt-4o path unusable (see incident 2026-04-21), flip this to
-    # ``claude_cli`` and C1 runs through the Claude Code CLI with the
-    # Haiku model — still Max OAuth, zero per-token cost, but a lighter
-    # model than C2/heavy. Precedence:
+    # C1 backend — fixed to claude_cli (Max OAuth, $0 marginal). 2026-05-04:
+    # OpenAI legacy removed. Precedence:
     #   1. ``use_hermes_for_c1=True``  → Hermes-driven C1 (Phase 2 path)
-    #   2. ``c1_backend="claude_cli"`` → direct Claude CLI with Haiku
-    #   3. else                         → legacy direct gpt-4o
+    #   2. else                         → direct Claude CLI with Haiku
     # The Haiku C1 instance has its own concurrency pool so it does NOT
     # share the heavy-path cap of 1 (which would serialize C1 behind C2).
-    c1_backend: Literal["openai", "claude_cli"] = "openai"
+    c1_backend: Literal["claude_cli"] = "claude_cli"
     c1_claude_code_model: str = "haiku"           # alias; full name also accepted
     c1_claude_code_timeout_ms: int = 120_000      # C1 is per-turn planning, not deep
     c1_claude_code_concurrency: int = 3           # Haiku is light; allow real parallelism
-
-    # Game-mode Claude family default. When runtime_mode is "playtest" or
-    # "gaming", effective_c1_claude_code_model returns this instead of
-    # ``c1_claude_code_model``. Default = "sonnet" based on the 2026-05-03
-    # bench sweep (Sonnet judge): Sonnet was the most balanced model across
-    # all 10 job_types — 1st place in image_asset_request / heavy_project_task /
-    # document_transform / web_research / schedule_logging, never below 72.
-    # Haiku wins coding/simple chat; Opus never wins. See
-    # config/game_mode_routing.yaml for per-job_type details.
-    game_mode_claude_model: str = "sonnet"
 
     # Calendar skill — routes calendar/schedule queries to the calendar_ops
     # Hermes profile so the google-workspace skill (with OAuth) is active.
@@ -120,17 +100,15 @@ class Settings(BaseSettings):
     #   "ollama"    — uses ``ollama_judge_model`` locally. Free + unlimited
     #                 but lower-quality grading. Default for BenchScheduler
     #                 (the auto-loop) so we never burn Claude quota silently.
-    #   "openai"    — legacy; uses gpt-4o-mini via openai_api_key. Costs a
-    #                 few cents per sweep; disabled when key is empty.
-    bench_judge_backend: Literal["claude_cli", "ollama", "openai"] = "claude_cli"
+    # 2026-05-04: "openai" backend removed when API legacy was purged.
+    bench_judge_backend: Literal["claude_cli", "ollama"] = "claude_cli"
     ollama_judge_model: str = "qwen2.5:14b-instruct"  # used when bench_judge_backend="ollama"
 
-    # Local-first migration master flag. When True, the orchestrator's L0
-    # (router) / L2 (work) / L3 (worker) surrogate paths prefer local Ollama
-    # over the OpenAI surrogate even if openai_api_key is set. The OpenAI
-    # lazy clients stay registered as fallback so flipping this to False
-    # restores the legacy behavior without code changes. Off by default
-    # so this commit is reversible. Flip via env: LOCAL_FIRST_MODE=True.
+    # Local-first master flag. Historical: routed L0/L2/L3 to Ollama instead
+    # of the OpenAI surrogate. 2026-05-04: OpenAI surrogate removed entirely,
+    # so this flag now just signals "prefer local ollama over Hermes-routed
+    # paths" for the L2/L3 lane. Kept for backward compat with .env settings;
+    # may be folded into ``ollama_enabled`` in a future cleanup.
     local_first_mode: bool = False
 
     # Phase 1 rollout flag (off by default). When true, L2/L3 requests are
@@ -249,63 +227,21 @@ class Settings(BaseSettings):
             return set()
         return {int(x) for x in self.discord_allowed_user_ids.split(",") if x.strip()}
 
+    @property
+    def ollama_routable(self) -> bool:
+        """True when Ollama is the routing target for local-tier work.
+
+        Either flag enables the lane: ``ollama_enabled`` is the explicit
+        switch, ``local_first_mode`` is the migration master that implies
+        Ollama-as-default. No runtime-mode override — game/editor sessions
+        manage their own ollama process state out-of-band if needed.
+        """
+        return self.ollama_enabled or self.local_first_mode
+
     # Phase 3: the per-phase flags should answer "are we routing through
     # Hermes for this lane?" after factoring in the master switch. Callers
     # in the orchestrator read these via ``effective_*`` so the rollout
     # story stays: "flip use_hermes_everywhere once all per-lane gates hold."
-    @property
-    def effective_ollama_enabled(self) -> bool:
-        """True when Ollama should be used for local-tier work.
-
-        Local-first mode implies Ollama is enabled — flipping
-        ``LOCAL_FIRST_MODE=True`` alone is sufficient to reroute the L0/L2/L3
-        surrogate paths through Ollama without also setting
-        ``OLLAMA_ENABLED=True`` (single-knob ergonomics).
-
-        Runtime-mode override: when ``runtime_mode.get().mode`` is
-        ``playtest`` or ``gaming``, Ollama is forced OFF so the GPU/VRAM
-        is free for the game / editor PIE. Flipping back to ``dev`` (via
-        CLI / hotkey / watcher / PIE webhook) restores routing without a
-        process restart. The static flags above remain unchanged.
-        """
-        if not (self.ollama_enabled or self.local_first_mode):
-            return False
-        # Lazy import: runtime_mode has no Settings dependency, but
-        # importing at module top would create a tight coupling that
-        # makes Settings non-importable in early-init paths.
-        from src.runtime_mode import get as _runtime_mode_get
-        return _runtime_mode_get().local_llm_should_run
-
-    @property
-    def effective_c1_backend(self) -> Literal["openai", "claude_cli"]:
-        """C1 backend with runtime-mode override.
-
-        In ``playtest`` / ``gaming`` mode, force ``claude_cli`` (Max OAuth,
-        $0 marginal cost) so a long game session can't silently burn
-        OpenAI tokens. In ``dev`` mode, defer to the configured
-        :attr:`c1_backend`. The orchestrator reads this property instead
-        of ``c1_backend`` directly so the override applies everywhere.
-        """
-        from src.runtime_mode import get as _runtime_mode_get
-        if not _runtime_mode_get().local_llm_should_run:
-            return "claude_cli"
-        return self.c1_backend
-
-    @property
-    def effective_c1_claude_code_model(self) -> str:
-        """Claude alias for C1 with runtime-mode override.
-
-        In ``playtest`` / ``gaming`` mode, returns :attr:`game_mode_claude_model`
-        (default ``"sonnet"``) so cloud-routed C1 calls during a game session
-        use the empirically best-balanced model. In ``dev`` mode, returns
-        :attr:`c1_claude_code_model` (default ``"haiku"``) — the legacy
-        cheap/fast alias for normal planning.
-        """
-        from src.runtime_mode import get as _runtime_mode_get
-        if not _runtime_mode_get().local_llm_should_run:
-            return self.game_mode_claude_model
-        return self.c1_claude_code_model
-
     @property
     def effective_use_hermes_for_local(self) -> bool:
         return self.use_hermes_for_local or self.use_hermes_everywhere

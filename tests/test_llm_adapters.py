@@ -27,7 +27,6 @@ from src.llm.adapters import (
     HermesProfileAdapter,
     LLMAdapter,
     OllamaAdapter,
-    OpenAIAdapter,
     flatten_to_prompt,
     messages_to_dicts,
 )
@@ -290,22 +289,6 @@ async def test_ollama_adapter_honors_timeout():
         await a.generate(req)
 
 
-# ---- OpenAIAdapter --------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_openai_adapter_provider_and_normalize():
-    fake = _FakeLLMClient(model="gpt-4o-mini", response_text="hi-from-gpt")
-    a = OpenAIAdapter(fake)
-    assert a.provider == "openai"
-    assert a.model == "gpt-4o-mini"
-    req = AdapterRequest(messages=[ChatMessage(role="user", content="x")])
-    resp = await a.generate(req)
-    assert resp.text == "hi-from-gpt"
-    assert resp.provider == "openai"
-    assert resp.model == "gpt-4o-mini"
-
-
 # ---- ClaudeCLIAdapter -----------------------------------------------------
 
 
@@ -428,10 +411,9 @@ async def test_hermes_profile_adapter_pins_profile_and_flattens():
 
 @pytest.mark.asyncio
 async def test_all_adapters_satisfy_llmadapter_protocol():
-    """isinstance() against runtime_checkable LLMAdapter must accept all 4."""
+    """isinstance() against runtime_checkable LLMAdapter must accept all 3."""
     adapters = [
         OllamaAdapter(_FakeLLMClient()),
-        OpenAIAdapter(_FakeLLMClient()),
         ClaudeCLIAdapter(_FakeClaudeAdapter(), model="haiku"),
         HermesProfileAdapter(_FakeHermesAdapter(), profile="calendar_ops"),
     ]

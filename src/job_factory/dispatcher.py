@@ -301,9 +301,15 @@ class JobFactoryDispatcher:
         for entry in self._models.cloud:
             if entry.matrix_key not in self._cloud_adapters:
                 continue
-            if entry.provider == "openai" and not job.cloud_allowed:
-                continue
-            if entry.provider == "claude_cli" and not job.claude_allowed:
+            # Provider-specific gates: claude_cli uses claude_allowed
+            # independently; any other (future) cloud provider uses
+            # cloud_allowed. 2026-05-04: OpenAI removed; only claude_cli
+            # is wired today, but the generic gate is retained for any
+            # future non-claude cloud provider.
+            if entry.provider == "claude_cli":
+                if not job.claude_allowed:
+                    continue
+            elif not job.cloud_allowed:
                 continue
             out.append(entry)
         return out

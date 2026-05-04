@@ -2,9 +2,12 @@
 
 These tests stub out:
   - HermesAdapter.run (avoid real WSL subprocess)
-  - OpenAIClient / AnthropicClient / OllamaClient .generate
+  - OllamaClient.generate
+  - ClaudeCodeAdapter.run (heavy + C1 lanes)
 
 so we can exercise every policy branch deterministically.
+
+2026-05-04: OpenAI/Anthropic clients removed when API legacy was purged.
 """
 from __future__ import annotations
 

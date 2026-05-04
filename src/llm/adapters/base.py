@@ -129,9 +129,8 @@ class LLMAdapter(Protocol):
 def messages_to_dicts(messages: list[ChatMessage]) -> list[dict[str, str]]:
     """Convert ChatMessage list to the dict format used by LLMClient.
 
-    Existing :class:`OllamaClient` / :class:`OpenAIClient` /
-    :class:`AnthropicClient` accept ``list[dict[str, str]]`` with the
-    same role/content keys, so adapters wrapping them just call this.
+    :class:`OllamaClient` accepts ``list[dict[str, str]]`` with the
+    standard role/content keys, so adapters wrapping it just call this.
     """
     return [m.to_dict() for m in messages]
 

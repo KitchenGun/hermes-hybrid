@@ -144,8 +144,8 @@ class Refiner:
 
     The LLM client is abstracted via a callable: ``llm_call(messages) → text``.
     This keeps the Refiner framework-agnostic and testable — the orchestrator
-    wires in a real :class:`src.llm.OpenAIClient` / :class:`OllamaClient`
-    lambda at construction time.
+    wires in a real :class:`OllamaClient` / Claude CLI adapter lambda at
+    construction time.
     """
 
     profiles_dir: Path

@@ -151,8 +151,6 @@ def _permissive_policy():
     reach the cloud step unconditionally."""
     from src.job_factory.policy import CloudPolicy, CloudPolicyConfig
     cfg = CloudPolicyConfig(
-        openai_calls_per_hour=0,
-        openai_calls_per_day=0,
         claude_auto_calls_per_hour=0,
         claude_auto_calls_per_day=0,
         daily_usd_cap=0,
@@ -362,23 +360,23 @@ async def test_cloud_escalation_on_local_exhaustion(tmp_path):
         "summarize",
         quality_threshold=80,
         max_attempts=1,
-        cloud_allowed=True,
+        cloud_allowed=True, claude_allowed=True,
     )
     jobs = _registry([job])
     models = _model_registry(
         local=[("ollama", "weak")],
-        cloud=[("openai", "gpt-4o-mini")],
+        cloud=[("claude_cli", "haiku")],
     )
 
     local = _StubAdapter(model_name="weak", response_text="meh")
     cloud = _StubAdapter(
-        provider_name="openai",
-        model_name="gpt-4o-mini",
+        provider_name="claude_cli",
+        model_name="haiku",
         response_text="great cloud answer",
     )
 
     async def validator(job, resp):
-        if resp.provider == "openai":
+        if resp.provider == "claude_cli":
             return 95.0, True
         return 30.0, True
 
@@ -392,7 +390,7 @@ async def test_cloud_escalation_on_local_exhaustion(tmp_path):
         selector=selector,
         score_matrix=matrix,
         local_adapters={"ollama/weak": local},
-        cloud_adapters={"openai/gpt-4o-mini": cloud},
+        cloud_adapters={"claude_cli/haiku": cloud},
         validator=validator,
         cloud_policy=_permissive_policy(),
     )
@@ -401,20 +399,20 @@ async def test_cloud_escalation_on_local_exhaustion(tmp_path):
     # 1 local attempt + 1 cloud attempt.
     assert len(result.steps) == 2
     # Last step is cloud and passed.
-    assert result.steps[-1].provider == "openai"
+    assert result.steps[-1].provider == "claude_cli"
     assert result.steps[-1].passed
     assert result.final_text == "great cloud answer"
     # Selection reason for cloud step is the unified escalation marker
     # (Phase 6: dropped per-provider suffix — single escalation arm bandit).
     assert result.steps[-1].selection_reason == "escalation"
     # ScoreMatrix updated for cloud arm too.
-    assert matrix.get("summarize", "openai/gpt-4o-mini").n == 1
+    assert matrix.get("summarize", "claude_cli/haiku").n == 1
 
 
 @pytest.mark.asyncio
 async def test_claude_escalation_when_cloud_disabled(tmp_path):
-    """cloud_allowed=False but claude_allowed=True → skip OpenAI, hit
-    Claude. Reflects the design where code jobs go local→Claude."""
+    """cloud_allowed=False but claude_allowed=True → non-claude cloud
+    blocked, claude_cli still passes (provider-specific gate logic)."""
     matrix = _matrix(tmp_path)
     job = _job_type(
         "code_generation",
@@ -427,15 +425,15 @@ async def test_claude_escalation_when_cloud_disabled(tmp_path):
     models = _model_registry(
         local=[("ollama", "qwen-coder")],
         cloud=[
-            ("openai", "gpt-4o"),         # blocked by policy
-            ("claude_cli", "sonnet"),     # allowed
+            ("future_cloud", "x"),       # blocked by cloud_allowed=False
+            ("claude_cli", "sonnet"),    # allowed by claude_allowed=True
         ],
     )
 
     local = _StubAdapter(model_name="qwen-coder", response_text="weak code")
-    openai = _StubAdapter(
-        provider_name="openai",
-        model_name="gpt-4o",
+    future = _StubAdapter(
+        provider_name="future_cloud",
+        model_name="x",
         response_text="should not be called",
     )
     claude = _StubAdapter(
@@ -460,19 +458,19 @@ async def test_claude_escalation_when_cloud_disabled(tmp_path):
         score_matrix=matrix,
         local_adapters={"ollama/qwen-coder": local},
         cloud_adapters={
-            "openai/gpt-4o": openai,
+            "future_cloud/x": future,
             "claude_cli/sonnet": claude,
         },
         validator=validator,
         cloud_policy=_permissive_policy(),
     )
     result = await dispatcher.dispatch("write code")
-    # Local once + Claude (OpenAI skipped by policy).
+    # Local once + Claude (future_cloud blocked by cloud_allowed=False).
     assert result.outcome == "ok"
     providers = [s.provider for s in result.steps]
     assert "claude_cli" in providers
-    assert "openai" not in providers
-    assert openai.calls == 0
+    assert "future_cloud" not in providers
+    assert future.calls == 0
 
 
 # ---- Runner integration ---------------------------------------------------
@@ -566,29 +564,29 @@ async def test_cloud_step_denied_by_policy_returns_denied_cloud(tmp_path):
     matrix = _matrix(tmp_path)
     job = _job_type(
         "summarize",
-        quality_threshold=80, max_attempts=1, cloud_allowed=True,
+        quality_threshold=80, max_attempts=1, cloud_allowed=True, claude_allowed=True,
     )
     jobs = _registry([job])
     models = _model_registry(
         local=[("ollama", "weak")],
-        cloud=[("openai", "gpt-4o-mini")],
+        cloud=[("claude_cli", "haiku")],
     )
     local = _StubAdapter(model_name="weak", response_text="meh")
     cloud = _StubAdapter(
-        provider_name="openai", model_name="gpt-4o-mini",
+        provider_name="claude_cli", model_name="haiku",
         response_text="should not be called",
     )
 
-    # Policy: 1 OpenAI call/hour, then deny.
+    # Policy: 1 Claude CLI call/hour, then deny.
     policy = CloudPolicy(config=CloudPolicyConfig(
-        openai_calls_per_hour=1,
-        openai_calls_per_day=0,
+        claude_auto_calls_per_hour=1,
+        claude_auto_calls_per_day=0,
         daily_usd_cap=0,
         approval_estimated_tokens_above=0,
         approval_estimated_cost_above_usd=0,
     ))
     # Burn the only allowed call so the next evaluate() denies.
-    policy.record_call(ModelEntry(provider="openai", name="gpt-4o-mini"))
+    policy.record_call(ModelEntry(provider="claude_cli", name="haiku"))
 
     selector = EpsilonGreedySelector(
         matrix, epsilon=0.0, warmup_n=0, rng=random.Random(0),
@@ -600,7 +598,7 @@ async def test_cloud_step_denied_by_policy_returns_denied_cloud(tmp_path):
         selector=selector,
         score_matrix=matrix,
         local_adapters={"ollama/weak": local},
-        cloud_adapters={"openai/gpt-4o-mini": cloud},
+        cloud_adapters={"claude_cli/haiku": cloud},
         validator=_make_validator(30.0),  # local fails
         cloud_policy=policy,
     )
@@ -666,32 +664,32 @@ async def test_cloud_bandit_picks_among_eligible_arms(tmp_path):
     """When two cloud arms are both eligible, the selector picks the one
     with highest mean (exploitation)."""
     matrix = _matrix(tmp_path)
-    # Pre-seed matrix: gpt-4o-mini → 50, gpt-4o → 90 → bandit picks gpt-4o.
+    # Pre-seed matrix: haiku → 50, sonnet → 90 → bandit picks sonnet.
     for _ in range(5):
-        await matrix.update("summarize", "openai/gpt-4o-mini", 50.0)
-        await matrix.update("summarize", "openai/gpt-4o", 90.0)
+        await matrix.update("summarize", "claude_cli/haiku", 50.0)
+        await matrix.update("summarize", "claude_cli/sonnet", 90.0)
 
     job = _job_type(
         "summarize", quality_threshold=70, max_attempts=1,
-        cloud_allowed=True,
+        cloud_allowed=True, claude_allowed=True,
     )
     jobs = _registry([job])
     models = _model_registry(
         local=[("ollama", "weak")],
-        cloud=[("openai", "gpt-4o-mini"), ("openai", "gpt-4o")],
+        cloud=[("claude_cli", "haiku"), ("claude_cli", "sonnet")],
     )
     local = _StubAdapter(model_name="weak", response_text="local fails")
     mini = _StubAdapter(
-        provider_name="openai", model_name="gpt-4o-mini",
+        provider_name="claude_cli", model_name="haiku",
         response_text="mini answer",
     )
     big = _StubAdapter(
-        provider_name="openai", model_name="gpt-4o",
+        provider_name="claude_cli", model_name="sonnet",
         response_text="big answer",
     )
 
     async def validator(job, resp):
-        if resp.model == "gpt-4o":
+        if resp.model == "sonnet":
             return 95.0, True
         return 30.0, True
 
@@ -706,8 +704,8 @@ async def test_cloud_bandit_picks_among_eligible_arms(tmp_path):
         score_matrix=matrix,
         local_adapters={"ollama/weak": local},
         cloud_adapters={
-            "openai/gpt-4o-mini": mini,
-            "openai/gpt-4o": big,
+            "claude_cli/haiku": mini,
+            "claude_cli/sonnet": big,
         },
         validator=validator,
         cloud_policy=_permissive_policy(),
@@ -716,7 +714,7 @@ async def test_cloud_bandit_picks_among_eligible_arms(tmp_path):
     assert result.outcome == "ok"
     assert big.calls == 1
     assert mini.calls == 0
-    assert matrix.get("summarize", "openai/gpt-4o").n == 6  # 5 seed + 1 new
+    assert matrix.get("summarize", "claude_cli/sonnet").n == 6  # 5 seed + 1 new
 
 
 @pytest.mark.asyncio
@@ -725,25 +723,25 @@ async def test_cloud_policy_record_call_increments_counter(tmp_path):
     matrix = _matrix(tmp_path)
     job = _job_type(
         "summarize", quality_threshold=70, max_attempts=1,
-        cloud_allowed=True,
+        cloud_allowed=True, claude_allowed=True,
     )
     jobs = _registry([job])
     models = _model_registry(
         local=[("ollama", "weak")],
-        cloud=[("openai", "gpt-4o-mini")],
+        cloud=[("claude_cli", "haiku")],
     )
     local = _StubAdapter(model_name="weak", response_text="meh")
     cloud = _StubAdapter(
-        provider_name="openai", model_name="gpt-4o-mini",
+        provider_name="claude_cli", model_name="haiku",
         response_text="cloud reply",
     )
 
     policy = _permissive_policy()
-    assert policy.stats()["openai_hour"] == 0
+    assert policy.stats()["claude_hour"] == 0
 
     # Local fails so cloud step actually fires.
     async def validator(job, resp):
-        if resp.provider == "openai":
+        if resp.provider == "claude_cli":
             return 95.0, True
         return 30.0, True
 
@@ -757,13 +755,12 @@ async def test_cloud_policy_record_call_increments_counter(tmp_path):
         selector=selector,
         score_matrix=matrix,
         local_adapters={"ollama/weak": local},
-        cloud_adapters={"openai/gpt-4o-mini": cloud},
+        cloud_adapters={"claude_cli/haiku": cloud},
         validator=validator,
         cloud_policy=policy,
     )
     await dispatcher.dispatch("summarize")
-    assert policy.stats()["openai_hour"] == 1
-    assert policy.stats()["claude_hour"] == 0
+    assert policy.stats()["claude_hour"] == 1
 
 
 @pytest.mark.asyncio

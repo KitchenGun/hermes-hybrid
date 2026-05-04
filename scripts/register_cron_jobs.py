@@ -33,7 +33,69 @@ DELIVER_MAP = {"webhook": "discord", "dm": "local"}
 HERMES_HOME = Path("/home/kang/.hermes")
 
 # Profiles that have at least one cron YAML and should be processed by --all.
-CRON_PROFILES = ["calendar_ops", "kk_job", "journal_ops"]
+CRON_PROFILES = ["calendar_ops", "kk_job", "journal_ops", "advisor_ops"]
+
+# Job-specific Claude CLI model selection for "quiet" system_mode wrap.
+# Analytical/heavy reasoning jobs get Sonnet; lightweight briefs/notifications
+# get Haiku to stay under Max quota. Unknown job_name defaults to Haiku.
+# 2026-05-04: replaces the silent-skip GUARD with a Claude CLI wrap so cron
+# jobs keep running during games at $0 marginal (Max OAuth) cost.
+JOB_QUIET_MODEL: dict[str, str] = {
+    # advisor — multi-step inventory + web research + recommendation synthesis.
+    "weekly_advisor_scan": "sonnet",
+    # kk_job — site crawl + matching + report. Analytical.
+    "morning_game_jobs": "sonnet",
+    "weekly_job_digest": "sonnet",
+    "deadline_reminder": "haiku",  # date check + Discord post; trivial.
+    # calendar_ops — three categories.
+    "morning_briefing": "haiku",      # list events + format. Simple.
+    "weather_briefing": "haiku",      # OpenWeather call + format.
+    "daily_wrap": "haiku",            # day summary. Light.
+    "weekly_preview": "haiku",        # week ahead. Light.
+    "focus_time_report": "sonnet",    # schedule analytics. Heavy.
+    "monthly_pattern": "sonnet",      # month-long analysis. Heavy.
+    "weekly_retrospective": "sonnet", # qualitative retro. Heavy.
+}
+
+
+def _claude_model_for(job_name: str) -> str:
+    """Return Sonnet/Haiku for the given cron job name. Default Haiku."""
+    return JOB_QUIET_MODEL.get(job_name, "haiku")
+
+
+def _guard_prompt_for(job_name: str) -> str:
+    """Build the per-job system_mode wrap guard.
+
+    When system_mode is "quiet" (user is in-game, ollama OFF), the cron job's
+    LLM step routes to Claude CLI (Max OAuth, $0 marginal) at the job-specific
+    model tier. When "active", proceeds with the YAML's normal flow.
+    """
+    model = _claude_model_for(job_name)
+    return f"""=== Step 0. system_mode 가드 (Claude CLI wrap) ===
+terminal: python3 /mnt/e/hermes-hybrid/scripts/system_mode.py get
+
+결과가 "quiet" 이면 (사용자가 게임 중 — ollama OFF 상태):
+  이 잡 본문의 LLM 추론을 Claude CLI로 직접 호출 (Max OAuth, $0).
+  예시:
+    claude -p "<task body — JSON 결과만 출력>" \\
+      --model {model} \\
+      --output-format json
+  Claude CLI 결과를 받아 본문의 후처리 단계(MCP/terminal/Discord/Kanban)는
+  그대로 진행. 즉 ollama 호출만 Claude CLI로 대체, 외부 도구/IO는 동일.
+
+결과가 "active" 이면 이하 본문의 ollama 흐름 그대로 진행.
+
+"""
+
+
+def inject_guard(prompt: str, job_name: str) -> str:
+    """Prepend the system_mode wrap guard to a cron prompt. Empty prompt
+    passes through. Idempotent: if guard already present, returns as-is."""
+    if not prompt:
+        return prompt
+    if "Step 0. system_mode 가드" in prompt:
+        return prompt
+    return _guard_prompt_for(job_name) + prompt
 
 
 def _wsl_run(cmd: list[str]) -> tuple[int, str]:
@@ -67,7 +129,7 @@ def load_jobs(profile: str) -> list[dict[str, Any]]:
 def register_job(profile: str, job: dict[str, Any]) -> bool:
     name = job["name"]
     schedule = job["trigger"]["schedule"]
-    prompt = job.get("prompt", "").strip()
+    prompt = inject_guard(job.get("prompt", "").strip(), name)
     skills: list[str] = job.get("skills", [])
     channel = job.get("delivery", {}).get("channel", "webhook")
     deliver = DELIVER_MAP.get(channel, "discord")
@@ -160,7 +222,7 @@ def sync_jobs_prompts(profile: str, yaml_jobs: list[dict[str, Any]]) -> int:
     patched = 0
     for y in yaml_jobs:
         name = y.get("name")
-        new_prompt = (y.get("prompt") or "").strip()
+        new_prompt = inject_guard((y.get("prompt") or "").strip(), name or "")
         if not name or not new_prompt:
             continue
         target = by_name.get(name)
