@@ -96,6 +96,22 @@ class Settings(BaseSettings):
         "/mnt/e/hermes-hybrid/profiles/calendar_ops/claude_mcp.json"
     )
 
+    # forced_profile (channel-pinned) 경로의 Claude CLI 우회 — calendar_ops
+    # 와 동일 동기. journal_ops는 기존에 ``-p journal_ops`` Hermes 호출로
+    # ollama via OPENAI_BASE_URL을 썼다. 게임모드(quiet)에서 ollama가 꺼지면
+    # 봇이 일기 채널 메시지를 처리하지 못한다. Claude CLI subprocess + bash
+    # 도구로 동일한 sheets_append를 호출하면 모드 무관하게 작동한다.
+    journal_ops_use_claude_cli: bool = False
+    journal_ops_claude_model: str = "haiku"
+    # log_activity.yaml의 prompt를 system prompt로 합쳐 보낸다. job 이름이
+    # 다른 잡으로 바뀌면 이 값을 바꾼다 (단일 on_demand 잡이라 현재는 고정).
+    journal_ops_job_name: str = "log_activity"
+    # WSL 측 .env 절대경로. 봇 subprocess가 이 파일을 source해서
+    # GOOGLE_SHEETS_WEBHOOK_URL 같은 시크릿을 Claude CLI에 노출시킨다.
+    journal_ops_env_source_path: str = (
+        "/home/kang/.hermes/profiles/journal_ops/.env"
+    )
+
     # Ollama (optional) — when disabled, R3 surrogate path is used.
     ollama_enabled: bool = False
     ollama_base_url: str = "http://localhost:11434"

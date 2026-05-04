@@ -1159,7 +1159,47 @@ class Orchestrator:
         # rejects messages like "기상 기분 좋음 컨디션 5" with "missing Date"
         # and the model dumps its reasoning trace as the user-visible reply.
         prefixed_message = f"{_format_kst_prefix()} {task.user_message}"
+
+        # 2026-05-04: Claude CLI 우회 분기. journal_ops 같이 ollama 의존
+        # 프로파일이 게임모드(quiet)에서도 동작하도록 Hermes 서브프로세스 대신
+        # ``claude -p`` subprocess + bash 도구로 sheets_append를 직접 호출.
+        # 분기 후의 try/except는 Hermes / Claude CLI 양쪽 예외를 함께 받는다.
+        use_claude_cli = (
+            task.forced_profile == "journal_ops"
+            and self.settings.journal_ops_use_claude_cli
+        )
         try:
+            if use_claude_cli:
+                text, primary_model, prompt_tok, completion_tok = (
+                    await self._run_forced_profile_via_claude_cli(
+                        task, prefixed_message
+                    )
+                )
+                task.status = "succeeded"
+                task.final_response = text or "✅ 처리됨 (응답 없음)"
+                task.record_model_output(
+                    tier=task.current_tier,
+                    text=text,
+                    model_name=primary_model,
+                    prompt_tokens=prompt_tok,
+                    completion_tokens=completion_tok,
+                )
+                handled_by = f"forced:{task.forced_profile}:claude_cli"
+                # 아래 Hermes 분기와 공유하는 정리 단계로 빠진다.
+                task.mark("finalized_at")
+                await self._persist(task)
+                if self.repo is not None:
+                    cloud_tokens = sum(
+                        mo.prompt_tokens + mo.completion_tokens
+                        for mo in task.model_outputs
+                        if mo.tier in ("C1", "C2")
+                    )
+                    if cloud_tokens > 0:
+                        await self.repo.add_tokens(task.user_id, cloud_tokens)
+                self._log_task_end(task, handled_by, t0)
+                return OrchestratorResult(
+                    task=task, response=task.final_response, handled_by=handled_by
+                )
             result = await self.hermes.run(
                 prefixed_message,
                 model=None,           # defer to profile config.yaml
@@ -1178,6 +1218,35 @@ class Orchestrator:
                 prompt_tokens=result.prompt_tokens,
                 completion_tokens=result.completion_tokens,
             )
+        except ClaudeCodeAuthError as e:
+            log.warning("forced_profile.claude_auth", profile=task.forced_profile, err=str(e))
+            task.record_error("tool_error", f"claude auth/quota: {e}", tier=task.current_tier)
+            task.status = "failed"
+            task.degraded = True
+            task.final_response = (
+                f"⚠️ `{task.forced_profile}` Claude CLI 인증/쿼터 실패. "
+                "Max OAuth 토큰 또는 사용량 한도를 확인하세요."
+            )
+            handled_by = f"forced:{task.forced_profile}:claude_auth"
+        except ClaudeCodeTimeout as e:
+            log.warning("forced_profile.claude_timeout", profile=task.forced_profile, err=str(e))
+            task.record_error("timeout", f"claude timeout: {e}", tier=task.current_tier)
+            task.status = "failed"
+            task.degraded = True
+            task.final_response = (
+                f"⚠️ `{task.forced_profile}` Claude CLI 시간 초과."
+            )
+            handled_by = f"forced:{task.forced_profile}:claude_timeout"
+        except ClaudeCodeAdapterError as e:
+            log.warning("forced_profile.claude_error", profile=task.forced_profile, err=str(e))
+            task.record_error("tool_error", f"claude error: {e}", tier=task.current_tier)
+            task.status = "failed"
+            task.degraded = True
+            task.final_response = (
+                f"⚠️ `{task.forced_profile}` Claude CLI 실패: `{type(e).__name__}`\n"
+                f"```\n{str(e)[:400]}\n```"
+            )
+            handled_by = f"forced:{task.forced_profile}:claude_error"
         except HermesAuthError as e:
             log.warning("forced_profile.auth_error", profile=task.forced_profile, err=str(e))
             task.record_error(
@@ -1227,6 +1296,52 @@ class Orchestrator:
         self._log_task_end(task, handled_by, t0)
         return OrchestratorResult(
             task=task, response=task.final_response, handled_by=handled_by
+        )
+
+    async def _run_forced_profile_via_claude_cli(
+        self, task: TaskState, prefixed_message: str
+    ) -> tuple[str, str, int, int]:
+        """journal_ops 등 forced_profile을 Claude CLI subprocess로 실행.
+
+        Hermes 우회 경로 — 게임모드(quiet)에서도 동작하도록 OPENAI_BASE_URL/
+        ollama 의존을 끊는다. profile yaml의 ``prompt:`` 필드를
+        ``--append-system-prompt`` 로 주입해 24-필드 스키마와 sheets_append
+        절차를 모델에 그대로 전달한다.
+
+        Returns: (text, model_name, prompt_tokens, completion_tokens)
+        """
+        s = self.settings
+        profile_id = task.forced_profile or ""
+        # journal_ops는 단일 on_demand 잡(log_activity)이라 job 이름을 settings로
+        # 고정. 다른 forced_profile이 추가되면 매핑 dict로 일반화 필요.
+        job_name = s.journal_ops_job_name
+        meta: JobMeta | None = self.profile_loader.get_job_meta(
+            profile_id, job_name
+        )
+        # JobMeta는 prompt를 별도 필드로 모델링하지 않고 raw에 둔다.
+        system_prompt = ""
+        if meta is not None:
+            system_prompt = str(meta.raw.get("prompt") or "").strip()
+        if not system_prompt:
+            raise ClaudeCodeAdapterError(
+                f"profile '{profile_id}'의 '{job_name}.yaml'에서 prompt를 "
+                f"찾지 못했다. yaml의 ``prompt:`` 필드가 비어있거나 잡 이름이 "
+                f"{s.journal_ops_job_name!r} 와 다르다."
+            )
+
+        result = await self.claude_code_c1.run(
+            prompt=prefixed_message,
+            model=s.journal_ops_claude_model,
+            timeout_ms=s.hermes_timeout_ms,
+            persist_session=False,
+            append_system_prompt=system_prompt,
+            env_source_path=s.journal_ops_env_source_path,
+        )
+        return (
+            result.text,
+            result.model_name,
+            result.input_tokens,
+            result.output_tokens,
         )
 
     async def _handle_heavy(self, task: TaskState, t0: float) -> OrchestratorResult:
