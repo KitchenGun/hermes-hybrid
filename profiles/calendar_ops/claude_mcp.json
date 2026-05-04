@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "google_calendar": {
+      "command": "/home/kang/.local/bin/npx",
+      "args": ["-y", "@cocal/google-calendar-mcp"],
+      "env": {
+        "GOOGLE_OAUTH_CREDENTIALS": "/home/kang/.hermes/profiles/calendar_ops/google_client_secret.json",
+        "GOOGLE_CALENDAR_MCP_TOKEN_PATH": "/home/kang/.hermes/profiles/calendar_ops/google_token_cocal.json",
+        "PATH": "/home/kang/.local/bin:/usr/local/bin:/usr/bin:/bin"
+      }
+    }
+  }
+}

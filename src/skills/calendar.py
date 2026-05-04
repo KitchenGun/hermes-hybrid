@@ -119,11 +119,9 @@ class CalendarSkill(Skill):
     async def invoke(self, match: SkillMatch, ctx: SkillContext) -> str:
         s = ctx.settings
         orch = ctx.orchestrator
-        if orch is None or not hasattr(orch, "hermes"):
-            # Shouldn't happen in production — Orchestrator always passes
-            # itself in the context. Fail loud for tests that forget.
+        if orch is None:
             return (
-                "⚠️ CalendarSkill needs Orchestrator.hermes wired up "
+                "⚠️ CalendarSkill needs an Orchestrator in ctx "
                 "(pass ctx.orchestrator in SkillContext)."
             )
 
@@ -133,6 +131,92 @@ class CalendarSkill(Skill):
 
         # 날짜 컨텍스트를 앞에 붙여 LLM의 요일/날짜 오계산을 방지한다.
         query = _date_ctx() + query
+
+        # 2026-05-04: Claude CLI + cocal MCP 직접 호출 경로 (게임모드에서도 동작).
+        # 기존 Hermes 경로는 ``calendar_skill_use_claude_cli=False`` 일 때만 사용.
+        if s.calendar_skill_use_claude_cli:
+            return await self._invoke_via_claude_cli(query, ctx)
+        return await self._invoke_via_hermes(query, ctx)
+
+    async def _invoke_via_claude_cli(
+        self, query: str, ctx: SkillContext
+    ) -> str:
+        """Claude CLI subprocess + cocal google_calendar MCP.
+
+        Why this path:
+          - Hermes의 ``provider: ollama`` 는 게임모드(quiet)에서 ollama가
+            꺼져 있으면 동작하지 않는다.
+          - Hermes의 ``provider: anthropic`` 은 Max OAuth subscription의
+            1M-context beta 비호환 + token quota 풀이 Claude CLI subprocess
+            와 다른 것으로 보여 게이트웨이 호출이 4xx로 실패한다.
+          - ``claude -p ... --mcp-config <json> --strict-mcp-config`` 는
+            Max OAuth($0)로 동작하면서 cocal MCP의 list-events / create-event
+            등을 Claude가 직접 호출 가능. 게임모드와 무관.
+        """
+        from src.claude_adapter.adapter import (
+            ClaudeCodeAdapter,
+            ClaudeCodeAdapterError,
+            ClaudeCodeAuthError,
+            ClaudeCodeTimeout,
+        )
+
+        s = ctx.settings
+        orch = ctx.orchestrator
+        # C1 인스턴스를 재사용 — 별도 semaphore로 heavy 경로와 격리되어 있음.
+        adapter: ClaudeCodeAdapter = getattr(orch, "claude_code_c1", None)
+        if adapter is None:
+            return (
+                "⚠️ CalendarSkill: orchestrator.claude_code_c1 미설정. "
+                "Claude CLI 경로를 쓰려면 어댑터가 필요하다."
+            )
+
+        prompt = (
+            "You are a calendar assistant. Use the google_calendar MCP "
+            "tools to fulfill the user's request. Tools available include "
+            "list-events, create-event, update-event, delete-event, "
+            "get-event. Default calendar id is 'primary'. Reply in Korean "
+            "with a short confirmation including event time/title.\n\n"
+            f"User request: {query}"
+        )
+
+        try:
+            result = await adapter.run(
+                prompt=prompt,
+                model=s.calendar_skill_claude_model,
+                timeout_ms=s.calendar_skill_timeout_ms,
+                persist_session=False,
+                mcp_config_path=s.calendar_skill_mcp_config_path,
+                allowed_tools=["mcp__google_calendar"],
+            )
+        except ClaudeCodeAuthError as e:
+            return (
+                "⚠️ Calendar (Claude CLI) auth/quota 실패. Max OAuth 토큰 "
+                f"또는 사용량 한도를 확인해주세요.\n```\n{str(e)[:400]}\n```"
+            )
+        except ClaudeCodeTimeout as e:
+            return f"⚠️ Calendar 호출이 시간 초과됐습니다.\n```\n{str(e)[:200]}\n```"
+        except ClaudeCodeAdapterError as e:
+            return (
+                f"⚠️ Calendar 호출 실패: `{type(e).__name__}`\n"
+                f"```\n{str(e)[:400]}\n```"
+            )
+
+        return result.text or "⚠️ Claude CLI returned an empty response."
+
+    async def _invoke_via_hermes(
+        self, query: str, ctx: SkillContext
+    ) -> str:
+        """Legacy 경로: Hermes ``-p calendar_ops`` 서브프로세스 호출.
+
+        ``calendar_skill_use_claude_cli=False`` 일 때만 진입. 게임모드(quiet)
+        에서 ollama가 꺼져 있으면 실패한다 — 이 시나리오를 의식적으로
+        피하려면 위 ``_invoke_via_claude_cli`` 경로를 쓰면 된다.
+        """
+        s = ctx.settings
+        orch = ctx.orchestrator
+        if not hasattr(orch, "hermes"):
+            return "⚠️ CalendarSkill: orchestrator.hermes 미설정."
+
         max_turns = (
             s.calendar_skill_read_max_turns if _is_read(query)
             else s.calendar_skill_max_turns
@@ -155,21 +239,13 @@ class CalendarSkill(Skill):
             HermesBudgetExceeded,
             HermesMalformedResult,
         ):
-            # Transient/runtime failures: propagate so the orchestrator marks
-            # task.status="failed" and degraded=True. Otherwise these would be
-            # silent successes in metrics while the user sees an error.
             raise
         except HermesAdapterError as e:
-            # Setup/config errors (binary missing, profile not found, OAuth
-            # not initialised) are user-actionable — render a hint instead
-            # of a raw stack trace.
             return (
                 f"⚠️ Calendar lookup failed: `{type(e).__name__}`\n"
                 f"```\n{str(e)[:400]}\n```\n"
                 f"Check that `hermes -p {s.calendar_skill_profile} chat` "
-                f"runs manually and that Google OAuth is authenticated "
-                f"(`python ~/.hermes/profiles/{s.calendar_skill_profile}"
-                f"/skills/productivity/google-workspace/scripts/setup.py --check`)."
+                f"runs manually and that Google OAuth is authenticated."
             )
 
         return result.text or "⚠️ Calendar profile returned an empty response."

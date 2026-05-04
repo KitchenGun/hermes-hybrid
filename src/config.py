@@ -84,6 +84,17 @@ class Settings(BaseSettings):
     calendar_skill_timeout_ms: int = 180_000
     calendar_skill_max_turns: int = 5        # write/복잡 쿼리용
     calendar_skill_read_max_turns: int = 3   # read 전용: plan + API + respond
+    # 2026-05-04: Hermes 우회 경로. Hermes의 ollama provider는 게임모드(quiet)
+    # 에서 죽고, anthropic provider는 Max OAuth 1M-context beta 미지원 + token
+    # quota 풀이 다른 듯해 게이트웨이 호출이 실패함. CalendarSkill을 Claude CLI
+    # subprocess + cocal MCP --mcp-config 로 직접 돌리면 두 모드 모두에서 동작.
+    # 빈 문자열이면 기존 Hermes 경로 (legacy) 사용.
+    calendar_skill_use_claude_cli: bool = False
+    calendar_skill_claude_model: str = "haiku"  # Max OAuth 호환 alias
+    # WSL 측 절대경로. Repo 안 git-tracked 파일을 가리킨다 (/mnt/<drive>/...).
+    calendar_skill_mcp_config_path: str = (
+        "/mnt/e/hermes-hybrid/profiles/calendar_ops/claude_mcp.json"
+    )
 
     # Ollama (optional) — when disabled, R3 surrogate path is used.
     ollama_enabled: bool = False
