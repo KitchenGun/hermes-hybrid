@@ -63,6 +63,10 @@ def _parse_args() -> argparse.Namespace:
                    help="Target tab and column schema")
     p.add_argument("--dry-run", action="store_true",
                    help="Render payload only, no HTTP / no CSV.")
+    p.add_argument("--clear", action="store_true",
+                   help="Wipe the target tab before appending (sets "
+                        "clear:true on the Apps Script payload). Used by "
+                        "morning_game_jobs to reset raw daily.")
     p.add_argument("--fallback-dir",
                    default=str(DEFAULT_FALLBACK_DIR),
                    help="CSV fallback dir when JOB_SHEETS_WEBHOOK_URL is unset")
@@ -70,7 +74,11 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _load_input() -> list[dict[str, Any]]:
-    raw = sys.stdin.read().strip()
+    # Read raw bytes and decode as UTF-8 explicitly. On Windows, sys.stdin's
+    # default codec is cp949, which mangles UTF-8 payloads piped via
+    # `cat <utf-8 file>` — non-ASCII characters end up as mojibake in the
+    # parsed dict and get written to the sheet that way.
+    raw = sys.stdin.buffer.read().decode("utf-8", errors="replace").strip()
     if not raw:
         print("[post_to_sheet] stdin empty", file=sys.stderr)
         sys.exit(1)
@@ -181,15 +189,19 @@ def main() -> int:
     args = _parse_args()
     cols = TAB_SCHEMAS[args.tab]
     rows_in = _load_input()
-    if not rows_in:
+    rows_norm = _normalize(rows_in, cols) if rows_in else []
+
+    # `--clear` always triggers a webhook call (even with zero rows) so the
+    # tab is wiped. Without `--clear`, an empty input is a no-op.
+    if not rows_norm and not args.clear:
         print(f"OK rows=0 tab={args.tab}")
         return 0
-    rows_norm = _normalize(rows_in, cols)
-    if not rows_norm:
-        print("[post_to_sheet] no valid rows after normalization", file=sys.stderr)
-        return 1
 
-    payload = {"tab": args.tab, "rows": rows_norm, "columns": cols}
+    payload: dict[str, Any] = {
+        "tab": args.tab, "rows": rows_norm, "columns": cols,
+    }
+    if args.clear:
+        payload["clear"] = True
 
     if args.dry_run:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -197,6 +209,10 @@ def main() -> int:
 
     webhook_url = os.environ.get("JOB_SHEETS_WEBHOOK_URL", "").strip()
     if not webhook_url:
+        if args.clear:
+            print("[post_to_sheet] --clear requires the webhook; CSV fallback "
+                  "cannot truncate a sheet", file=sys.stderr)
+            return 2
         print(
             "[post_to_sheet] JOB_SHEETS_WEBHOOK_URL not set — using CSV fallback",
             file=sys.stderr,

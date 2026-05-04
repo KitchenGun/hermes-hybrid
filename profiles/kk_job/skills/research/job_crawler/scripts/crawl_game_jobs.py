@@ -156,165 +156,198 @@ def _extract_attr(html: str, attr: str) -> str:
 # ── Sources (each returns list[Posting]; failures raise) ────────────────
 def _fetch_gamejob(keywords: list[str], *, limit: int, timeout: int,
                    now_iso: str) -> list[Posting]:
+    """game-job.co.kr — Korean game-industry-only board.
+
+    Uses the duty=1 (programming) listing page; site is already game-only so
+    we skip per-keyword searches. Company name is recovered from inline GA
+    tracking calls (`GA_Application_Prdt(...,'GI_No',...,'CompanyName',...)`)
+    and joined to anchors by GI_No.
+    """
     out: list[Posting] = []
-    for kw in keywords[:3]:  # 키워드 상위 3개만 (rate limit 절약)
-        q = urllib.parse.quote(kw)
-        url = f"https://www.gamejob.co.kr/Search/Recruit/Result?searchKey={q}"
-        html = _http_get(url, timeout=timeout)
-        if not html:
+    url = "https://www.gamejob.co.kr/Recruit/Joblist?menucode=duty&duty=1"
+    html = _http_get(url, timeout=timeout)
+    if not html:
+        return out
+
+    ga_company: dict[str, str] = {}
+    for args_str in re.findall(r"GA_Application_Prdt\(([^)]+)\)", html):
+        parts = re.findall(r"'([^']*)'", args_str)
+        if len(parts) >= 6 and parts[3].isdigit():
+            gid = parts[3]
+            company = re.sub(
+                r"[\s ]*(채용|모집|공채)\s*$", "", parts[5].strip()
+            ).strip()
+            if gid not in ga_company and company:
+                ga_company[gid] = company
+
+    seen: set[str] = set()
+    for href, gid, raw_title in re.findall(
+        r'<a\s+href="(/Recruit/GI_Read/View\?GI_No=(\d+))"[^>]*>([^<]{2,200})</a>',
+        html,
+    ):
+        if gid in seen:
             continue
-        for chunk in re.findall(
-            r'<a[^>]+href="(/Recruit/[^"]+)"[^>]*>([^<]+)</a>', html
-        ):
-            href, title = chunk
-            full = "https://www.gamejob.co.kr" + href
-            out.append(Posting(
-                crawled_at=now_iso, source="gamejob",
-                company="", title=_collapse(title)[:200],
-                url=_normalize_url(full),
-                raw_text=f"keyword={kw}",
-            ))
-            if len(out) >= limit:
-                return out
-        time.sleep(0.5)
+        seen.add(gid)
+        title = _collapse(raw_title)[:200]
+        if not title:
+            continue
+        out.append(Posting(
+            crawled_at=now_iso, source="gamejob",
+            company=ga_company.get(gid, ""), title=title,
+            url=_normalize_url("https://www.gamejob.co.kr" + href),
+            raw_text=f"GI_No={gid}",
+        ))
+        if len(out) >= limit:
+            break
     return out
 
 
 def _fetch_jobkorea(keywords: list[str], *, limit: int, timeout: int,
                     now_iso: str) -> list[Posting]:
+    """jobkorea.co.kr — Next.js/React page; postings live in CardJob blocks.
+
+    Each result card is delimited by `data-sentry-component="CardJob"`. We
+    split on those, then within each block grab the absolute GI_Read URL
+    and recover company name from the company logo's `<img alt="회사 로고">`.
+    Title is best-effort: text inside the GI_Read anchor with tags stripped.
+    """
     out: list[Posting] = []
+    seen: set[str] = set()
     for kw in keywords[:3]:
+        if len(out) >= limit:
+            break
         q = urllib.parse.quote(kw)
         url = f"https://www.jobkorea.co.kr/Search/?stext={q}&tabType=recruit"
         html = _http_get(url, timeout=timeout)
         if not html:
             continue
-        for m in re.finditer(
-            r'<a[^>]+class="title[^"]*"[^>]+href="([^"]+)"[^>]*>'
-            r'([^<]+)</a>', html
-        ):
-            href = m.group(1)
-            if href.startswith("/"):
-                href = "https://www.jobkorea.co.kr" + href
+        blocks = re.findall(
+            r'data-sentry-component="CardJob".*?'
+            r'(?=data-sentry-component="CardJob"|</body)',
+            html, flags=re.DOTALL,
+        )
+        for blk in blocks:
+            if len(out) >= limit:
+                break
+            u = re.search(
+                r'href="(https://www\.jobkorea\.co\.kr/Recruit/GI_Read/(\d+)\?[^"]+)"',
+                blk,
+            )
+            if not u:
+                continue
+            full_url, gid = u.group(1).replace("&amp;", "&"), u.group(2)
+            if gid in seen:
+                continue
+            seen.add(gid)
+            co_m = re.search(r'<img\s+alt="([^"]{2,40}?)\s*로고"', blk)
+            company = co_m.group(1).strip() if co_m else ""
+            # Each CardJob has up to 3 anchors with the same GI_Read URL:
+            # CompanyLogo (image-only), Title (job name), and a company-name
+            # link. Pick the first anchor whose stripped inner text is real.
+            title = ""
+            for inner in re.findall(
+                r'href="https://www\.jobkorea\.co\.kr/Recruit/GI_Read/' + gid +
+                r'\?[^"]+"[^>]*>(.*?)</a>',
+                blk, flags=re.DOTALL,
+            ):
+                candidate = _collapse(_strip_tags(inner))
+                if len(candidate) >= 2 and candidate != company:
+                    title = candidate[:200]
+                    break
             out.append(Posting(
                 crawled_at=now_iso, source="jobkorea",
-                company="", title=_collapse(m.group(2))[:200],
-                url=_normalize_url(href),
-                raw_text=f"keyword={kw}",
+                company=company, title=title,
+                url=_normalize_url(full_url),
+                raw_text=f"keyword={kw};GI_No={gid}",
             ))
-            if len(out) >= limit:
-                return out
         time.sleep(0.5)
     return out
 
 
 def _fetch_nexon(_: list[str], *, limit: int, timeout: int,
                  now_iso: str) -> list[Posting]:
-    """Nexon careers — JSON endpoint preferred; fallback to HTML."""
-    out: list[Posting] = []
-    api = "https://career.nexon.com/api/recruits?kind=programming&page=1&size=50"
-    try:
-        req = urlreq.Request(api, headers={"User-Agent": USER_AGENT,
-                                           "Accept": "application/json"})
-        with urlreq.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
-        items = data.get("items") or data.get("results") or data.get("data") or []
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            title = it.get("title") or it.get("name") or ""
-            posting_id = it.get("id") or it.get("recruitId") or ""
-            url = (f"https://career.nexon.com/recruit/{posting_id}"
-                   if posting_id else "https://career.nexon.com/")
-            deadline_raw = it.get("endDate") or it.get("closingDate") or ""
-            dl, expired = _parse_deadline(str(deadline_raw))
-            out.append(Posting(
-                crawled_at=now_iso, source="nexon",
-                company="넥슨", title=_collapse(str(title))[:200],
-                url=_normalize_url(url),
-                deadline=dl, expired=expired,
-                employment_type=str(it.get("employmentType", "")),
-                location=str(it.get("workLocation", "")),
-                raw_text=json.dumps(it, ensure_ascii=False)[:1000],
-            ))
-            if len(out) >= limit:
-                return out
-        return out
-    except Exception as e:  # noqa: BLE001
-        print(f"[crawler] nexon api failed: {e}", file=sys.stderr)
+    """careers.nexon.com is a SPA (1KB shell HTML, client-rendered).
 
-    # HTML fallback
-    html = _http_get("https://career.nexon.com/user/recruit/list?recruitJobsKind=10",
-                     timeout=timeout)
-    if not html:
-        return out
-    for m in re.finditer(
-        r'<a[^>]+href="(/user/recruit/[^"]+)"[^>]*>(.*?)</a>',
-        html, flags=re.DOTALL,
-    ):
-        href = "https://career.nexon.com" + m.group(1)
-        title = _collapse(_strip_tags(m.group(2)))[:200]
-        if not title:
-            continue
-        out.append(Posting(
-            crawled_at=now_iso, source="nexon", company="넥슨",
-            title=title, url=_normalize_url(href),
-        ))
-        if len(out) >= limit:
-            break
-    return out
+    The previous implementation hit `career.nexon.com` (singular) which is
+    a dead host. The live site `careers.nexon.com` returns 403 to bots and
+    its sitemap.xml only lists category landing pages, not individual
+    postings. Static crawl is not viable without a headless browser.
+    """
+    print("[crawler] nexon: skipped (careers.nexon.com is a SPA — needs "
+          "headless browser; no JSON endpoint exposed)", file=sys.stderr)
+    return []
 
 
 def _fetch_ncsoft(_: list[str], *, limit: int, timeout: int,
                   now_iso: str) -> list[Posting]:
-    out: list[Posting] = []
-    url = "https://careers.ncsoft.com/career/list?searchType=programming"
-    html = _http_get(url, timeout=timeout)
-    if not html:
-        return out
-    for m in re.finditer(
-        r'<a[^>]+href="([^"]*career[^"]*detail[^"]*)"[^>]*>(.*?)</a>',
-        html, flags=re.DOTALL,
-    ):
-        href = m.group(1)
-        if href.startswith("/"):
-            href = "https://careers.ncsoft.com" + href
-        title = _collapse(_strip_tags(m.group(2)))[:200]
-        if not title:
-            continue
-        out.append(Posting(
-            crawled_at=now_iso, source="ncsoft", company="NCSOFT",
-            title=title, url=_normalize_url(href),
-        ))
-        if len(out) >= limit:
-            break
-    return out
+    """careers.ncsoft.com renders job lists via jQuery template post-load.
+
+    The page returns 48KB of layout HTML but the AJAX call that fills the
+    list lives in a deferred chunk we couldn't isolate without a browser.
+    """
+    print("[crawler] ncsoft: skipped (careers.ncsoft.com renders job list "
+          "via deferred jQuery template; no static endpoint)", file=sys.stderr)
+    return []
 
 
 def _fetch_netmarble(_: list[str], *, limit: int, timeout: int,
                      now_iso: str) -> list[Posting]:
+    """`recruit.netmarble.com` is a dead host; `company.netmarble.com` is
+    the surviving site but its recruit page is also client-rendered."""
+    print("[crawler] netmarble: skipped (recruit.netmarble.com host is "
+          "dead; company.netmarble.com is a SPA)", file=sys.stderr)
+    return []
+
+
+def _fetch_shiftup(_: list[str], *, limit: int, timeout: int,
+                   now_iso: str) -> list[Posting]:
+    """SHIFTUP — Stellar Blade studio (UE5).
+
+    Single-page recruit list at /recruit/recruit.php; each posting is an
+    inline block with `<span class='status ing|end'>...</span><h4>title</h4>
+    <ul><li>title</li><li>experience</li><li>employment_type</li></ul>`.
+
+    Active postings (status=ing) are ordered first so that --per-source-limit
+    keeps the actionable ones when the cap is small.
+    """
     out: list[Posting] = []
-    url = ("https://recruit.netmarble.com/main/recruitList.nm"
-           "?categoryDevDuty=client")
-    html = _http_get(url, timeout=timeout)
+    html = _http_get("http://www.shiftup.co.kr/recruit/recruit.php",
+                     timeout=timeout)
     if not html:
         return out
-    for m in re.finditer(
-        r'<a[^>]+href="([^"]*recruitDetail[^"]*)"[^>]*>(.*?)</a>',
-        html, flags=re.DOTALL,
+
+    blocks = re.findall(
+        r"class=\"recruit_title\">[\s\S]{0,200}?"
+        r"<span class='?status\s+(ing|end)'?>[^<]+</span>[\s\S]{0,200}?"
+        r"<h4>([^<]+)</h4>[\s\S]{0,500}?"
+        r"<ul>([\s\S]{0,500}?)</ul>",
+        html,
+    )
+    parsed: list[tuple[str, str, str, str]] = []
+    for status, title, ul_html in (
+        (b[0], _collapse(b[1]), b[2]) for b in blocks
     ):
-        href = m.group(1)
-        if href.startswith("/"):
-            href = "https://recruit.netmarble.com" + href
-        title = _collapse(_strip_tags(m.group(2)))[:200]
+        lis = re.findall(r"<li>([^<]+)</li>", ul_html)
+        exp = _collapse(lis[1]) if len(lis) >= 2 else ""
+        emp = _collapse(lis[2]) if len(lis) >= 3 else ""
+        parsed.append((status, title, exp, emp))
+
+    # Active first, then expired — keeps actionable rows under tight limits.
+    parsed.sort(key=lambda r: 0 if r[0] == "ing" else 1)
+
+    for status, title, exp, emp in parsed:
+        if len(out) >= limit:
+            break
         if not title:
             continue
         out.append(Posting(
-            crawled_at=now_iso, source="netmarble", company="넷마블",
-            title=title, url=_normalize_url(href),
+            crawled_at=now_iso, source="shiftup", company="시프트업",
+            title=title[:200],
+            seniority=exp, employment_type=emp,
+            url="http://www.shiftup.co.kr/recruit/",
+            expired=(status == "end"),
+            raw_text=f"status={status}",
         ))
-        if len(out) >= limit:
-            break
     return out
 
 
@@ -324,13 +357,22 @@ SOURCES = {
     "nexon": _fetch_nexon,
     "ncsoft": _fetch_ncsoft,
     "netmarble": _fetch_netmarble,
+    "shiftup": _fetch_shiftup,
 }
 
 
 def _dedupe(items: Iterable[Posting]) -> list[Posting]:
-    seen: dict[str, Posting] = {}
+    """Drop duplicates while preserving postings that share a URL.
+
+    Single-page boards (e.g. SHIFTUP) emit many postings under the same
+    landing URL — keying on URL alone collapses them to one. The triple
+    (source, url, title) keeps those distinct while still deduplicating
+    real cross-fetch duplicates (same posting picked up twice by retries
+    or overlapping keyword searches inside a source).
+    """
+    seen: dict[tuple[str, str, str], Posting] = {}
     for p in items:
-        key = p.url or f"{p.source}::{p.title}"
+        key = (p.source, p.url, p.title)
         if key in seen:
             continue
         seen[key] = p

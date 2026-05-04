@@ -13,10 +13,14 @@ agent:
 
 # ── LLM ──────────────────────────────────────────────────────────
 model:
-  provider: "openai"
-  model: "gpt-4o"
+  # 2026-05-04: switched from openai/gpt-4o → custom/gpt-oss:20b.
+  # Reason: 'openai' isn't a hermes-recognized provider on this install
+  # (only 'custom' for Ollama is wired up; same as calendar_ops/journal_ops).
+  # Re-evaluate when Nous portal or an OpenAI key is wired into hermes.
+  provider: "custom"
+  model: "gpt-oss:20b"
   fallback:
-    provider: "ollama"
+    provider: "custom"
     model: "qwen2.5-coder:32b-instruct"
 
 # ── 터미널 백엔드 ─────────────────────────────────────────────────

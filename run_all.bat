@@ -61,6 +61,55 @@ if errorlevel 1 (
 )
 echo.
 
+REM ---- 2.6. kk_job gateway: same pattern (unit + TTY override + enable) ----
+REM kk_job has its own gateway so morning_game_jobs cron (07:10 KST) can fire.
+REM Unit file is created here too (calendar_ops's unit was placed manually);
+REM cat > is idempotent so re-running run_all.bat is safe.
+echo [2.6/5] Installing kk_job gateway service + override...
+wsl -d Ubuntu -- bash -lc "cat > ~/.config/systemd/user/hermes-gateway-kk_job.service <<'UNIT'
+[Unit]
+Description=Hermes Agent Gateway - kk_job profile
+After=network.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/home/kang/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile kk_job gateway run --replace
+WorkingDirectory=/home/kang/.hermes/hermes-agent
+Environment=\"PATH=/home/kang/.hermes/hermes-agent/venv/bin:/home/kang/.hermes/hermes-agent/node_modules/.bin:/home/kang/.hermes/node/bin:/home/kang/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"
+Environment=\"VIRTUAL_ENV=/home/kang/.hermes/hermes-agent/venv\"
+Environment=\"HERMES_HOME=/home/kang/.hermes/profiles/kk_job\"
+Restart=on-failure
+RestartSec=30
+RestartForceExitStatus=75
+KillMode=mixed
+KillSignal=SIGTERM
+ExecReload=/bin/kill -USR1 \$MAINPID
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+UNIT
+mkdir -p ~/.config/systemd/user/hermes-gateway-kk_job.service.d && cat > ~/.config/systemd/user/hermes-gateway-kk_job.service.d/override.conf <<'OVR'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/script -qfc \"/home/kang/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile kk_job gateway run --replace\" /home/kang/.hermes/profiles/kk_job/logs/gateway.log
+OVR
+mkdir -p /home/kang/.hermes/profiles/kk_job/logs
+systemctl --user daemon-reload
+systemctl --user reset-failed hermes-gateway-kk_job.service 2>/dev/null
+systemctl --user enable --now hermes-gateway-kk_job.service"
+wsl -d Ubuntu -- bash -lc "systemctl --user is-active hermes-gateway-kk_job.service"
+if errorlevel 1 (
+    echo        WARN: kk_job gateway not active. Check: wsl -d Ubuntu -- journalctl --user -u hermes-gateway-kk_job -n 30
+) else (
+    echo        kk_job gateway active.
+)
+echo.
+
 REM ---- 3. Hermes Dashboard (via systemd user service) ----
 echo [3/5] Starting Hermes web dashboard (port 9119)...
 REM Prebuild web UI if missing (hermes's auto-build is unreliable in our setup).
