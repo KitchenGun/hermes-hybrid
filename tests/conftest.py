@@ -44,5 +44,11 @@ def settings(tmp_path) -> Settings:
         # production log directory.
         experience_log_enabled=False,
         experience_log_root=tmp_path / "experience",
+        # 2026-05-06: production default flipped to True (use_new_job_factory).
+        # Most existing orchestrator tests were written against the v1 /
+        # router-direct codepath; pin v2 OFF here so they keep exercising
+        # that path. Tests that specifically need v2 should either build
+        # their own Settings or override this fixture's value.
+        use_new_job_factory=False,
     )
     return s

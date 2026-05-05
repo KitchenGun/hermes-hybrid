@@ -21,9 +21,6 @@ dependencies = [
 
 [project.optional-dependencies]
 ollama = ["ollama>=0.3.0"]
-# system_mode game watcher: stdlib-only (uses tasklist on Windows), so no
-# extra deps needed. The optional psutil/keyboard hooks were removed when
-# the 3-mode runtime_mode system was deprecated (2026-05-04).
 mail = [
     "google-api-python-client>=2.130.0",
     "google-auth-oauthlib>=1.2.0",

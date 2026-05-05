@@ -36,3 +36,26 @@ class InMemoryMemory(MemoryBackend):
         async with self._lock:
             prior = self._by_user.pop(user_id, [])
             return len(prior)
+
+    async def search(
+        self, user_id: str, query: str, k: int = 5
+    ) -> list[Memo]:
+        q = (query or "").strip().lower()
+        if not q:
+            return []
+        # Whitespace-split into tokens — a memo matches if ANY token is a
+        # substring of its lowercased text. Keeps the contract simple
+        # (no scoring) while handling the common case "user types a full
+        # question; only one keyword overlaps with their memo".
+        tokens = [t for t in q.split() if t]
+        if not tokens:
+            return []
+        async with self._lock:
+            memos = list(self._by_user.get(user_id, []))
+        hits = [
+            m for m in memos
+            if any(tok in m.text.lower() for tok in tokens)
+        ]
+        # Most-recent-first — newer notes win on ties.
+        hits.reverse()
+        return hits[:k]

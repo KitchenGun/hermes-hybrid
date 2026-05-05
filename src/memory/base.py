@@ -41,6 +41,18 @@ class MemoryBackend(Protocol):
     async def list_memos(self, user_id: str, limit: int = 20) -> list[Memo]: ...
     async def clear(self, user_id: str) -> int: ...
 
+    async def search(
+        self, user_id: str, query: str, k: int = 5
+    ) -> list[Memo]:
+        """Return up to ``k`` memos most relevant to ``query``.
+
+        Substring-based by default — backends are free to upgrade to FTS5 /
+        embedding similarity later. Returns most-recent-first when matches
+        tie. Empty query returns ``[]`` (don't surface every memo as a
+        fake "match" — the caller meant "no inject this turn").
+        """
+        ...
+
 
 def _validate(text: str) -> str:
     t = (text or "").strip()

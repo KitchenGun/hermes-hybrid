@@ -250,11 +250,42 @@ class Orchestrator:
         forced_profile: str | None = None,
     ) -> OrchestratorResult:
         session_id = session_id or str(uuid.uuid4())
+        history_window = list(history or [])
+
+        # P0-C (2026-05-06): memory-inject — per-user retrieval before
+        # dispatch. Off by default; flip ``memory_inject_enabled`` to true
+        # in .env once the memo contents are reviewed. Failures here are
+        # swallowed: memory is an enrichment, not a correctness gate.
+        if self.settings.memory_inject_enabled and user_message.strip():
+            try:
+                hits = await self.memory.search(
+                    user_id, user_message, k=self.settings.memory_inject_top_k
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("memory.search_failed", err=str(e))
+                hits = []
+            if hits:
+                bullets = "\n".join(f"- {m.text}" for m in hits)
+                history_window = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "관련 사용자 메모 (참고만):\n" + bullets
+                        ),
+                    },
+                    *history_window,
+                ]
+                log.info(
+                    "memory.injected",
+                    user_id=user_id,
+                    hits=len(hits),
+                )
+
         task = TaskState(
             session_id=session_id,
             user_id=user_id,
             user_message=user_message,
-            history_window=history or [],
+            history_window=history_window,
             retry_budget=self.settings.retry_budget_default,
             token_budget_remaining=self.settings.cloud_token_budget_session,
             heavy=heavy,

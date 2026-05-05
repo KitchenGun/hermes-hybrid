@@ -164,9 +164,9 @@ class CalendarSkill(Skill):
         fallback 경로. ``invoke()`` 의 except 블록에서만 호출된다.
 
         Hermes 실패 케이스:
-          - 게임모드(system_mode=quiet) 에서 ollama 가 꺼진 상태 → 호출 즉시
+          - ollama 가 꺼져 있거나 listen 안 함 → 호출 즉시
             ``HermesAdapterError`` (connection refused).
-          - active 모드인데 ollama 가 LLM 답변을 못 만들거나 timeout
+          - ollama 가 LLM 답변을 못 만들거나 timeout
             (``HermesTimeout``) 으로 끊긴 경우.
           - hermes-gateway 자체가 죽었거나 binary 가 missing 한 setup 오류.
 

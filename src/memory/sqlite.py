@@ -102,6 +102,51 @@ class SqliteMemory(MemoryBackend):
             await db.commit()
             return cur.rowcount or 0
 
+    async def search(
+        self, user_id: str, query: str, k: int = 5
+    ) -> list[Memo]:
+        """LIKE-based substring search.
+
+        Korean tokenization via FTS5 unicode61 is whitespace-only, so a
+        bare FTS5 index would miss substring matches inside a token (which
+        is the common case for short journal-style memos in Korean).
+        LIKE works for both languages without an index pass — fine at the
+        memo volumes this stores. Upgrade to FTS5 when corpus crosses
+        ~10k notes per user, not before.
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+        # Tokenize on whitespace — match if ANY token is a substring.
+        # Mirror the InMemoryMemory semantics so the two backends are
+        # interchangeable in tests.
+        tokens = [t for t in q.split() if t]
+        if not tokens:
+            return []
+        # Escape SQL LIKE wildcards in user input so a query containing
+        # ``%`` or ``_`` only matches literally. Without this, a query
+        # of ``%`` would match every row via ``%%%`` and effectively
+        # exfiltrate the user's memo list.
+        escaped = [
+            t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            for t in tokens
+        ]
+        patterns = [f"%{t}%" for t in escaped]
+        clause = " OR ".join(["text LIKE ? ESCAPE '\\'"] * len(patterns))
+        sql = (
+            f"SELECT text, created_at FROM memos "
+            f"WHERE user_id=? AND ({clause}) ORDER BY id DESC LIMIT ?"
+        )
+        params: list = [user_id] + patterns + [k]
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.executescript(_SCHEMA)
+            async with db.execute(sql, params) as cur:
+                rows = await cur.fetchall()
+        return [
+            Memo(user_id=user_id, text=row[0], created_at=_parse_iso(row[1]))
+            for row in rows
+        ]
+
 
 def _parse_iso(s: str) -> datetime:
     # aiosqlite returns text as-is; we wrote UTC isoformat so fromisoformat

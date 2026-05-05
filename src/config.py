@@ -222,6 +222,15 @@ class Settings(BaseSettings):
     experience_log_enabled: bool = True
     experience_log_root: Path = Path("./logs/experience")
 
+    # Memory inject — P0-C (2026-05-06). When true, each Orchestrator.handle()
+    # call runs ``memory.search(user_id, user_message, k=memory_inject_top_k)``
+    # before dispatch and prepends the matches as a system-role entry on
+    # ``task.history_window``. Off by default — flip it on per-deployment
+    # only after confirming memory contents don't leak inappropriate context
+    # (e.g. /memo entries from a past channel into a new conversation).
+    memory_inject_enabled: bool = False
+    memory_inject_top_k: int = 3
+
     # JobFactory v1 — 두 단계 게이트 (legacy: profile keyword matching).
     # 1) job_factory_enabled=True : _handle_locked()에서 factory.decide() 호출 시작.
     #    no_match 시 degraded 응답에 힌트 메시지 추가.
@@ -243,10 +252,12 @@ class Settings(BaseSettings):
     # JobFactory v2 — empirical bandit routing (Phase 1~6 산출물).
     # When true, _handle_locked() routes (after the heavy / forced_profile /
     # rule / skill gates) to JobFactoryDispatcher instead of the legacy
-    # JobFactory v1 → Router → tier ladder. Off by default; flip per-user
-    # in settings.local.json or globally once Phase 8 rollout is complete.
-    # Legacy paths stay alive in code for 1-2 weeks of co-existence.
-    use_new_job_factory: bool = False
+    # JobFactory v1 → Router → tier ladder.
+    # 2026-05-06: default → True. v1 (job_factory_enabled) is in deprecation
+    # (see disable_v1_jobfactory above). Operators who need to fall back can
+    # set ``HERMES_USE_NEW_JOB_FACTORY=false`` in .env, but that path is no
+    # longer exercised in CI.
+    use_new_job_factory: bool = True
     # Optional override path for the v2 score matrix (rarely changed).
     # Default = data/job_factory/score_matrix.json relative to repo root.
     score_matrix_path: Path = Path("./data/job_factory/score_matrix.json")

@@ -71,9 +71,10 @@ agent:
 model:
   provider: "ollama"
   model: "qwen2.5:14b-instruct"
-  # 2026-05-04: cloud fallback removed when OpenAI legacy was purged. Cloud
-  # escalation for cron jobs is handled by the register_cron_jobs.py wrap
-  # guard which calls Claude CLI directly when system_mode is "quiet".
+  # 2026-05-04: cloud fallback removed when OpenAI legacy was purged.
+  # 2026-05-06: system_mode wrap guard removed alongside the active/quiet
+  # 2-mode deprecation. Cron model selection is now driven by tier_policy
+  # in this same config + the profile's runtime settings.
 
 terminal:
   backend: local
