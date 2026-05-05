@@ -30,7 +30,7 @@ from src.claude_adapter import (
     ClaudeCodeTimeout,
 )
 from src.config import Settings
-from src.core import ExperienceLogger
+from src.core import Critic, ExperienceLogger
 from src.hermes_adapter import (
     HermesAdapter,
     HermesAdapterError,
@@ -152,6 +152,10 @@ class Orchestrator:
         self.rules = RuleLayer()
         self.router = Router(settings)
         self.validator = Validator(settings)
+        # P1.4: Critic wraps Validator with a soft self_score stamp on the
+        # task. Validator stays the authority on retry/tier policy; Critic
+        # adds the diagnostic score that flows into ExperienceRecord.
+        self.critic = Critic(self.validator)
         self.hermes = HermesAdapter(settings)
         self.claude_code = ClaudeCodeAdapter(settings)
         # P0-2: growth-loop primitive — every task that reaches
@@ -671,7 +675,7 @@ class Orchestrator:
                 text = ""; timed_out = False; tool_error = True
                 log.warning("llm.error", err=str(e))
 
-            verdict = self.validator.validate(
+            verdict = self.critic.evaluate(
                 task,
                 output_text=text,
                 expected_schema=None,
@@ -683,6 +687,7 @@ class Orchestrator:
                 "validator.verdict",
                 decision=verdict.decision,
                 reason=verdict.reason,
+                self_score=task.internal_confidence,
                 tier=task.current_tier,
                 route=task.route,
             )

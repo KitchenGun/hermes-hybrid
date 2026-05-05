@@ -94,6 +94,10 @@ class ExperienceRecord(BaseModel):
     hermes_turns: int = 0
     hermes_reflection_count: int = 0
 
+    # Critic — soft quality signal stamped by ``src.core.critic.Critic``.
+    # Diagnostic only; never used for retry/tier policy. Range [0, 1].
+    self_score: float = 0.0
+
     # Privacy-preserved input/output
     input_text_hash: str = ""
     input_text_length: int = 0
@@ -166,6 +170,7 @@ def _record_from_task(
         tool_calls=tool_calls,
         hermes_turns=len(hermes_acts),
         hermes_reflection_count=len(task.hermes_trace.reflections),
+        self_score=task.internal_confidence,
         input_text_hash=_sha16(task.user_message),
         input_text_length=len(task.user_message or ""),
         response_hash=_sha16(task.final_response),
