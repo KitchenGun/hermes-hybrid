@@ -30,6 +30,7 @@ from src.claude_adapter import (
     ClaudeCodeTimeout,
 )
 from src.config import Settings
+from src.core import ExperienceLogger
 from src.hermes_adapter import (
     HermesAdapter,
     HermesAdapterError,
@@ -145,6 +146,7 @@ class Orchestrator:
         *,
         skills: SkillRegistry | None = None,
         memory: MemoryBackend | None = None,
+        experience_logger: ExperienceLogger | None = None,
     ):
         self.settings = settings
         self.rules = RuleLayer()
@@ -152,6 +154,14 @@ class Orchestrator:
         self.validator = Validator(settings)
         self.hermes = HermesAdapter(settings)
         self.claude_code = ClaudeCodeAdapter(settings)
+        # P0-2: growth-loop primitive — every task that reaches
+        # ``_log_task_end`` is also appended to logs/experience/{date}.jsonl.
+        # Tests inject a no-op logger via the kwarg; otherwise the default
+        # is wired from settings (enabled by default, root = ./logs/experience).
+        self.experience_logger: ExperienceLogger = experience_logger or ExperienceLogger(
+            settings.experience_log_root,
+            enabled=settings.experience_log_enabled,
+        )
         # Separate Claude CLI instance for C1 (Haiku) with its own semaphore
         # so it doesn't serialize behind C2/heavy's concurrency cap of 1.
         # Only actually invoked when ``c1_backend == "claude_cli"``; idle
@@ -204,6 +214,24 @@ class Orchestrator:
         # Phase 3: scratch — reset per attempt, carries Hermes turns_used
         # into the validator so `trust_hermes_reflection` can short-circuit.
         self._last_hermes_turns: int = 0
+
+        # P0-3 (2026-05-05): one-shot deprecation cue for JobFactory v1.
+        # When the operator has v1 active without the kill switch, surface
+        # the migration path. Logged once per Orchestrator instance, not
+        # per request, to keep the noise floor low.
+        if (
+            settings.job_factory_enabled
+            and not settings.disable_v1_jobfactory
+        ):
+            log.warning(
+                "jobfactory.v1_deprecated",
+                msg=(
+                    "JobFactory v1 (job_factory_enabled) is deprecated. "
+                    "Set HERMES_USE_NEW_JOB_FACTORY=true to migrate to the "
+                    "v2 bandit dispatcher, or HERMES_DISABLE_V1_JOBFACTORY="
+                    "true to keep v1 off without the warning."
+                ),
+            )
 
     # ---- public entry ----
 
@@ -504,7 +532,15 @@ class Orchestrator:
             # "match"    → task.job_profile_id 태깅 후 라우터로 계속
             # "ambiguous" → 후보 목록 응답 반환 (단락)
             # "no_match"  → 기존 흐름 유지 (final_failure 시 힌트/생성)
-            if self.settings.job_factory_enabled:
+            #
+            # P0-3 (2026-05-05): ``disable_v1_jobfactory`` is the deprecation
+            # kill switch — when true the entire block below is skipped even
+            # if ``job_factory_enabled`` is set. Lets operators bypass v1
+            # without flipping use_new_job_factory (which forces v2 routing).
+            if (
+                self.settings.job_factory_enabled
+                and not self.settings.disable_v1_jobfactory
+            ):
                 fd = self.factory.decide(task.user_message)
                 task.job_profile_id = fd.get("profile_id")
                 log.info(
@@ -1576,7 +1612,12 @@ class Orchestrator:
 
         Fields intentionally mirror the 2nd-pass review criteria (latency p50/p95,
         validator flow, cloud escalation). Everything else stays in state.db.
+
+        P0-2: this is also the single hook for the experience log JSONL
+        append. ``ExperienceLogger.append`` swallows its own I/O failures
+        so a write error here never escapes into the response path.
         """
+        latency_ms = int((time.perf_counter() - t0) * 1000)
         log.info(
             "task.end",
             handled_by=handled_by,
@@ -1589,8 +1630,18 @@ class Orchestrator:
             tier_ups=task.tier_up_retries,
             same_tier_retries=task.same_tier_retries,
             degraded=task.degraded,
-            latency_ms=int((time.perf_counter() - t0) * 1000),
+            latency_ms=latency_ms,
         )
+        try:
+            self.experience_logger.append(
+                task, handled_by=handled_by, latency_ms=latency_ms
+            )
+        except Exception as e:  # noqa: BLE001
+            # Defense in depth — even if the logger raises (it shouldn't,
+            # since append swallows OSError internally), don't let it
+            # poison the response path. The structlog line above is the
+            # durable signal.
+            log.warning("experience_logger.append_failed", err=str(e))
 
     async def _persist(self, task: TaskState) -> None:
         if self.repo is not None:

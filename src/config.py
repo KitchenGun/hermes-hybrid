@@ -213,13 +213,32 @@ class Settings(BaseSettings):
     # Profiles directory (for Refiner / Job_Factory / HITL profile_loader)
     profiles_dir: Path = Path("./profiles")
 
+    # Experience Logger — first brick of the growth loop. Every task that
+    # reaches Orchestrator._log_task_end appends one JSONL line to
+    # ``{experience_log_root}/{YYYY-MM-DD}.jsonl``. Reflection / Curator
+    # jobs read these to extract patterns. Privacy: user_message is NOT
+    # stored, only sha256-prefix + length, so the file is safe to share.
+    # Set ``experience_log_enabled=false`` to silence (tests, dry-runs).
+    experience_log_enabled: bool = True
+    experience_log_root: Path = Path("./logs/experience")
+
     # JobFactory v1 — 두 단계 게이트 (legacy: profile keyword matching).
     # 1) job_factory_enabled=True : _handle_locked()에서 factory.decide() 호출 시작.
     #    no_match 시 degraded 응답에 힌트 메시지 추가.
     # 2) allow_profile_creation=True : final_failure 때 프로필 스켈레톤 자동 생성.
     #    템플릿 출력 검증 후에만 활성화할 것.
+    #
+    # P0-3 (2026-05-05): v1 is in deprecation. ``use_new_job_factory`` (v2,
+    # bandit) is the forward path. When v1 is active *and*
+    # ``disable_v1_jobfactory`` is false, the orchestrator emits a
+    # ``jobfactory.v1_deprecated`` warning at startup so operators see the
+    # migration cue. ``disable_v1_jobfactory=true`` is the kill switch:
+    # the v1 codepath in ``_handle_locked`` is skipped regardless of
+    # ``job_factory_enabled``. Roll the default to true once production
+    # has run a week without surprises, then delete v1.
     job_factory_enabled: bool = False
     allow_profile_creation: bool = False
+    disable_v1_jobfactory: bool = False
 
     # JobFactory v2 — empirical bandit routing (Phase 1~6 산출물).
     # When true, _handle_locked() routes (after the heavy / forced_profile /
