@@ -119,7 +119,7 @@ class IntentRouter:
 
         Order of precedence:
           1. RuleLayer (instant deterministic reply)
-          2. Slash skills (HybridMemoSkill, KanbanSkill, ...)
+          2. Slash skills (HybridMemoSkill, ...)
           3. fallthrough — discord_message, master decides
 
         ``@handle`` 멘션은 모든 분기에서 동일 파싱 (RuleLayer / slash skill

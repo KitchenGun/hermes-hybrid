@@ -7,6 +7,8 @@ are processed.
 Phase 8 (2026-05-06): forced_profile / journal_channel_id / HITL / watcher
 모두 폐기.
 Phase 11 (2026-05-06): !heavy prefix 폐기 — master = single lane.
+Phase 2-A Kanban (2026-05-07): setup_hook 에서 KanbanDispatcher 백그라운드
+loop 시작. close 시 graceful 종료.
 """
 from __future__ import annotations
 
@@ -17,6 +19,9 @@ import discord
 from discord.ext import commands
 
 from src.config import Settings
+from src.core.kanban import KanbanDB
+from src.core.kanban.dispatcher import KanbanDispatcher
+from src.core.kanban.worker_runner import spawn_master_worker
 from src.memory import SqliteMemory
 from src.obs import bind_task_id, get_logger
 from src.orchestrator import Orchestrator
@@ -40,6 +45,56 @@ class DiscordBot(commands.Bot):
         self.orchestrator = Orchestrator(settings, repo=repo, memory=self.memory)
         self._sessions: dict[int, str] = {}
         self._history: dict[int, list[dict[str, str]]] = defaultdict(list)
+        # Phase 2-A Kanban — populated in setup_hook so async migrate() can run.
+        self.kanban_db: KanbanDB | None = None
+        self.kanban_dispatcher: KanbanDispatcher | None = None
+        self._kanban_task: asyncio.Task | None = None
+
+    async def setup_hook(self) -> None:  # pragma: no cover
+        """Discord.py 2.0+ async init hook — start KanbanDispatcher loop here."""
+        if not self.settings.kanban_dispatcher_enabled:
+            return
+        self.kanban_db = KanbanDB(
+            self.settings.kanban_db_path,
+            workspaces_root=self.settings.kanban_workspaces_root,
+        )
+        await self.kanban_db.migrate()
+        self.kanban_dispatcher = KanbanDispatcher(
+            self.kanban_db,
+            spawn_runner=lambda task: spawn_master_worker(task, self.settings),
+            poll_seconds=self.settings.kanban_dispatcher_poll_seconds,
+            claim_ttl_seconds=self.settings.kanban_claim_ttl_seconds,
+            spawn_failure_limit=self.settings.kanban_spawn_failure_limit,
+            notify=self._make_kanban_notify(),
+        )
+        self._kanban_task = asyncio.create_task(self.kanban_dispatcher.run())
+
+    async def close(self) -> None:  # pragma: no cover
+        if self.kanban_dispatcher is not None:
+            await self.kanban_dispatcher.stop()
+        if self._kanban_task is not None:
+            try:
+                await asyncio.wait_for(self._kanban_task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+        await super().close()
+
+    def _make_kanban_notify(self):  # pragma: no cover
+        """Build an async notify callback. Returns None when opt-out."""
+        cid = self.settings.kanban_notify_channel_id
+        if cid <= 0:
+            return None
+
+        async def _notify(kind: str, task_id: str) -> None:
+            try:
+                channel = self.get_channel(cid)
+                if channel is None:
+                    return
+                await channel.send(f"🔄 kanban: {kind} → `{task_id[:8]}`")
+            except discord.HTTPException:
+                log.warning("kanban.notify_send_failed", task=task_id, kind=kind)
+
+        return _notify
 
     async def on_ready(self) -> None:  # pragma: no cover
         log.info("discord.ready", user=str(self.user), id=getattr(self.user, "id", 0))
