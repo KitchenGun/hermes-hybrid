@@ -212,6 +212,12 @@ class Settings(BaseSettings):
     # Per-user
     per_user_in_flight_max: int = 1             # R13
 
+    # Kanban store — Phase 6 (2026-05-06).
+    # advisor_ops 추천 → installer_ops 처리 흐름의 hand-off 채널. JSON 단일
+    # 파일 기반 (작은 corpus). 다른 프로필도 task 발행 가능 — tenant 필드로
+    # 격리. memory/project_mode_system_deprecation.md Phase 1 산출물.
+    kanban_store_path: Path = Path("./data/kanban.json")
+
     # Storage
     state_db_path: Path = Path("./data/state.db")
     log_level: str = "INFO"

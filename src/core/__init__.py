@@ -6,6 +6,7 @@ from .delegation import (
     SubAgentResult,
 )
 from .experience_logger import ExperienceLogger, ExperienceRecord
+from .kanban import KanbanComment, KanbanStatus, KanbanStore, KanbanTask
 from .session_importer import import_sessions, session_to_record
 from .skill_library import SkillEntry, SkillLibrary
 
@@ -14,6 +15,10 @@ __all__ = [
     "Delegator",
     "ExperienceLogger",
     "ExperienceRecord",
+    "KanbanComment",
+    "KanbanStatus",
+    "KanbanStore",
+    "KanbanTask",
     "SequentialHermesDelegator",
     "SkillEntry",
     "SkillLibrary",
