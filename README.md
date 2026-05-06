@@ -302,23 +302,90 @@ cat /mnt/e/hermes-hybrid/logs/curator/handled_by_stats.json
 
 ## 9. Discord 사용
 
+봇이 부팅되면 (`Agent-Hermes#5700`) Discord allowlist 의 사용자가 어떤
+채널에서든 멘션·DM 으로 호출 가능. 모든 자유 텍스트는 master (Claude CLI
+opus, Max OAuth) 가 처리.
+
+### 9.1 일반 자유 텍스트
 ```
-@bot 안녕                              → master (claude/opus)
-@bot @coder 피보나치 짜줘               → master prompt 에 coder SKILL.md inject (Phase 9)
-@bot @coder 짜고 @reviewer 검토        → 두 agent 모두 inject (단일 호출, default)
-                                        # MASTER_PARALLEL_AGENTS=true 시 fan-out 2 호출 → 집계 (Phase 10)
-@bot /memo save 내일 회의 9시           → SqliteMemory 저장
-@bot /memo list                        → 최근 메모 20개
-@bot /hybrid-status                    → settings 요약
-@bot /hybrid-budget                    → 일일 토큰 예산
-@bot /kanban list                      → Kanban tasks
-@bot 오늘 일정 알려줘                   → master → @researcher (캘린더 read MCP)
-@bot 내일 14:00 회의 추가              → master → @devops (캘린더 write MCP, 사용자 확인 후)
+안녕                                  → master 가 인사 응답
+파이썬으로 fizzbuzz 짜줘               → master 가 코드 응답
+오늘 한 일 정리해서 일기 항목 줘       → master 가 24-필드 추출 → 사용자 manual 시트 저장
 ```
 
-> Phase 8 후 자동화는 모두 폐기됐다. 매일 아침 브리핑 / #일기 자동 추출 /
-> 잡 매칭 폴링 등은 더 이상 자동 실행되지 않는다. 동일 결과를 원하면
-> master 한테 명시 요청 (예: `@bot 오늘 일정 + 일기 가능한 항목 정리해줘`).
+### 9.2 슬래시 skill (LLM 안 거치고 즉시 응답)
+```
+/memo save 내일 회의 9시               → SqliteMemory 에 저장
+/memo list                            → 최근 메모 20개
+/hybrid-status                        → 봇 settings 요약 (master_enabled, model, 등)
+/hybrid-budget                        → 일일 토큰 예산 사용량
+/kanban list                          → Kanban task 목록
+/kanban show <id>                     → task 상세
+/ping                                 → "pong" (RuleLayer)
+/help                                 → 사용 가능 명령 목록
+```
+
+### 9.3 `@handle` 멘션 (Phase 9 — agent SKILL.md 자동 inject)
+```
+@coder 피보나치 짜줘                  → coder SKILL.md (role/when_to_use/inputs/outputs)
+                                        가 master prompt 에 inject → opus 가 신규 코드 작성
+@editor src/foo.py 의 bar() 에 docstring 추가
+                                      → editor SKILL.md inject → 외과적 수정
+@fixer NameError 트레이스: ...        → fixer SKILL.md → 진단 + 수정
+@refactorer src/core/ 구조 정리       → refactorer SKILL.md → 동작 보존 리팩터
+@reviewer 이 PR diff 평가해줘          → reviewer SKILL.md → 리뷰
+@tester src/foo.py 단위 테스트 작성    → tester SKILL.md → pytest 케이스
+@debugger 봇 응답이 비정상            → debugger SKILL.md → 진단
+@security .env / OAuth 노출 검사      → security SKILL.md → 보안 audit
+@finder kanban_skill 정의 위치 찾아줘  → finder SKILL.md → grep/glob 1회
+@analyst src/core/critic.py 동작 설명 → analyst SKILL.md → 코드 분석 + 인용
+@researcher Brave 로 "asyncio gather 한도" 검색
+                                      → researcher SKILL.md → 외부 조사
+@architect Phase 12 Slack gateway 설계
+                                      → architect SKILL.md → 설계 다이어그램 + ADR
+@planner mail watcher 살리는 단계 분해 → planner SKILL.md → 작업 list
+@documenter 이번 작업의 README 갱신 초안
+                                      → documenter SKILL.md → 마크다운 작성
+@commenter src/foo.py 함수에 인라인 주석
+                                      → commenter SKILL.md → docstring 추가
+@devops Discord webhook 으로 브리핑 발송  → devops SKILL.md → curl/python 호출
+@optimizer 부팅 latency 핫스팟 분석    → optimizer SKILL.md → 측정 + 최적화 제안
+```
+
+### 9.4 다중 멘션 (단일 호출, default)
+```
+@coder 짜고 @reviewer 도 검토해줘
+  → 두 SKILL.md 모두 master prompt 에 inject → 단일 opus 호출 → 둘 책임 합쳐 응답
+
+@finder src/core/critic.py 위치 → @analyst 가 동작 설명
+  → finder + analyst SKILL.md inject → 단일 호출 → 위치 + 분석 한 번에
+```
+
+### 9.5 Phase 10 병렬 fan-out (`MASTER_PARALLEL_AGENTS=true` opt-in)
+```env
+# .env 에 추가 (default: 단일 호출)
+MASTER_PARALLEL_AGENTS=true
+MASTER_PARALLEL_MAX_CONCURRENCY=3
+```
+```
+@coder 짜고 @tester 테스트 케이스 동시 작성
+  → claude subprocess 2개 동시 실행 (asyncio.gather + Semaphore)
+  → 결과 집계: "### @coder\n...\n\n### @tester\n..."
+  → ExperienceLog 의 model_outputs[]: parallel:@coder + parallel:@tester
+```
+
+> ⚠️ 병렬 fan-out 은 N 개 멘션 = N 개 Claude CLI 호출. Max OAuth 시간당
+> 한도가 N 배로 빨리 소진. 정말로 두 agent 의 **독립** 응답이 필요할 때만.
+> 단순 연속 (`@coder` 결과를 `@reviewer` 가 검토) 은 단일 호출 (default)
+> 이 더 자연스러움.
+
+### 9.6 폐기 (Phase 11 후)
+- `!heavy <msg>` ❌ — Phase 11 에서 폐기. master 가 이미 Claude opus 라
+  의미 X. 동일 응답을 그냥 자유 텍스트로 받으면 됨.
+- `#일기` 채널 자동 24-필드 추출 ❌ — Phase 8 폐기. 사용자가 명시
+  요청 (`오늘 한 일 정리해서 줘`).
+- 매일 아침 브리핑 / 잡 매칭 폴링 / 캘린더 충돌 감지 ❌ — Phase 8 폐기.
+  사용자가 master 한테 명시 요청.
 
 ---
 
