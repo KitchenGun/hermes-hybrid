@@ -238,6 +238,7 @@ class Orchestrator:
             slash_skill=intent.slash_skill,
             job_id=intent.job_id,
             job_category=intent.job_category,
+            agent_handles=list(getattr(intent, "agent_handles", []) or []),
         )
         task.mark("created_at")
         return task

@@ -235,3 +235,112 @@ async def test_orchestrator_default_off_keeps_legacy_path(tmp_path):
     result = await o.handle("/ping", user_id="u1")
     assert result.handled_by == "rule"
     fake_master.opencode.run.assert_not_called()
+
+
+# ---- Phase 9: agent SKILL.md inject ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_handle_mention_injects_skill_md_into_prompt(tmp_path):
+    """`@coder` 멘션 → master prompt 에 coder SKILL.md frontmatter 가 inject."""
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+
+    captured: dict = {}
+
+    async def _capture_run(*, prompt, history, model=None, timeout_ms=None):
+        captured["prompt"] = prompt
+        return _ok_result("done")
+
+    master.opencode.run = _capture_run  # type: ignore[assignment]
+
+    await master.handle("@coder fizzbuzz 짜줘", user_id="u1")
+    prompt = captured["prompt"]
+    assert "## Active sub-agent: @coder" in prompt
+    assert "role: write_new_code" in prompt
+    # description / when_to_use snippets must reach the prompt
+    assert "when_to_use:" in prompt
+    # User message가 그대로 보존
+    assert "fizzbuzz 짜줘" in prompt
+
+
+@pytest.mark.asyncio
+async def test_no_handle_means_no_agent_snippet(tmp_path):
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+
+    captured: dict = {}
+
+    async def _capture_run(*, prompt, history, model=None, timeout_ms=None):
+        captured["prompt"] = prompt
+        return _ok_result("done")
+
+    master.opencode.run = _capture_run  # type: ignore[assignment]
+
+    await master.handle("hello", user_id="u1")
+    prompt = captured["prompt"]
+    assert "Active sub-agent:" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_multiple_handles_inject_each_snippet(tmp_path):
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+
+    captured: dict = {}
+
+    async def _capture_run(*, prompt, history, model=None, timeout_ms=None):
+        captured["prompt"] = prompt
+        return _ok_result("done")
+
+    master.opencode.run = _capture_run  # type: ignore[assignment]
+
+    await master.handle(
+        "@coder 짜고 @reviewer 가 검토해줘", user_id="u1"
+    )
+    prompt = captured["prompt"]
+    assert "## Active sub-agent: @coder" in prompt
+    assert "## Active sub-agent: @reviewer" in prompt
+
+
+@pytest.mark.asyncio
+async def test_unknown_handle_does_not_break_prompt(tmp_path):
+    """`@nobody` 는 IntentRouter 가 이미 필터링 — prompt 에 영향 없음."""
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+
+    captured: dict = {}
+
+    async def _capture_run(*, prompt, history, model=None, timeout_ms=None):
+        captured["prompt"] = prompt
+        return _ok_result("done")
+
+    master.opencode.run = _capture_run  # type: ignore[assignment]
+
+    await master.handle("@nobody 뭐해", user_id="u1")
+    prompt = captured["prompt"]
+    assert "Active sub-agent:" not in prompt
+    assert "@nobody" in prompt   # user_message 자체에는 그대로 잔존
+
+
+@pytest.mark.asyncio
+async def test_agent_handles_stamped_on_task_and_logged(tmp_path):
+    """ExperienceLog 에 agent_handles 가 기록돼야 한다."""
+    log_dir = tmp_path / "exp_log"
+    settings = _settings(tmp_path, experience_log_root=log_dir)
+    logger = ExperienceLogger(log_dir, enabled=True)
+    master = HermesMasterOrchestrator(settings, experience_logger=logger)
+    master.opencode.run = AsyncMock(return_value=_ok_result("done"))
+
+    result = await master.handle(
+        "@coder 짜고 @reviewer 검토", user_id="u1"
+    )
+    assert result.task.agent_handles == ["@coder", "@reviewer"]
+
+    # ExperienceLog 에도 동일하게
+    files = list(log_dir.glob("*.jsonl"))
+    assert len(files) == 1
+    import json
+    line = files[0].read_text(encoding="utf-8").strip()
+    rec = json.loads(line)
+    assert rec["agent_handles"] == ["@coder", "@reviewer"]

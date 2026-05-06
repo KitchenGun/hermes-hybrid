@@ -4,30 +4,23 @@ All-via-master design (Phase plan 2026-05-06):
 
     Discord/Telegram message
         ↓
-    IntentRouter — short-circuits RuleLayer / slash skills / forced profile
+    IntentRouter — short-circuits RuleLayer / slash skills + parse @handles
         ↓ (else)
     PolicyGate — allowlist / budget
         ↓ (allow)
-    JobInventory — profile + job + skill specs to compose the master prompt
+    JobInventory.agent_by_handle() — @handle SKILL.md lookup
         ↓
     OpenCodeAdapter — opencode CLI / gpt-5.5  ← THE single LLM call
+                       (system prompt + agent snippets injected if @handles found)
         ↓
     Critic — self_score + ExperienceLog stamp
         ↓
     Response back to gateway
 
-The legacy ``Orchestrator._dispatch_with_retries`` chain (ollama / Claude
-CLI tier ladder + JobFactory v1/v2 dispatcher) is bypassed entirely when
-the master path is taken. The legacy code stays alive in this commit
-(default OFF, opt-in via ``master_enabled=True``) — Phase 4 of the plan
-is the actual deletion.
-
-Why a separate class instead of mutating Orchestrator:
-  * keeps the master code path independently testable
-  * Orchestrator.handle delegates to this class only when
-    ``master_enabled=True``, so default test behavior is unchanged
-  * enables a clean `git rm` of the legacy dispatch in the next commit
-    without touching master logic
+Phase 9 (2026-05-06): IntentRouter 가 ``@coder`` / ``@reviewer`` 같은
+mention 을 감지하면, master 가 해당 sub-agent SKILL.md frontmatter
+(role / when_to_use / not_for / inputs / outputs) 를 system prompt 에
+inject. 이로써 master 가 sub-agent 의 행동 가이드를 따르도록 유도.
 """
 from __future__ import annotations
 
@@ -153,6 +146,7 @@ class HermesMasterOrchestrator:
             job_id=intent.job_id,
             job_category=intent.job_category,
             skill_ids=list(intent.skill_ids),
+            agent_handles=list(getattr(intent, "agent_handles", []) or []),
         )
         task.mark("created_at")
 
@@ -354,14 +348,74 @@ class HermesMasterOrchestrator:
     def _compose_prompt(
         self, task: TaskState, intent: Any
     ) -> str:
-        """Stitch a system prompt + user message.
+        """Stitch a system prompt + agent snippets + user message.
 
-        Phase 8 후 profile/job context 가 사라졌으므로 system prompt 만.
-        향후 master 가 IntentRouter 결과의 ``@coder`` 같은 mention 을
-        인식하면 해당 agent 의 SKILL.md 를 inject 하는 wiring 이 추가될
-        예정 (Phase 9).
+        Phase 9: ``intent.agent_handles`` 에 발견된 sub-agent 핸들이 있으면
+        각각의 SKILL.md frontmatter 를 짧은 snippet 으로 변환해 system
+        prompt 에 inject. master 가 해당 agent 의 책임/경계/입출력을 따라
+        응답하도록 유도.
+
+        snippet 포맷:
+            ## Active sub-agent: @coder (role: write_new_code)
+            description: 신규 모듈/기능을 작성하는 sub-agent.
+            when_to_use:
+              - 새 모듈/기능
+              - greenfield 작성
+            not_for:
+              - 외과적 수정 (→ @editor)
+            inputs: [...]
+            outputs: [...]
         """
-        return _SYSTEM_PROMPT + "\n\n## User\n" + task.user_message
+        parts: list[str] = [_SYSTEM_PROMPT]
+
+        handles = list(getattr(intent, "agent_handles", []) or [])
+        if handles:
+            for handle in handles:
+                snippet = self._agent_snippet(handle)
+                if snippet:
+                    parts.append(snippet)
+            log.info(
+                "master.agent_injected",
+                handles=handles,
+                injected=sum(
+                    1 for h in handles if self.job_inventory.agent_by_handle(h)
+                ),
+            )
+
+        parts.append("## User\n" + task.user_message)
+        return "\n\n".join(parts)
+
+    def _agent_snippet(self, handle: str) -> str:
+        """Compose a compact prompt snippet from an agent's SKILL.md frontmatter.
+
+        Returns empty string if the handle doesn't resolve in AgentRegistry —
+        IntentRouter already filters unknown handles, but this is the second
+        line of defense.
+        """
+        entry = self.job_inventory.agent_by_handle(handle)
+        if entry is None:
+            return ""
+
+        lines: list[str] = [
+            f"## Active sub-agent: {entry.handle} (role: {entry.role or '—'})",
+        ]
+        if entry.description:
+            lines.append(f"description: {entry.description}")
+        if entry.when_to_use:
+            lines.append("when_to_use:")
+            lines.extend(f"  - {item}" for item in entry.when_to_use)
+        if entry.not_for:
+            lines.append("not_for:")
+            lines.extend(f"  - {item}" for item in entry.not_for)
+        if entry.inputs:
+            lines.append(f"inputs: {', '.join(entry.inputs)}")
+        if entry.outputs:
+            lines.append(f"outputs: {', '.join(entry.outputs)}")
+        if entry.primary_tools:
+            lines.append(
+                f"primary_tools: {', '.join(entry.primary_tools)}"
+            )
+        return "\n".join(lines)
 
     def _reject(
         self,

@@ -1,24 +1,31 @@
 """Intent Router — diagram-aligned wrapper of RuleLayer + SkillRegistry.
 
-Phase 8 (2026-05-06) 후 책임 축소:
+Phase 9 (2026-05-06) 추가: ``@handle`` mention 파싱 + AgentRegistry 검증.
 
   * ``/ping`` 등 RuleLayer 매치 — instant reply, no LLM
   * ``/memo`` / ``/kanban`` 등 슬래시 skill — 자체 handler 호출
+  * ``@coder`` / ``@reviewer`` 등 멘션 — 인식해서 IntentResult 에 stamp
+    (master 가 prompt 에 SKILL.md inject)
   * forced_profile 분기 폐기 — channel-pinned 자동화는 더 이상 없음
-  * 그 외 모든 자유 텍스트는 master 에 전달 (master 가 어떤 agent /
-    어떤 skill 을 호출할지 결정)
+  * 그 외 모든 자유 텍스트는 master 에 전달
 
-``forced_profile`` 인자는 호환을 위해 시그니처에 남겨두지만 무시됨 (gateway
-의 일부 코드가 한동안 이 인자를 넘길 수 있음 — 단계적 정리).
+``forced_profile`` 인자는 호환을 위해 시그니처에 남겨두지만 무시됨.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.agents import AgentRegistry
 from src.config import Settings
 from src.router import RuleLayer, RuleMatch
 from src.skills import SkillContext, SkillMatch, SkillRegistry, default_registry
+
+
+# `@handle` mention 추출 — 부정 lookbehind 로 email-ish (`user@example.com`)
+# 패턴 회피. `\w` 또는 `.` 직전이면 매치하지 않음.
+_MENTION_RE = re.compile(r"(?<![\w.])@(\w+)")
 
 
 @dataclass
@@ -43,6 +50,9 @@ class IntentResult:
     job_category: str | None = None
     slash_skill: str | None = None
     skill_ids: list[str] = field(default_factory=list)
+    # Phase 9: 사용자 입력에서 발견된 ``@handle`` 중 실제 AgentRegistry 에
+    # 등록된 sub-agent 핸들들. 등록 외 mention 은 필터링됨 (e.g. email).
+    agent_handles: list[str] = field(default_factory=list)
 
     @property
     def short_circuited(self) -> bool:
@@ -51,7 +61,7 @@ class IntentResult:
 
 
 class IntentRouter:
-    """Wrapper around RuleLayer + SkillRegistry.
+    """Wrapper around RuleLayer + SkillRegistry + AgentRegistry.
 
     The master orchestrator calls :meth:`route` once per incoming message
     and either returns the short-circuit response (RuleLayer / slash
@@ -65,10 +75,13 @@ class IntentRouter:
         *,
         rules: RuleLayer | None = None,
         skills: SkillRegistry | None = None,
+        agents: AgentRegistry | None = None,
     ):
         self.settings = settings
         self.rules = rules if rules is not None else RuleLayer()
         self.skills = skills if skills is not None else default_registry(settings)
+        # Phase 9 — agent registry 로 ``@handle`` 멘션 검증.
+        self.agents = agents if agents is not None else AgentRegistry()
 
     async def route(
         self,
@@ -89,7 +102,12 @@ class IntentRouter:
           2. Slash skills (HybridMemoSkill, KanbanSkill, ...)
           3. heavy (user-explicit, signals C2-style dispatch)
           4. fallthrough — discord_message, master decides
+
+        ``@handle`` 멘션은 모든 분기에서 동일 파싱 (RuleLayer / slash skill
+        도 stamp 만 — 실제 inject 는 master 가 결정).
         """
+        agent_handles = self._parse_agent_handles(user_message)
+
         # 1. RuleLayer
         rule_match = self.rules.match(user_message)
         if rule_match is not None:
@@ -99,6 +117,7 @@ class IntentRouter:
                 rule_match=rule_match,
                 trigger_type="discord_message",
                 trigger_source=f"user:{user_id}",
+                agent_handles=agent_handles,
             )
 
         # 2. Slash skills
@@ -114,6 +133,7 @@ class IntentRouter:
                 slash_skill=skill.name,
                 job_id=skill.name,
                 job_category="chat",
+                agent_handles=agent_handles,
             )
 
         # 3. heavy
@@ -121,13 +141,35 @@ class IntentRouter:
             return IntentResult(
                 trigger_type="discord_message",
                 trigger_source=f"heavy:{user_id}",
+                agent_handles=agent_handles,
             )
 
         # 4. fallthrough — master decides agent/skill
         return IntentResult(
             trigger_type="discord_message",
             trigger_source=f"user:{user_id}",
+            agent_handles=agent_handles,
         )
+
+    def _parse_agent_handles(self, message: str) -> list[str]:
+        """Extract `@handle` mentions that resolve to known sub-agents.
+
+        Returns canonical handles (e.g. ``"@coder"``) preserving first-seen
+        order; duplicates dropped. Unknown handles (typos, email-ish text
+        that snuck past the regex) are silently filtered.
+        """
+        if not message:
+            return []
+        seen: dict[str, str] = {}  # lower → canonical
+        for m in _MENTION_RE.finditer(message):
+            candidate = "@" + m.group(1)
+            entry = self.agents.by_handle(candidate)
+            if entry is None:
+                continue
+            key = entry.handle.lower()
+            if key not in seen:
+                seen[key] = entry.handle
+        return list(seen.values())
 
     def build_skill_context(
         self,

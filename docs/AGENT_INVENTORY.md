@@ -93,19 +93,35 @@
 | `NAVER_APP_PASSWORD` | master (mail polling) |
 | `TIMEZONE` / `LOCALE` | 공통 |
 
-## 4. 호출 방법 (Phase 8 시점)
+## 4. 호출 방법 (Phase 9 시점)
 
-현재 master 가 `@agent` 멘션을 자동 인식해 SKILL.md 를 inject 하는 wiring
-은 **Phase 9 작업** 으로 남아있다. Phase 8 시점에서는:
+**Phase 9 (2026-05-06) 부터 자동 wiring 활성화**:
 
-- master 가 사용자 메시지 자체에서 의도를 추론해 적절한 도구 (web_search /
-  cocal MCP / sheets webhook / docx 작성 등) 를 직접 호출.
-- agent SKILL.md 는 master prompt 에 자동 inject 되지는 않지만, master 가
-  `JobInventory.agents()` 를 통해 인덱스를 읽고 일관된 패턴으로 행동
-  하도록 reference 역할.
-- 사용자가 명시적으로 `@coder` / `@reviewer` 등을 입력하면 master 의 자유
-  텍스트 처리 안에서 해당 핸들을 인식하고 SKILL.md 의 가이드를 따른다
-  (현재는 best-effort, Phase 9 에서 deterministic wiring 추가).
+- 사용자가 메시지에 `@coder` / `@reviewer` 같은 mention 을 포함하면
+  IntentRouter (`src/integration/intent_router.py`) 가 정규식
+  `(?<![\w.])@(\w+)` 으로 후보를 추출하고 AgentRegistry 로 검증.
+- 알려진 핸들만 IntentResult.agent_handles 에 stamp (e.g. `["@coder",
+  "@reviewer"]`). email-ish text (`user@example.com`) / 미등록 핸들은
+  자동 필터링.
+- HermesMaster 가 system prompt 에 각 agent 의 SKILL.md frontmatter
+  snippet 을 inject:
+  ```
+  ## Active sub-agent: @coder (role: write_new_code)
+  description: ...
+  when_to_use:
+    - ...
+  not_for:
+    - ...
+  inputs: ...
+  outputs: ...
+  primary_tools: ...
+  ```
+- TaskState.agent_handles + ExperienceRecord.agent_handles 로 ExperienceLog
+  에 기록 → 향후 Curator 가 agent 별 사용 빈도 통계 가능.
+- mention 없이 자유 텍스트 → master 가 자체 추론으로 적절한 도구 호출
+  (전과 동일 동작).
+- RuleLayer / 슬래시 skill 단락 시에도 mention 은 stamp 되지만 master 가
+  호출되지 않으므로 prompt inject 는 건너뜀.
 
 ## 5. AgentRegistry API
 
@@ -138,7 +154,9 @@ print(reg.summary())  # {"implementation": 4, "quality": 4, ...}
 
 ## 6. 향후
 
-- Phase 9 — `@agent` 멘션 dispatch wiring (master prompt 에 SKILL.md inject)
+- ✅ **Phase 9 (2026-05-06)** — `@agent` 멘션 dispatch wiring 완료
+  (IntentRouter 파싱 → master prompt 에 SKILL.md frontmatter inject →
+  ExperienceLog 기록).
 - Phase 10 — `Delegator.delegate_many` 진짜 병렬 실행 (예: `@coder + @tester`
-  를 동시에 호출 + 결과 집계)
-- Phase 11 — Slack gateway / Discord 슬래시 `/agent <handle> <task>` 추가
+  를 동시에 호출 + 결과 집계).
+- Phase 11 — Slack gateway / Discord 슬래시 `/agent <handle> <task>` 추가.

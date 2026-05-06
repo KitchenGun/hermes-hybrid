@@ -120,3 +120,104 @@ async def test_rule_takes_precedence_over_slash_skill():
     )
     assert result.handled_by == "rule"
     assert result.slash_skill is None
+
+
+# ---- Phase 9: @handle mention parsing --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_known_agent_mention_is_extracted():
+    """`@coder write fizzbuzz` → agent_handles=['@coder']."""
+    router = IntentRouter(_settings())
+    result = await router.route(
+        user_message="@coder write fizzbuzz",
+        user_id="42",
+        session_id="s1",
+    )
+    assert result.agent_handles == ["@coder"]
+    assert not result.short_circuited
+    assert result.trigger_type == "discord_message"
+
+
+@pytest.mark.asyncio
+async def test_multiple_distinct_handles_preserved_in_order():
+    router = IntentRouter(_settings())
+    result = await router.route(
+        user_message="@coder 짜고 @reviewer 가 검토해줘",
+        user_id="42",
+        session_id="s1",
+    )
+    assert result.agent_handles == ["@coder", "@reviewer"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_handles_deduped():
+    router = IntentRouter(_settings())
+    result = await router.route(
+        user_message="@coder 짜고 다시 @coder 가 마무리",
+        user_id="42",
+        session_id="s1",
+    )
+    assert result.agent_handles == ["@coder"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_handle_filtered():
+    """`@nobody` is not in AgentRegistry → silently dropped."""
+    router = IntentRouter(_settings())
+    result = await router.route(
+        user_message="@nobody hello",
+        user_id="42",
+        session_id="s1",
+    )
+    assert result.agent_handles == []
+
+
+@pytest.mark.asyncio
+async def test_email_like_string_does_not_match():
+    """`user@example.com` should NOT trigger a mention — preceded by \\w."""
+    router = IntentRouter(_settings())
+    result = await router.route(
+        user_message="kang@coder.dev 보내줘",   # `@coder` 앞에 . — 차단됨
+        user_id="42",
+        session_id="s1",
+    )
+    assert result.agent_handles == []
+
+
+@pytest.mark.asyncio
+async def test_mention_handle_is_case_insensitive():
+    router = IntentRouter(_settings())
+    result = await router.route(
+        user_message="@CODER 알았지?",
+        user_id="42",
+        session_id="s1",
+    )
+    # canonical form ('@coder') 로 정규화됨
+    assert result.agent_handles == ["@coder"]
+
+
+@pytest.mark.asyncio
+async def test_mention_stamped_even_on_slash_skill_match():
+    """슬래시 skill 단락이라도 mention 은 stamp — 하류에서 무시할 수 있도록."""
+    router = IntentRouter(_settings())
+    # `/memo save @coder ...` — /memo 는 slash skill 매치, @coder 는 valid handle
+    result = await router.route(
+        user_message="/memo save @coder hello",
+        user_id="42",
+        session_id="s1",
+    )
+    assert result.handled_by == "skill:hybrid-memo"
+    # slash skill 자체가 처리하므로 master 는 안 부르지만 stamp 는 보존
+    assert result.agent_handles == ["@coder"]
+
+
+@pytest.mark.asyncio
+async def test_no_message_yields_empty_handles():
+    router = IntentRouter(_settings())
+    result = await router.route(
+        user_message="",
+        user_id="42",
+        session_id="s1",
+    )
+    assert result.agent_handles == []

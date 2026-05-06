@@ -154,6 +154,12 @@ class TaskState(BaseModel):
     model_name: str | None = None          # actual model name used (local OK)
     memory_inject_count: int = 0           # P0-C inject hit count
 
+    # Phase 9 (2026-05-06): sub-agent mention dispatch.
+    # IntentRouter 가 ``@coder`` 같은 mention 을 감지하면 검증된 핸들
+    # 리스트를 여기에 stamp. master 가 prompt 에 SKILL.md snippet 을
+    # inject. ExperienceLog 에서 agent 별 사용 빈도 집계 가능.
+    agent_handles: list[str] = Field(default_factory=list)
+
     # Execution
     status: Status = "pending"
     current_tier: Tier = "L2"

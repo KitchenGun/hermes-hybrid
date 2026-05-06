@@ -83,6 +83,8 @@ class ExperienceRecord(BaseModel):
     model_provider: str | None = None
     model_name: str | None = None
     memory_inject_count: int = 0
+    # Phase 9: sub-agent mention dispatch. IntentRouter 가 검증한 핸들들.
+    agent_handles: list[str] = Field(default_factory=list)
 
     # Outcome
     status: str = "pending"           # TaskState.status at end
@@ -199,6 +201,7 @@ def _record_from_task(
         model_provider=task.model_provider,
         model_name=task.model_name,
         memory_inject_count=task.memory_inject_count,
+        agent_handles=list(task.agent_handles),
         input_text_hash=_sha16(task.user_message),
         input_text_length=len(task.user_message or ""),
         response_hash=_sha16(task.final_response),
