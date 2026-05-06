@@ -32,6 +32,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
+from src.agents import AgentEntry, AgentRegistry
 from src.core.skill_library import SkillEntry, SkillLibrary
 
 
@@ -85,6 +86,7 @@ class JobInventory:
         profiles_root: Path,
         *,
         skills_root: Path | None = None,
+        agents_root: Path | None = None,
         repo_root: Path | None = None,
     ):
         self.profiles_root = Path(profiles_root)
@@ -94,10 +96,19 @@ class JobInventory:
         # (Phase 7 work), but the interface accepts it so the master
         # doesn't change when the 6-category agent layout lands.
         self.skills_root = Path(skills_root) if skills_root else None
+        # Phase 7: agents/ root holds the 17 sub-agents (6 categories).
+        # Default points to ``<repo_root>/agents`` so the master can
+        # consult them by handle (@coder etc.).
+        self.agents_root = (
+            Path(agents_root)
+            if agents_root is not None
+            else self.repo_root / "agents"
+        )
 
         self._profiles: dict[str, ProfileSpec] | None = None
         self._jobs: dict[str, JobSpec] | None = None
         self._skills: list[SkillEntry] | None = None
+        self._agents: AgentRegistry | None = None
 
     # ---- public lookups ---------------------------------------------
 
@@ -138,6 +149,24 @@ class JobInventory:
     def skills_for(self, profile_id: str) -> list[SkillEntry]:
         return [s for s in self.skills() if s.profile == profile_id]
 
+    # ---- Phase 7 — agents (6 categories / 17 handles) -----------------
+
+    def agents(self) -> list[AgentEntry]:
+        return self._agent_registry().all()
+
+    def agent_by_handle(self, handle: str) -> AgentEntry | None:
+        return self._agent_registry().by_handle(handle)
+
+    def agents_by_category(self, category: str) -> list[AgentEntry]:
+        return self._agent_registry().by_category(category)
+
+    def _agent_registry(self) -> AgentRegistry:
+        if self._agents is None:
+            self._agents = AgentRegistry(
+                self.agents_root, repo_root=self.repo_root
+            )
+        return self._agents
+
     # ---- summary ----------------------------------------------------
 
     def summary(self) -> dict[str, Any]:
@@ -157,6 +186,8 @@ class JobInventory:
                 )
             },
             "skill_count": len(self.skills()),
+            "agent_count": len(self.agents()),
+            "agents_by_category": self._agent_registry().summary(),
         }
 
     # ---- internal scan ----------------------------------------------

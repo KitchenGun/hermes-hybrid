@@ -79,8 +79,45 @@
 
 레거시 의존 테스트 22 파일 삭제. 새 master 흐름은 `tests/test_hermes_master.py` + `tests/test_integration_*.py` + `tests/test_opencode_adapter.py` 가 검증.
 
-## 6. 향후 (Phase 7+)
+## 6. Phase 7 — 6 카테고리 / 17 sub-agent (2026-05-06 완료)
 
-- **6 카테고리 / 17 agent 통합** — RESEARCH (@finder/@analyst/@researcher), PLANNING (@architect/@planner), IMPLEMENTATION (@coder/@editor/@fixer/@refactorer), QUALITY (@reviewer/@tester/@debugger/@security), DOCUMENTATION (@documenter/@commenter), INFRASTRUCTURE (@devops/@optimizer).
-- SkillLibrary / JobInventory 가 `@agent_name` 기반 sub-agent 호출을 수용하는 인터페이스. Hermes Master 가 dispatch.
-- Sub-agent 병렬 (Phase 5b) — `Delegator.delegate_many` 의 진짜 병렬 실행.
+`agents/{category}/{name}/SKILL.md` 글로벌 디렉터리. `AgentRegistry`
+([src/agents/__init__.py](../src/agents/__init__.py)) 가 스캔, `JobInventory.agents()` 가 master 에 노출.
+
+| 카테고리 | agents | 책임 요지 |
+|---|---|---|
+| **RESEARCH** | @finder · @analyst · @researcher | 위치 / 분석 / 외부 조사 |
+| **PLANNING** | @architect · @planner | 시스템 설계 / 작업 분해 |
+| **IMPLEMENTATION** | @coder · @editor · @fixer · @refactorer | 신규 작성 / 외과적 수정 / 버그 fix / 구조 개선 |
+| **QUALITY** | @reviewer · @tester · @debugger · @security | 리뷰 / 테스트 / 진단 / 보안 |
+| **DOCUMENTATION** | @documenter · @commenter | 외부 문서 / 인라인 주석 |
+| **INFRASTRUCTURE** | @devops · @optimizer | 배포·운영 / 성능 |
+
+각 SKILL.md 의 frontmatter 표준:
+```yaml
+name: coder
+agent_handle: "@coder"
+category: implementation
+role: write_new_code
+description: ...
+when_to_use: [...]
+not_for: [...]
+inputs: [...]
+outputs: [...]
+metadata:
+  hermes:
+    primary_tools: [write, edit]
+    tags: [...]
+```
+
+`AgentRegistry.by_handle("@coder")` 또는 case-insensitive `"coder"` 로
+조회. master 가 사용자 입력에서 `@coder` 같은 멘션을 발견하면 해당
+SKILL.md 를 system prompt 에 inject.
+
+## 7. 향후 (Phase 8+)
+
+- **Phase 8** — Master 가 `@agent` 멘션 → 해당 agent SKILL.md 를 prompt
+  에 inject 하는 dispatch wiring (현재는 인덱스만, master 호출 wiring X).
+- **Phase 9** — `Delegator.delegate_many` 의 진짜 병렬 실행 + agent
+  간 결과 집계.
+- **Phase 10** — Slack gateway / Discord 슬래시 명령 확장.
