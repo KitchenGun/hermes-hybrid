@@ -4,7 +4,7 @@ The router is a deterministic short-circuit layer in front of the
 master LLM. We lock down:
   * RuleLayer match → handled_by=rule, response populated, master skipped
   * Slash skill match → handled_by=skill:<name>, slash_skill stamped
-  * heavy → trigger_type=discord_message, trigger_source=heavy:<uid>
+  * (Phase 11) heavy 분기 폐기 — master = single lane
   * fallthrough → trigger_type=discord_message, profile_id=None
 
 Phase 8 (2026-05-06) 후 forced_profile 분기는 폐기 — 시그니처는 호환을
@@ -78,19 +78,7 @@ async def test_forced_profile_arg_is_ignored_phase8():
     assert result.forced_profile is None
 
 
-@pytest.mark.asyncio
-async def test_heavy_flag_marks_trigger_source():
-    router = IntentRouter(_settings())
-    result = await router.route(
-        user_message="!heavy 복잡한 분석",
-        user_id="42",
-        session_id="s1",
-        heavy=True,
-    )
-    assert not result.short_circuited
-    assert result.trigger_type == "discord_message"
-    assert result.trigger_source == "heavy:42"
-    assert result.profile_id is None
+# Phase 11 (2026-05-06): heavy 분기 폐기. test_heavy_flag_marks_trigger_source 제거.
 
 
 @pytest.mark.asyncio

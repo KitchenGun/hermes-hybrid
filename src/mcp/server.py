@@ -32,7 +32,7 @@ implementation-defined server error).
 ## Tool exposed
 
 Only one for Phase 3: ``hybrid.handle``. Takes ``{user_message, user_id,
-heavy?}``; returns ``{response, handled_by, tier, degraded}``. Enough
+}``; returns ``{response, handled_by, tier, degraded}``. Enough
 to verify the wiring end-to-end. Phase 4 will add ``hybrid.memo.*`` and
 ``hybrid.status`` once the shape stabilizes.
 """
@@ -83,11 +83,6 @@ _TOOLS: list[_Tool] = [
             "properties": {
                 "user_message": {"type": "string", "description": "Message text."},
                 "user_id": {"type": "string", "description": "Stable user id."},
-                "heavy": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "Opt-in heavy (Claude) path.",
-                },
             },
             "required": ["user_message", "user_id"],
         },
@@ -186,7 +181,6 @@ class HybridMCPServer:
 
         user_message = arguments.get("user_message")
         user_id = arguments.get("user_id")
-        heavy = bool(arguments.get("heavy", False))
         if not isinstance(user_message, str) or not user_message.strip():
             raise MCPError(-32602, "user_message is required and must be a non-empty string")
         if not isinstance(user_id, str) or not user_id.strip():
@@ -195,7 +189,6 @@ class HybridMCPServer:
         result = await self.orchestrator.handle(
             user_message,
             user_id=user_id,
-            heavy=heavy,
         )
 
         # MCP tool results use a `content` list with typed items. We return

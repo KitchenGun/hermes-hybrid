@@ -122,16 +122,9 @@ class TaskState(BaseModel):
     router_confidence: float = 0.0
     requires_planning: bool = False
     router_reason: str = ""
-    # Opt-in heavy path: user invoked `!heavy ...`. Skips rule layer + router,
-    # goes directly to Claude Code CLI (C2). Never set by automatic escalation.
-    heavy: bool = False
 
-    # Channel-pinned forced profile routing. When set, _handle_locked skips
-    # the rule/skill/factory/router pipeline and invokes ``hermes.run`` with
-    # ``-p <forced_profile>`` directly. Set by the gateway when a message
-    # arrives on a configured profile-pinned channel (e.g. ``#일기`` →
-    # journal_ops). HITL gate is skipped — the channel itself is the
-    # explicit user intent. ``heavy`` always wins if both are set.
+    # Channel-pinned forced profile routing — Phase 8 폐기. 호환을 위해
+    # 필드만 보존 (DB 에 저장된 옛 task 가 깨지지 않도록).
     forced_profile: str | None = None
 
     # JobFactory: factory.decide()가 "match"를 반환할 때 profile_id 저장.

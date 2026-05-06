@@ -1,6 +1,7 @@
 """Intent Router — diagram-aligned wrapper of RuleLayer + SkillRegistry.
 
-Phase 9 (2026-05-06) 추가: ``@handle`` mention 파싱 + AgentRegistry 검증.
+Phase 9 (2026-05-06): ``@handle`` mention 파싱 + AgentRegistry 검증.
+Phase 11 (2026-05-06): heavy 분기 폐기 (master = single lane).
 
   * ``/ping`` 등 RuleLayer 매치 — instant reply, no LLM
   * ``/memo`` / ``/kanban`` 등 슬래시 skill — 자체 handler 호출
@@ -90,7 +91,6 @@ class IntentRouter:
         user_id: str,
         session_id: str,
         forced_profile: str | None = None,  # 호환 — Phase 8 후 무시
-        heavy: bool = False,
         memory: Any = None,
         repo: Any = None,
         orchestrator: Any = None,
@@ -100,8 +100,7 @@ class IntentRouter:
         Order of precedence:
           1. RuleLayer (instant deterministic reply)
           2. Slash skills (HybridMemoSkill, KanbanSkill, ...)
-          3. heavy (user-explicit, signals C2-style dispatch)
-          4. fallthrough — discord_message, master decides
+          3. fallthrough — discord_message, master decides
 
         ``@handle`` 멘션은 모든 분기에서 동일 파싱 (RuleLayer / slash skill
         도 stamp 만 — 실제 inject 는 master 가 결정).
@@ -136,15 +135,7 @@ class IntentRouter:
                 agent_handles=agent_handles,
             )
 
-        # 3. heavy
-        if heavy:
-            return IntentResult(
-                trigger_type="discord_message",
-                trigger_source=f"heavy:{user_id}",
-                agent_handles=agent_handles,
-            )
-
-        # 4. fallthrough — master decides agent/skill
+        # 3. fallthrough — master decides agent/skill
         return IntentResult(
             trigger_type="discord_message",
             trigger_source=f"user:{user_id}",

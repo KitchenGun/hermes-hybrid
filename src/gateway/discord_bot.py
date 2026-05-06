@@ -4,11 +4,9 @@ R12: If REQUIRE_ALLOWLIST=true and ALLOWED_USER_IDS is empty, the bot
 refuses to start. If the allowlist is present, only listed users' messages
 are processed.
 
-Phase 8 (2026-05-06) 후 단순화:
-  * forced_profile / journal_channel_id / 채널 핀 라우팅 폐기
-  * HITL confirmation 흐름 폐기 (profile yaml 의존)
-  * watcher runner 폐기 (cron / poll watcher 폐기)
-  * !heavy 만 prefix 라우팅으로 잔존
+Phase 8 (2026-05-06): forced_profile / journal_channel_id / HITL / watcher
+모두 폐기.
+Phase 11 (2026-05-06): !heavy prefix 폐기 — master = single lane.
 """
 from __future__ import annotations
 
@@ -27,10 +25,6 @@ from src.state import Repository
 log = get_logger(__name__)
 DISCORD_MAX = 2000
 SLOW_THRESHOLD_S = 3.0
-
-# Opt-in "heavy" path: explicit user prefix that routes the message to the
-# Claude Code CLI via Max subscription. Skips router + tier escalation.
-_HEAVY_PREFIX = "!heavy"
 
 
 class DiscordBot(commands.Bot):
@@ -67,24 +61,9 @@ class DiscordBot(commands.Bot):
         if not content:
             return
 
-        # Heavy path opt-in: `!heavy <message>` → route to Claude Code CLI.
-        # We strip the prefix here so the orchestrator sees the user's actual
-        # prompt, and pass heavy=True so it skips rule/router/tier logic.
-        heavy = False
-        low = content.lower()
-        if low == _HEAVY_PREFIX or low.startswith(_HEAVY_PREFIX + " "):
-            heavy = True
-            content = content[len(_HEAVY_PREFIX):].strip()
-            if not content:
-                await message.channel.send(
-                    "Usage: `!heavy <your message>` — routes to Claude via Max subscription."
-                )
-                return
-
         user_id = message.author.id
         session_id = self._sessions.get(user_id)
-        placeholder_text = "🔧 heavy (Claude)…" if heavy else "⏳ processing…"
-        placeholder = await message.channel.send(placeholder_text)
+        placeholder = await message.channel.send("⏳ processing…")
 
         try:
             start = asyncio.get_event_loop().time()
@@ -93,7 +72,6 @@ class DiscordBot(commands.Bot):
                 user_id=str(user_id),
                 session_id=session_id,
                 history=self._history[user_id][-8:],
-                heavy=heavy,
             )
             elapsed = asyncio.get_event_loop().time() - start
 
@@ -110,7 +88,6 @@ class DiscordBot(commands.Bot):
                     retries=result.task.retry_count,
                     cloud_calls=result.task.cloud_call_count,
                     elapsed_ms=int(elapsed * 1000),
-                    heavy=heavy,
                 )
 
             if elapsed < SLOW_THRESHOLD_S:

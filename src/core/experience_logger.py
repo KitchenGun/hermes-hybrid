@@ -61,9 +61,8 @@ class ExperienceRecord(BaseModel):
     user_id: str
 
     # Routing context
-    profile: str | None = None        # JobFactory v1 match (job_profile_id)
-    forced_profile: str | None = None # channel-pinned profile, if any
-    heavy: bool = False               # !heavy opt-in path
+    profile: str | None = None        # JobFactory v1 match (job_profile_id) — legacy
+    forced_profile: str | None = None # channel-pinned profile, legacy (Phase 8 폐기)
     route: str = "local"              # local | worker | cloud
     tier: str = "L2"                  # final tier reached
     handled_by: str = ""              # _log_task_end's handled_by token
@@ -168,7 +167,6 @@ def _record_from_task(
         user_id=str(task.user_id),
         profile=task.job_profile_id,
         forced_profile=task.forced_profile,
-        heavy=task.heavy,
         route=task.route,
         tier=task.current_tier,
         handled_by=handled_by,

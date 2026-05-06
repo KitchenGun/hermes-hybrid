@@ -140,11 +140,11 @@ class TelegramBot:
         )
 
         # Hand off to the same Orchestrator the Discord gateway uses.
+        # Phase 11: !heavy prefix 폐기 — master = single lane.
         result = await self.orchestrator.handle(
             text,
             user_id=str(user_id),
             history=None,
-            heavy=text.lstrip().startswith("!heavy"),
         )
 
         # Send the response back, chunking if needed.

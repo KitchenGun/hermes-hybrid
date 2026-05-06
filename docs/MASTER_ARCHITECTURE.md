@@ -27,7 +27,7 @@
    │ on_demand    │      │ Intent Router      │    │  opencode CLI        │
    │ (Discord/    │ ───► │ Policy Gate        │ ──►│  gpt-5.5             │
    │  Telegram)   │      │ Agent Inventory    │    │  ($0 marginal)       │
-   │ heavy (!)    │      │ Session Importer   │    └──────────┬───────────┘
+   │              │      │ Session Importer   │    └──────────┬───────────┘
    └──────────────┘      └────────────────────┘               │ emits
                                                               │
                         ┌────────────────────────────────────▼─────────────┐
@@ -46,7 +46,7 @@ Pre-Phase-8 의 "Domain Profiles (6)" + "Shared Skill Layer (10 SKILL.md)" 두
 
 | 컴포넌트 | 위치 | 책임 |
 |---|---|---|
-| **Intent Router** | [src/integration/intent_router.py](../src/integration/intent_router.py) | 결정적 단락만 처리 — RuleLayer / 슬래시 skill / heavy. 자유 텍스트는 master 가 결정. (Phase 8: forced_profile 분기 폐기) |
+| **Intent Router** | [src/integration/intent_router.py](../src/integration/intent_router.py) | 결정적 단락만 처리 — RuleLayer / 슬래시 skill + `@handle` mention 추출. 자유 텍스트는 master 가 결정. (Phase 8: forced_profile 폐기. Phase 11: heavy 폐기) |
 | **Policy Gate** | [src/integration/policy_gate.py](../src/integration/policy_gate.py) | allowlist / 일일 토큰 cap. (Phase 8: HITL `requires_confirmation` 분기 폐기 — profile yaml 의존이었음) Validator wrap 으로 retry/tier post-validate. |
 | **Agent Inventory** | [src/integration/job_inventory.py](../src/integration/job_inventory.py) | 클래스 이름 호환을 위해 `JobInventory` 그대로. 책임은 `agents/` 17 sub-agent runtime 스캔만. master 가 `@coder` 등 핸들 lookup 에 사용. |
 | **Session Importer** | [src/integration/session_importer.py](../src/integration/session_importer.py) | opencode/hermes 의 session JSON → ExperienceLog 통합 (hourly systemd timer). |

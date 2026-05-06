@@ -201,7 +201,6 @@ def session_to_record(
         user_id=fallback_user_id,
         profile=profile_id,
         forced_profile=None,
-        heavy=False,
         route="cloud" if cloud_calls > 0 else "local",
         tier="C1" if cloud_calls > 0 else "L2",
         handled_by=f"hermes-session:{trigger_type}",

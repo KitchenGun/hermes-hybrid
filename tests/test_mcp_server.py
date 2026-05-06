@@ -34,9 +34,8 @@ class _FakeOrchestrator:
         user_id: str,
         session_id: str | None = None,
         history: list[dict[str, str]] | None = None,
-        heavy: bool = False,
     ) -> OrchestratorResult:
-        self.calls.append({"user_message": user_message, "user_id": user_id, "heavy": heavy})
+        self.calls.append({"user_message": user_message, "user_id": user_id})
         task = TaskState(
             session_id=session_id or "sid-fake",
             user_id=user_id,
@@ -94,7 +93,7 @@ async def test_tools_list_advertises_hybrid_handle(server):
     props = hh["inputSchema"]["properties"]
     assert "user_message" in props
     assert "user_id" in props
-    assert "heavy" in props
+    # Phase 11: heavy 인자 폐기 → schema 에서 제거됨
 
 
 # ---- tools/call -------------------------------------------------------------
@@ -118,17 +117,7 @@ async def test_tools_call_dispatches_to_orchestrator(server):
     assert "task_id" in r["_meta"]
 
 
-@pytest.mark.asyncio
-async def test_tools_call_passes_heavy_flag(server):
-    fake_o = server.orchestrator  # type: ignore[attr-defined]
-    await server.handle_request({
-        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
-        "params": {
-            "name": "hybrid.handle",
-            "arguments": {"user_message": "big task", "user_id": "u1", "heavy": True},
-        },
-    })
-    assert fake_o.calls[-1]["heavy"] is True
+# Phase 11 (2026-05-06): heavy 인자 폐기 — test_tools_call_passes_heavy_flag 제거.
 
 
 # ---- error handling ---------------------------------------------------------

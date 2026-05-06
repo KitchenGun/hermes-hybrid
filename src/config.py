@@ -63,12 +63,6 @@ class Settings(BaseSettings):
     claude_code_timeout_ms: int = 300_000  # heavy tasks can take minutes
     claude_code_concurrency: int = 1  # Max session has per-hour limits; don't stampede
 
-    # C1 backend — fixed to claude_cli (Max OAuth, $0 marginal).
-    c1_backend: Literal["claude_cli"] = "claude_cli"
-    c1_claude_code_model: str = "haiku"
-    c1_claude_code_timeout_ms: int = 120_000
-    c1_claude_code_concurrency: int = 3
-
     # Ollama (optional)
     ollama_enabled: bool = False
     ollama_base_url: str = "http://localhost:11434"

@@ -97,7 +97,6 @@ class Orchestrator:
         user_id: str,
         session_id: str | None = None,
         history: list[dict[str, str]] | None = None,
-        heavy: bool = False,
         forced_profile: str | None = None,  # 호환 — Phase 8 후 무시
     ) -> OrchestratorResult:
         async with self._user_locks[user_id]:
@@ -109,7 +108,6 @@ class Orchestrator:
                 user_id=user_id,
                 session_id=session_id,
                 forced_profile=forced_profile,
-                heavy=heavy,
             )
             if short is not None:
                 return short
@@ -121,7 +119,6 @@ class Orchestrator:
                     user_id=user_id,
                     session_id=session_id,
                     history=history,
-                    heavy=heavy,
                     forced_profile=forced_profile,
                 )
 
@@ -131,15 +128,13 @@ class Orchestrator:
                 session_id=session_id or "no-session",
                 user_id=user_id,
                 user_message=user_message,
-                heavy=heavy,
                 forced_profile=forced_profile,
             )
             task.status = "failed"
             task.degraded = True
             task.final_response = (
-                "⚠️ master_enabled=False — 기존 dispatch 가 제거된 환경에서는 "
-                "응답이 불가능합니다. .env 에 ``MASTER_ENABLED=true`` 설정 후 "
-                "opencode CLI 인증 (1회) 하세요."
+                "⚠️ master_enabled=False — master CLI 인증 (1회) 후 "
+                ".env 에 ``MASTER_ENABLED=true`` 설정 + 봇 재시작 하세요."
             )
             return OrchestratorResult(
                 task=task,
@@ -154,7 +149,6 @@ class Orchestrator:
         user_id: str,
         session_id: str | None,
         forced_profile: str | None,
-        heavy: bool,
     ) -> OrchestratorResult | None:
         """RuleLayer / slash skill short-circuit before master dispatch.
 
@@ -166,7 +160,6 @@ class Orchestrator:
             user_id=user_id,
             session_id=session_id or "",
             forced_profile=forced_profile,
-            heavy=heavy,
             memory=self.memory,
             repo=self.repo,
             orchestrator=self,
@@ -175,7 +168,7 @@ class Orchestrator:
         if intent.handled_by == "rule" and intent.response is not None:
             task = self._task_for_short_circuit(
                 user_message, user_id=user_id, session_id=session_id,
-                heavy=heavy, forced_profile=forced_profile, intent=intent,
+                forced_profile=forced_profile, intent=intent,
             )
             task.status = "succeeded"
             task.final_response = intent.response
@@ -195,7 +188,7 @@ class Orchestrator:
             handled = f"skill:{skill.name}"
             task = self._task_for_short_circuit(
                 user_message, user_id=user_id, session_id=session_id,
-                heavy=heavy, forced_profile=forced_profile, intent=intent,
+                forced_profile=forced_profile, intent=intent,
             )
             try:
                 resp = await skill.invoke(skill_match, ctx)
@@ -223,7 +216,6 @@ class Orchestrator:
         *,
         user_id: str,
         session_id: str | None,
-        heavy: bool,
         forced_profile: str | None,
         intent: Any,
     ) -> TaskState:
@@ -231,7 +223,6 @@ class Orchestrator:
             session_id=session_id or "no-session",
             user_id=user_id,
             user_message=user_message,
-            heavy=heavy,
             forced_profile=forced_profile,
             trigger_type=intent.trigger_type,
             trigger_source=intent.trigger_source,
@@ -250,7 +241,6 @@ class Orchestrator:
         user_id: str,
         session_id: str | None,
         history: list[dict[str, str]] | None,
-        heavy: bool,
         forced_profile: str | None,
     ) -> OrchestratorResult:
         if self._hermes_master is None:
@@ -267,7 +257,6 @@ class Orchestrator:
             user_id=user_id,
             session_id=session_id,
             history=history,
-            heavy=heavy,
             forced_profile=forced_profile,
         )
         return OrchestratorResult(

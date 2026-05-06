@@ -6,7 +6,7 @@ under test is:
   * allowlist enforcement (fail-closed when require_allowlist=True)
   * text messages are forwarded to orchestrator.handle exactly once
   * the orchestrator's response is sent back, chunked for >4000 chars
-  * !heavy prefix flips the heavy flag on the orchestrator call
+  * (Phase 11) !heavy prefix 폐기 — master = single lane
   * last_update_id advances even when the message is ignored (so we
     don't re-fetch the same garbage on the next poll)
 """
@@ -39,14 +39,12 @@ class _StubOrchestrator:
         *,
         user_id: str,
         history: Any = None,
-        heavy: bool = False,
         forced_profile: str | None = None,
     ) -> _OrchestratorResult:
         self.calls.append(
             {
                 "user_message": user_message,
                 "user_id": user_id,
-                "heavy": heavy,
                 "forced_profile": forced_profile,
             }
         )
@@ -163,19 +161,7 @@ async def test_last_update_id_advances_even_on_skip():
     assert bot._last_update_id == 43
 
 
-@pytest.mark.asyncio
-async def test_heavy_prefix_sets_heavy_flag():
-    bot, orch, _sent = _make_bot({"require_allowlist": False})
-    update = {
-        "update_id": 1,
-        "message": {
-            "from": {"id": 100},
-            "chat": {"id": 555},
-            "text": "!heavy 복잡한 작업",
-        },
-    }
-    await bot.handle_update(update)
-    assert orch.calls[0]["heavy"] is True
+# Phase 11 (2026-05-06): !heavy prefix 폐기 — heavy 분기 자체 사라짐.
 
 
 @pytest.mark.asyncio

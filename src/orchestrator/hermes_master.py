@@ -106,7 +106,6 @@ class HermesMasterOrchestrator:
         user_id: str,
         session_id: str | None = None,
         history: list[dict[str, str]] | None = None,
-        heavy: bool = False,
         forced_profile: str | None = None,
     ) -> "MasterResult":
         """Drive a single user request through the diagram pipeline."""
@@ -123,7 +122,6 @@ class HermesMasterOrchestrator:
             user_id=user_id,
             session_id=session_id,
             forced_profile=forced_profile,
-            heavy=heavy,
             memory=self.memory,
             repo=self.repo,
             orchestrator=self,
@@ -137,7 +135,6 @@ class HermesMasterOrchestrator:
             user_id=user_id,
             user_message=user_message,
             history_window=history_window,
-            heavy=heavy,
             forced_profile=forced_profile,
             trigger_type=intent.trigger_type,
             trigger_source=intent.trigger_source,
@@ -155,7 +152,6 @@ class HermesMasterOrchestrator:
             "master.start",
             handled_by_intent=intent.handled_by,
             forced_profile=forced_profile,
-            heavy=heavy,
         )
 
         # Branch 1 — RuleLayer hit

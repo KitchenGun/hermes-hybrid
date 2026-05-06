@@ -127,7 +127,7 @@ ExperienceLogger.append → logs/experience/{date}.jsonl  (input/response 는 sh
 - **OS**: Windows 10/11 + WSL2 Ubuntu (WSL 은 opencode/claude CLI subprocess 호출용)
 - **Python**: 3.11+ (Windows host)
 - **opencode CLI**: WSL 안 (`~/.local/bin/opencode`). 1회 `opencode auth login` (Max OAuth — $0 marginal). **모든 master LLM 호출의 단일 lane**
-- **Claude Code CLI**: WSL 안 (`~/.local/bin/claude`), Max 구독 OAuth — `!heavy` 경로 전용 (선택)
+- **Claude Code CLI**: WSL 안 (`~/.local/bin/claude`), Max 구독 OAuth — Phase 11 부터 master 단일 lane 으로 swap 예정 (Stage B)
 - **Ollama**: optional — `HERMES_MEMORY_SEARCH_BACKEND=embedding` 일 때만 필요 (master 핫패스 X)
 
 ```bash
@@ -157,7 +157,7 @@ copy .env.example .env
 notepad .env       # 최소 3 항목 (§6.1)
 
 # 3. WSL 진입점 검증
-wsl -d Ubuntu -- bash -lc "opencode --version && (claude --version 2>/dev/null || echo 'claude (heavy 경로) 선택 사항')"
+wsl -d Ubuntu -- bash -lc "opencode --version && (claude --version 2>/dev/null || echo 'claude (Stage B 후 master 로 swap 예정)')"
 
 # 4. opencode 1회 인증 (subprocess 안에서 진행 못 함 — 사용자가 직접)
 wsl -d Ubuntu -- bash -lc "opencode auth login"
@@ -313,7 +313,6 @@ cat /mnt/e/hermes-hybrid/logs/curator/handled_by_stats.json
 @bot /kanban list                      → Kanban tasks
 @bot 오늘 일정 알려줘                   → master → @researcher (캘린더 read MCP)
 @bot 내일 14:00 회의 추가              → master → @devops (캘린더 write MCP, 사용자 확인 후)
-@bot !heavy 복잡한 아키텍처 분석        → Claude CLI Sonnet/Opus, 명시 opt-in
 ```
 
 > Phase 8 후 자동화는 모두 폐기됐다. 매일 아침 브리핑 / #일기 자동 추출 /
@@ -344,7 +343,7 @@ hermes-hybrid/
 │  ├─ integration/               # IntentRouter / PolicyGate / JobInventory / SessionImporter
 │  ├─ agents/                    # AgentRegistry (`agents/` 스캔)
 │  ├─ opencode_adapter/          # opencode CLI subprocess
-│  ├─ claude_adapter/            # Claude CLI subprocess (heavy 경로)
+│  ├─ claude_adapter/            # Claude CLI subprocess (Stage B 후 master)
 │  ├─ memory/                    # SqliteMemory + search (LIKE / bge-m3)
 │  ├─ state/                     # TaskState + Repository
 │  ├─ skills/                    # 슬래시 명령 (HybridMemo / Status / Budget / Kanban)
@@ -439,8 +438,10 @@ pytest tests/test_preflight.py            # allowlist + Ollama warn + R6
 - [x] **Phase 7** — 6 카테고리 / 17 sub-agent SKILL.md + `AgentRegistry` + `JobInventory.agents()` lookup
 - [x] **Phase 8 (2026-05-06)** — 6 profile + 27 잡 + profile-local 10 SKILL.md 폐기. 17 agent 단일 구조. profile .env 변수 inventory 보존 (`_archive/profiles_envs/`, `docs/AGENT_ENV.md`).
 - [x] **Phase 9 (2026-05-06)** — `@agent` 멘션 dispatch wiring. IntentRouter 가 `(?<![\w.])@(\w+)` 정규식으로 mention 추출 + AgentRegistry 검증, master `_compose_prompt` 가 SKILL.md frontmatter snippet 을 system prompt 에 inject. ExperienceLog 의 `agent_handles` 로 사용 통계 자동 누적.
-- [x] **Phase 10 (2026-05-06)** — `OpenCodeAgentDelegator` 진짜 병렬 실행. `master_parallel_agents=true` 옵트인 시 2+ handles → 각 agent 별 독립 opencode 호출을 `asyncio.gather` + `Semaphore(max_concurrency)` 로 동시 실행 후 `aggregate_responses` 로 집계. partial-failure 시 `master:parallel_partial` (degraded), 전체 실패 시 `master:parallel_failed` 라우팅. 각 sub-call 의 prompt/completion tokens 가 `model_outputs` 에 substage `parallel:@handle` 로 기록.
-- [ ] **Phase 11** — Slack gateway, Discord 슬래시 명령 확장
+- [x] **Phase 10 (2026-05-06)** — `OpenCodeAgentDelegator` 진짜 병렬 실행. `master_parallel_agents=true` 옵트인 시 2+ handles → 각 agent 별 독립 opencode 호출을 `asyncio.gather` + `Semaphore(max_concurrency)` 로 동시 실행 후 `aggregate_responses` 로 집계.
+- [x] **Phase 11 Stage A (2026-05-06)** — heavy / c1 / heavy_session / `!heavy` prefix / smoke_heavy.py 일괄 폐기. master = single lane 전환 직전 정리. `TaskState.heavy` / `IntentRouter.heavy` 분기 / `Orchestrator.handle(heavy=...)` / `DiscordBot._HEAVY_PREFIX` / `Settings.c1_*` 4 dead 필드 / `ExperienceRecord.heavy` 모두 제거.
+- [ ] **Phase 11 Stage B** — opencode → Claude CLI (Max OAuth) master swap. Settings master_* 통합. `OpenCodeAgentDelegator` → `ClaudeAgentDelegator`.
+- [ ] **Phase 12** — Slack gateway, Discord 슬래시 명령 확장
 
 ---
 
@@ -477,10 +478,6 @@ find . -name "*.pyc" -delete
 ### Discord bot 이 메시지에 반응 안 함
 - `DISCORD_ALLOWED_USER_IDS` 에 본인 ID 포함 확인
 - Discord Developer Portal 에서 **MESSAGE CONTENT INTENT** 활성
-
-### `!heavy` 승인 안 됨
-- WSL 안 `claude --version` 직접 실행 확인
-- Max OAuth 시간당 한도 도달 시 1시간 대기
 
 ### ExperienceLog 가 안 쌓인다
 - `.env` 의 `EXPERIENCE_LOG_ENABLED=true` 확인
