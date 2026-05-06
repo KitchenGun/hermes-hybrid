@@ -233,72 +233,9 @@ async def test_calendar_skill_renders_hermes_error_as_warning(settings: Settings
     assert "Google OAuth" in r.response
 
 
-@pytest.mark.asyncio
-async def test_calendar_skill_falls_back_to_claude_cli_on_hermes_timeout(settings: Settings):
-    """2026-05-04: ``HermesTimeout`` → Claude CLI fallback (Max OAuth, $0).
-    The skill must NOT propagate the exception; instead it should produce a
-    user-readable response from the Claude lane.
-    """
-    from tests.test_orchestrator import _FakeClaudeCode, _claude_result
-
-    settings.calendar_skill_enabled = True
-    o = Orchestrator(settings)
-    o.hermes = _FakeHermes(  # type: ignore[assignment]
-        HermesTimeout("Hermes timed out after 180000ms")
-    )
-    fake_c1 = _FakeClaudeCode([_claude_result("fallback ok", model="claude-haiku-4-5")])
-    o.claude_code_c1 = fake_c1  # type: ignore[assignment]
-
-    r = await o.handle("오늘 일정 알려줘", user_id="u1")
-
-    assert r.handled_by == "skill:calendar"
-    assert r.task.status == "succeeded"
-    assert r.response == "fallback ok"
-    # Both lanes exercised exactly once.
-    assert len(fake_c1.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_calendar_skill_falls_back_to_claude_cli_on_hermes_auth_error(settings: Settings):
-    """2026-05-04: ``HermesAuthError`` (a ``HermesAdapterError`` subclass) is
-    raised out of ``_invoke_via_hermes`` and caught by the outer ``invoke``
-    handler, which falls back to the claude_cli lane. This way an OAuth-only
-    failure on the Ollama side doesn't kill the calendar skill.
-    """
-    from tests.test_orchestrator import _FakeClaudeCode, _claude_result
-
-    settings.calendar_skill_enabled = True
-    o = Orchestrator(settings)
-    o.hermes = _FakeHermes(  # type: ignore[assignment]
-        HermesAuthError("Hermes auth failed (model=qwen2.5, provider=ollama)")
-    )
-    fake_c1 = _FakeClaudeCode([_claude_result("auth fallback ok", model="claude-haiku-4-5")])
-    o.claude_code_c1 = fake_c1  # type: ignore[assignment]
-
-    r = await o.handle("내일 미팅 있나?", user_id="u1")
-
-    assert r.handled_by == "skill:calendar"
-    assert r.task.status == "succeeded"
-    assert r.response == "auth fallback ok"
-    assert len(fake_c1.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_calendar_skill_disabled_falls_through_to_normal_pipeline(
-    settings: Settings,
-):
-    """With the flag off, calendar queries flow through the normal pipeline
-    (Router → L2/L3/C1). The skill must not be registered, period."""
-    assert settings.calendar_skill_enabled is False
-    settings.ollama_enabled = True
-
-    from tests.test_orchestrator import _build_orch, _resp  # reuse fakes
-
-    o = _build_orch(
-        settings,
-        ollama_local_scripts=[_resp("generic non-calendar reply", settings.ollama_work_model)],
-    )
-    r = await o.handle("오늘 일정 알려줘", user_id="u1")
-    # Falls through to the local tier, not the calendar skill.
-    assert r.handled_by == "local"
-    assert "calendar" not in r.handled_by
+# 2026-05-06: legacy test_orchestrator-based fakes removed. The
+# Hermes/Claude CLI fallback paths and the "skill disabled →
+# legacy pipeline" check no longer have a meaningful counterpart
+# under the all-via-master architecture (master handles forced/heavy/
+# free text uniformly). If a calendar-specific master regression
+# surfaces it should land in tests/test_hermes_master.py instead.
