@@ -1,6 +1,6 @@
 """Preflight checks (R15) — run at startup; refuse to boot on hard failure.
 
-Phase 8/10 (2026-05-06): master = opencode CLI / gpt-5.5. Hermes CLI
+Phase 11 (2026-05-06): master = Claude CLI / opus (Max OAuth). Hermes CLI
 의존 없음 — 관련 check 제거. allowlist + Ollama health (memory embedding
 용) + 공식 hermes-gateway 충돌 회피 (R6) 만 남김.
 """
@@ -71,7 +71,7 @@ async def run_preflight(settings: Settings, *, require_gateway_stopped: bool) ->
         )
 
     # Ollama health (only when enabled — memory embedding 용 fallback).
-    # Phase 8 후 master = opencode 라 본 메시지 처리에는 Ollama 불필요.
+    # Phase 11 후 master = Claude CLI 라 본 메시지 처리에는 Ollama 불필요.
     # `memory_search_backend=embedding` + bge-m3 사용 시에만 의미.
     if settings.ollama_enabled:
         try:

@@ -1,7 +1,7 @@
 """``/hybrid-status`` — snapshot of the orchestrator's live state.
 
 Returns a compact multiline block with:
-  - master_enabled (gpt-5.5 via opencode CLI)
+  - master_enabled (opus via Claude CLI Max OAuth)
   - ollama_enabled (ollama lane for cron / Hermes profile sub-calls)
   - require_allowlist (gateway fail-closed flag)
   - Registered skill count + names

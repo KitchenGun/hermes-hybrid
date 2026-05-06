@@ -1,6 +1,6 @@
 """HermesMasterOrchestrator — diagram-aligned single entry point.
 
-All-via-master design (Phase plan 2026-05-06):
+All-via-master design (Phase 11, 2026-05-06):
 
     Discord/Telegram message
         ↓
@@ -10,8 +10,8 @@ All-via-master design (Phase plan 2026-05-06):
         ↓ (allow)
     JobInventory.agent_by_handle() — @handle SKILL.md lookup
         ↓
-    OpenCodeAdapter — opencode CLI / gpt-5.5  ← THE single LLM call
-                       (system prompt + agent snippets injected if @handles found)
+    ClaudeCodeAdapter — claude CLI / opus (Max OAuth)  ← THE single LLM call
+                        (system prompt + agent snippets injected if @handles found)
         ↓
     Critic — self_score + ExperienceLog stamp
         ↓
@@ -21,6 +21,10 @@ Phase 9 (2026-05-06): IntentRouter 가 ``@coder`` / ``@reviewer`` 같은
 mention 을 감지하면, master 가 해당 sub-agent SKILL.md frontmatter
 (role / when_to_use / not_for / inputs / outputs) 를 system prompt 에
 inject. 이로써 master 가 sub-agent 의 행동 가이드를 따르도록 유도.
+
+Phase 11 (2026-05-06): opencode CLI 폐기. Master = Claude CLI (Max OAuth)
+단일 lane. 모델 default = opus. 사용자 Max 구독 외 추가 비용 X
+($0 marginal).
 """
 from __future__ import annotations
 
@@ -29,17 +33,17 @@ import time
 import uuid
 from typing import Any
 
+from src.claude_adapter import (
+    ClaudeCodeAdapter,
+    ClaudeCodeAdapterError,
+    ClaudeCodeAuthError,
+    ClaudeCodeTimeout,
+)
 from src.config import Settings
 from src.core import Critic, ExperienceLogger
 from src.integration import IntentRouter, JobInventory, PolicyGate
 from src.memory import InMemoryMemory, MemoryBackend
 from src.obs import bind_task_id, get_logger
-from src.opencode_adapter import (
-    OpenCodeAdapter,
-    OpenCodeAdapterError,
-    OpenCodeAuthError,
-    OpenCodeTimeout,
-)
 from src.skills import SkillContext, SkillRegistry, default_registry
 from src.state import Repository, TaskState
 from src.validator import Validator
@@ -57,7 +61,7 @@ _SYSTEM_PROMPT = (
 
 
 class HermesMasterOrchestrator:
-    """Single-entry orchestrator backed by ``opencode`` master LLM."""
+    """Single-entry orchestrator backed by Claude CLI master LLM."""
 
     def __init__(
         self,
@@ -86,7 +90,7 @@ class HermesMasterOrchestrator:
         self.job_inventory = JobInventory(
             repo_root=getattr(settings, "_repo_root", None),
         )
-        self.opencode = OpenCodeAdapter(settings)
+        self.adapter = ClaudeCodeAdapter(settings)
         self.critic = Critic(self.policy_gate.validator)
         self.experience_logger: ExperienceLogger = (
             experience_logger
@@ -228,25 +232,25 @@ class HermesMasterOrchestrator:
     ) -> "MasterResult":
         prompt = self._compose_prompt(task, intent)
         try:
-            result = await self.opencode.run(
+            result = await self.adapter.run(
                 prompt=prompt,
                 history=task.history_window,
             )
-        except OpenCodeAuthError as e:
-            task.record_error("tool_error", f"opencode auth: {e}")
+        except ClaudeCodeAuthError as e:
+            task.record_error("tool_error", f"claude auth: {e}")
             task.status = "failed"
             task.degraded = True
             task.final_response = (
-                "⚠️ opencode 인증/할당량 오류. WSL 에서 `opencode auth login` "
-                "후 봇 재시작."
+                "⚠️ Claude CLI 인증/할당량 오류. WSL 에서 `claude /login` "
+                "또는 Max 구독 한도 회복 후 봇 재시작."
             )
             self._finalize(task, handled_by="master:auth_error", t0=t0)
             return MasterResult(
                 task=task, response=task.final_response,
                 handled_by="master:auth_error",
             )
-        except OpenCodeTimeout as e:
-            task.record_error("timeout", f"opencode timeout: {e}")
+        except ClaudeCodeTimeout as e:
+            task.record_error("timeout", f"claude timeout: {e}")
             task.status = "failed"
             task.degraded = True
             task.final_response = "⚠️ master 응답 시간 초과."
@@ -255,8 +259,8 @@ class HermesMasterOrchestrator:
                 task=task, response=task.final_response,
                 handled_by="master:timeout",
             )
-        except OpenCodeAdapterError as e:
-            task.record_error("tool_error", f"opencode error: {e}")
+        except ClaudeCodeAdapterError as e:
+            task.record_error("tool_error", f"claude error: {e}")
             task.status = "failed"
             task.degraded = True
             task.final_response = f"⚠️ master 호출 실패: `{type(e).__name__}`"
@@ -267,7 +271,7 @@ class HermesMasterOrchestrator:
             )
 
         # Stamp model context onto the task before validation.
-        task.model_provider = "opencode"
+        task.model_provider = "claude_cli"
         task.model_name = result.model_name
         task.record_model_output(
             tier="C1",
@@ -286,16 +290,14 @@ class HermesMasterOrchestrator:
         )
 
         if verdict.decision == "pass" or verdict.decision == "retry_same_tier":
-            # In Phase 3 we don't actually retry — the master path is
-            # single-shot. Phase 5b adds tool-call iteration; until then
-            # we accept whatever the master returned and let Critic's
-            # self_score signal quality.
+            # master path 가 single-shot 이라 retry 는 발동 X — Critic 의
+            # self_score 가 quality 신호로만 사용.
             task.status = "succeeded"
             task.final_response = result.text
-            self._finalize(task, handled_by="master:opencode", t0=t0)
+            self._finalize(task, handled_by="master:claude", t0=t0)
             return MasterResult(
                 task=task, response=result.text,
-                handled_by="master:opencode",
+                handled_by="master:claude",
             )
 
         # final_failure / tier_up etc. — single-shot for now.
@@ -320,7 +322,7 @@ class HermesMasterOrchestrator:
         intent: Any,
         t0: float,
     ) -> "MasterResult":
-        """Fan out one opencode call per ``@handle`` in parallel.
+        """Fan out one claude CLI call per ``@handle`` in parallel.
 
         Triggered only when ``settings.master_parallel_agents=True`` AND
         ``len(task.agent_handles) >= 2``. Single-handle messages still go
@@ -328,13 +330,13 @@ class HermesMasterOrchestrator:
         and the experience log row matches the original Phase 9 shape.
         """
         from src.core.delegation import (
-            OpenCodeAgentDelegator,
+            ClaudeAgentDelegator,
             SubAgentRequest,
             aggregate_responses,
         )
 
-        delegator = OpenCodeAgentDelegator(
-            self.opencode,
+        delegator = ClaudeAgentDelegator(
+            self.adapter,
             self.job_inventory._agent_registry(),  # noqa: SLF001 — same instance
             max_concurrency=self.settings.master_parallel_max_concurrency,
         )
@@ -361,13 +363,13 @@ class HermesMasterOrchestrator:
         results = await delegator.delegate_many(requests)
 
         # Stamp aggregate token cost + tools onto the task so the
-        # ExperienceLog reflects N opencode calls accurately.
+        # ExperienceLog reflects N claude calls accurately.
         any_failed = False
         for r in results:
             task.record_model_output(
                 tier="C1",
                 text=r.response,
-                model_name="gpt-5.5",
+                model_name=self.settings.master_model,
                 prompt_tokens=r.prompt_tokens,
                 completion_tokens=r.completion_tokens,
                 substage=f"parallel:{r.request.agent_handle}",
@@ -379,8 +381,8 @@ class HermesMasterOrchestrator:
                     f"{r.request.agent_handle}: {r.error}",
                 )
 
-        task.model_provider = "opencode"
-        task.model_name = "gpt-5.5"
+        task.model_provider = "claude_cli"
+        task.model_name = self.settings.master_model
         aggregated = aggregate_responses(results)
         task.final_response = aggregated
 

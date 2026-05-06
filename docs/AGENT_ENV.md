@@ -107,8 +107,8 @@ profile 에서 왔는지 추적용.
 
 ## 5. 호환 메모
 
-- **`OPENAI_API_KEY` / `OPENAI_BASE_URL`**: Phase 8 후 master 는 opencode CLI
-  (`gpt-5.5`) 만 호출 — 직호출 폐기. 단 Ollama base_url 갱신 / OpenAI SDK
+- **`OPENAI_API_KEY` / `OPENAI_BASE_URL`**: Phase 8 후 master 는 claude CLI
+  (`opus`) 만 호출 — 직호출 폐기. 단 Ollama base_url 갱신 / OpenAI SDK
   의 빈 값 거부 회피용으로 root `.env` 에는 placeholder 형태로 잔존 가능.
 - **`USE_HERMES_FOR_*` / `USE_NEW_JOB_FACTORY` / `TRUST_HERMES_REFLECTION`**:
   legacy router/job_factory 의존. P8.5 에서 Settings 필드 정리 후 제거 예정.

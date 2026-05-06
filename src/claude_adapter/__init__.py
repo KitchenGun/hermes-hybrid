@@ -3,7 +3,6 @@ from .adapter import (
     ClaudeCodeAdapterError,
     ClaudeCodeAuthError,
     ClaudeCodeResult,
-    ClaudeCodeResumeFailed,
     ClaudeCodeTimeout,
 )
 
@@ -12,6 +11,5 @@ __all__ = [
     "ClaudeCodeAdapterError",
     "ClaudeCodeAuthError",
     "ClaudeCodeResult",
-    "ClaudeCodeResumeFailed",
     "ClaudeCodeTimeout",
 ]

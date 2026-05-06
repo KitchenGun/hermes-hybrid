@@ -1,6 +1,6 @@
 """LLM adapter layer — Protocol over Ollama / Claude CLI.
 
-Phase 8/10 (2026-05-06) 후 master 는 ``OpenCodeAdapter`` (`src/opencode_
+Phase 11 (2026-05-06) 후 master 는 ``ClaudeCodeAdapter`` (`src/claude_
 adapter/`) 만 사용. 이 디렉터리의 어댑터들은 bench harness
 (``scripts/bench_local_models.py``) 가 모델 비교 측정 시 사용.
 

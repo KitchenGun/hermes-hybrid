@@ -26,42 +26,31 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_allowed_user_ids: str = ""  # comma-separated
 
-    # WSL subprocess defaults — opencode/Claude CLI subprocess 호출에 사용.
-    # Phase 8/10 후 hermes CLI 의존 폐기 — hermes_cli_* 필드는 모두 제거됨.
+    # WSL subprocess defaults — Claude CLI subprocess 호출에 사용.
+    # Phase 8/10/11 후 hermes/opencode CLI 의존 폐기. master = Claude CLI 단일.
     wsl_distro: str = "Ubuntu"
     gateway_service_name: str = "hermes-gateway"  # R6 — 공식 Hermes gateway 충돌 회피
 
-    # Hermes Master Orchestrator (Phase: diagram-aligned migration, 2026-05-06).
-    # All-via-master 설계: 모든 LLM 호출이 ``opencode`` CLI 의 master 모델
-    # (gpt-5.5) 를 통과한다. opencode 가 auth + quota 를 알아서 처리하므로
-    # API key 는 필요 없음 (Claude Max OAuth 와 같은 $0 marginal 패턴).
-    # Production default = True. 사용자 환경에 opencode 가 없으면
-    # ``MASTER_ENABLED=false`` 로 끌 수 있고, 그 경우 부팅은 되지만 master
-    # 호출이 disabled 안내 메시지로 응답한다 (legacy dispatch 는 P8 에서 제거됨).
+    # Hermes Master Orchestrator — Phase 11 (2026-05-06).
+    # All-via-master 설계: 모든 LLM 호출이 ``claude`` CLI (Max OAuth) 의
+    # master 모델 (default opus) 을 통과한다. Max 구독료만 — API key 별도
+    # 비용 X ($0 marginal). Production default = True. ``MASTER_ENABLED=false``
+    # 로 끄면 disabled 안내 메시지로 응답.
     master_enabled: bool = True
-    master_model: str = "gpt-5.5"
-    master_timeout_ms: int = 120_000
-    master_concurrency: int = 1
-    opencode_cli_backend: Literal["wsl_subprocess", "local_subprocess"] = "wsl_subprocess"
-    opencode_cli_path: str = "/home/kang/.local/bin/opencode"
+    master_model: str = "opus"                    # opus | sonnet | haiku — Claude alias
+    master_timeout_ms: int = 300_000              # 5min — Claude CLI cold start 고려
+    master_concurrency: int = 1                   # Max OAuth 시간당 한도 보호
+    master_cli_backend: Literal["wsl_subprocess", "local_subprocess"] = "wsl_subprocess"
+    master_cli_path: str = "/home/kang/.local/bin/claude"
 
     # Phase 10 (2026-05-06): parallel @handle dispatch.
     # 사용자 메시지에 ``@coder`` / ``@reviewer`` 같은 mention 이 2개 이상
     # 있을 때 master 가 단일 호출에 모든 SKILL.md snippet 을 inject 하는
-    # 대신 (Phase 9 default), 각 agent 별로 독립 opencode 호출을 동시 실행
-    # 후 결과를 집계하는 ``OpenCodeAgentDelegator`` 경로로 라우팅.
+    # 대신 (Phase 9 default), 각 agent 별로 독립 claude 호출을 동시 실행
+    # 후 결과를 집계하는 ``ClaudeAgentDelegator`` 경로로 라우팅.
     # 비용/지연이 N 배라 default off — 명시 opt-in.
     master_parallel_agents: bool = False
     master_parallel_max_concurrency: int = 3
-
-    # Claude Code CLI (heavy path — uses Max subscription OAuth, zero API cost)
-    # 2026-05-04: OpenAI/Anthropic API legacy fully removed — Claude CLI is the
-    # only cloud lane. ollama is the only local lane.
-    claude_code_cli_backend: Literal["wsl_subprocess", "local_subprocess"] = "wsl_subprocess"
-    claude_code_cli_path: str = "/home/kang/.local/bin/claude"
-    claude_code_model: str = "sonnet"  # alias; "opus" / full name also accepted
-    claude_code_timeout_ms: int = 300_000  # heavy tasks can take minutes
-    claude_code_concurrency: int = 1  # Max session has per-hour limits; don't stampede
 
     # Ollama (optional)
     ollama_enabled: bool = False

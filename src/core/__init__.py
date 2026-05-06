@@ -1,7 +1,7 @@
 from .critic import Critic, compute_self_score
 from .delegation import (
+    ClaudeAgentDelegator,
     Delegator,
-    OpenCodeAgentDelegator,
     SubAgentRequest,
     SubAgentResult,
     aggregate_responses,
@@ -20,7 +20,7 @@ __all__ = [
     "KanbanStatus",
     "KanbanStore",
     "KanbanTask",
-    "OpenCodeAgentDelegator",
+    "ClaudeAgentDelegator",
     "SkillEntry",
     "SkillLibrary",
     "SubAgentRequest",

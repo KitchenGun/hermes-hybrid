@@ -2,12 +2,12 @@
 
 The master path is the diagram's central component. Locks down:
   * RuleLayer match → master.handle returns the rule response without
-    calling opencode
-  * Slash skill match → skill is invoked, opencode skipped
-  * deny_allowlist / deny_budget → policy gate rejects, opencode skipped
-  * Master LLM dispatch → opencode called once, response stamped on task,
+    calling claude
+  * Slash skill match → skill is invoked, claude skipped
+  * deny_allowlist / deny_budget → policy gate rejects, claude skipped
+  * Master LLM dispatch → claude called once, response stamped on task,
     Critic runs, ExperienceLog appended
-  * opencode auth/timeout/error → graceful degraded response, no exception
+  * claude auth/timeout/error → graceful degraded response, no exception
   * memory_inject → history_window is prepended with system memo bullet
 """
 from __future__ import annotations
@@ -20,11 +20,11 @@ import pytest
 from src.config import Settings
 from src.core import ExperienceLogger
 from src.memory import InMemoryMemory
-from src.opencode_adapter import (
-    OpenCodeAdapterError,
-    OpenCodeAuthError,
-    OpenCodeResult,
-    OpenCodeTimeout,
+from src.claude_adapter import (
+    ClaudeCodeAdapterError,
+    ClaudeCodeAuthError,
+    ClaudeCodeResult,
+    ClaudeCodeTimeout,
 )
 from src.orchestrator.hermes_master import HermesMasterOrchestrator
 
@@ -48,10 +48,10 @@ def _settings(tmp_path, **overrides) -> Settings:
     return Settings(**base)  # type: ignore[arg-type]
 
 
-def _ok_result(text: str = "응답") -> OpenCodeResult:
-    return OpenCodeResult(
+def _ok_result(text: str = "응답") -> ClaudeCodeResult:
+    return ClaudeCodeResult(
         text=text,
-        model_name="gpt-5.5",
+        model_name="opus",
         session_id="sess-1",
         duration_ms=10,
         input_tokens=20,
@@ -60,45 +60,45 @@ def _ok_result(text: str = "응답") -> OpenCodeResult:
 
 
 @pytest.mark.asyncio
-async def test_rule_layer_match_skips_opencode(tmp_path):
+async def test_rule_layer_match_skips_claude(tmp_path):
     settings = _settings(tmp_path)
     master = HermesMasterOrchestrator(settings)
-    master.opencode.run = AsyncMock(return_value=_ok_result())
+    master.adapter.run = AsyncMock(return_value=_ok_result())
 
     result = await master.handle("/ping", user_id="u1")
     assert result.handled_by == "rule"
     assert isinstance(result.response, str)
-    master.opencode.run.assert_not_called()
+    master.adapter.run.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_slash_skill_match_invokes_skill_not_opencode(tmp_path):
+async def test_slash_skill_match_invokes_skill_not_claude(tmp_path):
     settings = _settings(tmp_path)
     master = HermesMasterOrchestrator(
         settings, memory=InMemoryMemory()
     )
-    master.opencode.run = AsyncMock(return_value=_ok_result())
+    master.adapter.run = AsyncMock(return_value=_ok_result())
 
     # /memo list — HybridMemoSkill is in default_registry
     result = await master.handle("/memo list", user_id="u1")
     assert result.handled_by == "skill:hybrid-memo"
-    master.opencode.run.assert_not_called()
+    master.adapter.run.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_master_dispatch_calls_opencode_and_logs(tmp_path):
+async def test_master_dispatch_calls_claude_and_logs(tmp_path):
     log_dir = tmp_path / "exp_log"
     settings = _settings(tmp_path, experience_log_root=log_dir)
     logger = ExperienceLogger(log_dir, enabled=True)
     master = HermesMasterOrchestrator(
         settings, experience_logger=logger
     )
-    master.opencode.run = AsyncMock(return_value=_ok_result("master 응답"))
+    master.adapter.run = AsyncMock(return_value=_ok_result("master 응답"))
 
     result = await master.handle("자유 텍스트 질문", user_id="u1")
-    assert result.handled_by == "master:opencode"
+    assert result.handled_by == "master:claude"
     assert result.response == "master 응답"
-    master.opencode.run.assert_called_once()
+    master.adapter.run.assert_called_once()
 
     # ExperienceLog should have one row stamped with model_provider/master
     files = list(log_dir.glob("*.jsonl"))
@@ -106,32 +106,32 @@ async def test_master_dispatch_calls_opencode_and_logs(tmp_path):
     line = files[0].read_text(encoding="utf-8").strip()
     import json
     rec = json.loads(line)
-    assert rec["model_provider"] == "opencode"
-    assert rec["model_name"] == "gpt-5.5"
-    assert rec["handled_by"] == "master:opencode"
+    assert rec["model_provider"] == "claude_cli"
+    assert rec["model_name"] == "opus"
+    assert rec["handled_by"] == "master:claude"
 
 
 @pytest.mark.asyncio
-async def test_opencode_auth_error_yields_graceful_response(tmp_path):
+async def test_claude_auth_error_yields_graceful_response(tmp_path):
     settings = _settings(tmp_path)
     master = HermesMasterOrchestrator(settings)
-    master.opencode.run = AsyncMock(
-        side_effect=OpenCodeAuthError("401")
+    master.adapter.run = AsyncMock(
+        side_effect=ClaudeCodeAuthError("401")
     )
 
     result = await master.handle("hi", user_id="u1")
     assert result.handled_by == "master:auth_error"
-    assert "opencode" in result.response
+    assert "Claude CLI" in result.response
     assert result.task.status == "failed"
     assert result.task.degraded is True
 
 
 @pytest.mark.asyncio
-async def test_opencode_timeout_returns_timeout_message(tmp_path):
+async def test_claude_timeout_returns_timeout_message(tmp_path):
     settings = _settings(tmp_path)
     master = HermesMasterOrchestrator(settings)
-    master.opencode.run = AsyncMock(
-        side_effect=OpenCodeTimeout("timed out")
+    master.adapter.run = AsyncMock(
+        side_effect=ClaudeCodeTimeout("timed out")
     )
 
     result = await master.handle("hi", user_id="u1")
@@ -140,11 +140,11 @@ async def test_opencode_timeout_returns_timeout_message(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_opencode_generic_error_degrades_gracefully(tmp_path):
+async def test_claude_generic_error_degrades_gracefully(tmp_path):
     settings = _settings(tmp_path)
     master = HermesMasterOrchestrator(settings)
-    master.opencode.run = AsyncMock(
-        side_effect=OpenCodeAdapterError("non-JSON")
+    master.adapter.run = AsyncMock(
+        side_effect=ClaudeCodeAdapterError("non-JSON")
     )
     result = await master.handle("hi", user_id="u1")
     assert result.handled_by == "master:error"
@@ -152,7 +152,7 @@ async def test_opencode_generic_error_degrades_gracefully(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_deny_budget_rejects_without_calling_opencode(tmp_path):
+async def test_deny_budget_rejects_without_calling_claude(tmp_path):
     settings = _settings(tmp_path, cloud_token_budget_daily=100)
 
     class _OverBudgetRepo:
@@ -162,11 +162,11 @@ async def test_deny_budget_rejects_without_calling_opencode(tmp_path):
     master = HermesMasterOrchestrator(
         settings, repo=_OverBudgetRepo()  # type: ignore[arg-type]
     )
-    master.opencode.run = AsyncMock(return_value=_ok_result())
+    master.adapter.run = AsyncMock(return_value=_ok_result())
 
     result = await master.handle("hi", user_id="u1")
     assert result.handled_by == "deny:budget"
-    master.opencode.run.assert_not_called()
+    master.adapter.run.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -189,7 +189,7 @@ async def test_memory_inject_prepends_system_memo(tmp_path):
         captured["prompt"] = prompt
         return _ok_result("응답")
 
-    master.opencode.run = _capture_run  # type: ignore[assignment]
+    master.adapter.run = _capture_run  # type: ignore[assignment]
 
     await master.handle("회의 일정 알려줘", user_id="u1")
     history = captured["history"]
@@ -208,12 +208,12 @@ async def test_orchestrator_delegates_to_master_when_enabled(tmp_path):
     o = Orchestrator(settings)
     # patch the lazy-built master
     fake_master = HermesMasterOrchestrator(settings)
-    fake_master.opencode.run = AsyncMock(return_value=_ok_result("delegate ok"))
+    fake_master.adapter.run = AsyncMock(return_value=_ok_result("delegate ok"))
     o._hermes_master = fake_master
 
     result = await o.handle("아무거나", user_id="u1")
     assert result.response == "delegate ok"
-    assert result.handled_by == "master:opencode"
+    assert result.handled_by == "master:claude"
 
 
 @pytest.mark.asyncio
@@ -224,17 +224,17 @@ async def test_orchestrator_default_off_keeps_legacy_path(tmp_path):
     settings = _settings(tmp_path, master_enabled=False)
     o = Orchestrator(settings)
     # If Orchestrator tried to instantiate master it would fail because
-    # opencode isn't installed in CI — confirm that path isn't taken
+    # claude CLI isn't installed in CI — confirm that path isn't taken
     # via the lazy master attribute.
     fake_master = HermesMasterOrchestrator(settings)
-    fake_master.opencode.run = AsyncMock(return_value=_ok_result("nope"))
+    fake_master.adapter.run = AsyncMock(return_value=_ok_result("nope"))
     o._hermes_master = fake_master
 
     # Use a RuleLayer hit so the legacy path returns immediately and
     # we don't depend on ollama / Claude CLI being available.
     result = await o.handle("/ping", user_id="u1")
     assert result.handled_by == "rule"
-    fake_master.opencode.run.assert_not_called()
+    fake_master.adapter.run.assert_not_called()
 
 
 # ---- Phase 9: agent SKILL.md inject ----------------------------------
@@ -252,7 +252,7 @@ async def test_agent_handle_mention_injects_skill_md_into_prompt(tmp_path):
         captured["prompt"] = prompt
         return _ok_result("done")
 
-    master.opencode.run = _capture_run  # type: ignore[assignment]
+    master.adapter.run = _capture_run  # type: ignore[assignment]
 
     await master.handle("@coder fizzbuzz 짜줘", user_id="u1")
     prompt = captured["prompt"]
@@ -275,7 +275,7 @@ async def test_no_handle_means_no_agent_snippet(tmp_path):
         captured["prompt"] = prompt
         return _ok_result("done")
 
-    master.opencode.run = _capture_run  # type: ignore[assignment]
+    master.adapter.run = _capture_run  # type: ignore[assignment]
 
     await master.handle("hello", user_id="u1")
     prompt = captured["prompt"]
@@ -293,7 +293,7 @@ async def test_multiple_handles_inject_each_snippet(tmp_path):
         captured["prompt"] = prompt
         return _ok_result("done")
 
-    master.opencode.run = _capture_run  # type: ignore[assignment]
+    master.adapter.run = _capture_run  # type: ignore[assignment]
 
     await master.handle(
         "@coder 짜고 @reviewer 가 검토해줘", user_id="u1"
@@ -315,7 +315,7 @@ async def test_unknown_handle_does_not_break_prompt(tmp_path):
         captured["prompt"] = prompt
         return _ok_result("done")
 
-    master.opencode.run = _capture_run  # type: ignore[assignment]
+    master.adapter.run = _capture_run  # type: ignore[assignment]
 
     await master.handle("@nobody 뭐해", user_id="u1")
     prompt = captured["prompt"]
@@ -330,7 +330,7 @@ async def test_agent_handles_stamped_on_task_and_logged(tmp_path):
     settings = _settings(tmp_path, experience_log_root=log_dir)
     logger = ExperienceLogger(log_dir, enabled=True)
     master = HermesMasterOrchestrator(settings, experience_logger=logger)
-    master.opencode.run = AsyncMock(return_value=_ok_result("done"))
+    master.adapter.run = AsyncMock(return_value=_ok_result("done"))
 
     result = await master.handle(
         "@coder 짜고 @reviewer 검토", user_id="u1"
@@ -356,14 +356,14 @@ async def test_parallel_off_default_uses_single_master_call(tmp_path):
     assert settings.master_parallel_agents is False
 
     master = HermesMasterOrchestrator(settings)
-    master.opencode.run = AsyncMock(return_value=_ok_result("once"))
+    master.adapter.run = AsyncMock(return_value=_ok_result("once"))
 
     result = await master.handle(
         "@coder + @reviewer 작업해", user_id="u1"
     )
     # 단일 master 호출만 — fan-out 안 함
-    assert master.opencode.run.call_count == 1
-    assert result.handled_by == "master:opencode"
+    assert master.adapter.run.call_count == 1
+    assert result.handled_by == "master:claude"
     assert result.response == "once"
 
 
@@ -372,13 +372,13 @@ async def test_parallel_on_with_two_handles_fans_out(tmp_path):
     """master_parallel_agents=True + 2 handles → 각 agent 별 호출."""
     settings = _settings(tmp_path, master_parallel_agents=True)
     master = HermesMasterOrchestrator(settings)
-    master.opencode.run = AsyncMock(return_value=_ok_result("agent ok"))
+    master.adapter.run = AsyncMock(return_value=_ok_result("agent ok"))
 
     result = await master.handle(
         "@coder 짜고 @reviewer 검토", user_id="u1"
     )
-    # 2 handles → opencode 2번 호출
-    assert master.opencode.run.call_count == 2
+    # 2 handles → claude 2번 호출
+    assert master.adapter.run.call_count == 2
     assert result.handled_by == "master:parallel"
     # aggregate_responses 형식 확인
     assert "### @coder" in result.response
@@ -390,11 +390,11 @@ async def test_parallel_on_with_single_handle_uses_single_call(tmp_path):
     """단일 handle 은 fan-out 안 함 — Phase 9 inject 만으로 충분."""
     settings = _settings(tmp_path, master_parallel_agents=True)
     master = HermesMasterOrchestrator(settings)
-    master.opencode.run = AsyncMock(return_value=_ok_result("solo"))
+    master.adapter.run = AsyncMock(return_value=_ok_result("solo"))
 
     result = await master.handle("@coder 짜줘", user_id="u1")
-    assert master.opencode.run.call_count == 1
-    assert result.handled_by == "master:opencode"
+    assert master.adapter.run.call_count == 1
+    assert result.handled_by == "master:claude"
 
 
 @pytest.mark.asyncio
@@ -408,10 +408,10 @@ async def test_parallel_partial_failure_marks_degraded(tmp_path):
     async def _flaky_run(*, prompt, history, model=None, timeout_ms=None):
         call_count["n"] += 1
         if call_count["n"] == 2:
-            raise OpenCodeAdapterError("simulated failure")
+            raise ClaudeCodeAdapterError("simulated failure")
         return _ok_result("ok")
 
-    master.opencode.run = _flaky_run  # type: ignore[assignment]
+    master.adapter.run = _flaky_run  # type: ignore[assignment]
 
     result = await master.handle(
         "@coder 짜고 @reviewer 검토", user_id="u1"
@@ -428,8 +428,8 @@ async def test_parallel_full_failure_marks_failed(tmp_path):
     """모든 agent 실패 → handled_by=master:parallel_failed."""
     settings = _settings(tmp_path, master_parallel_agents=True)
     master = HermesMasterOrchestrator(settings)
-    master.opencode.run = AsyncMock(
-        side_effect=OpenCodeAdapterError("all fail")
+    master.adapter.run = AsyncMock(
+        side_effect=ClaudeCodeAdapterError("all fail")
     )
 
     result = await master.handle(
@@ -445,7 +445,7 @@ async def test_parallel_records_each_agent_token_usage(tmp_path):
     """각 sub-call 의 prompt/completion tokens 가 model_outputs 에 기록."""
     settings = _settings(tmp_path, master_parallel_agents=True)
     master = HermesMasterOrchestrator(settings)
-    master.opencode.run = AsyncMock(return_value=_ok_result("response"))
+    master.adapter.run = AsyncMock(return_value=_ok_result("response"))
 
     result = await master.handle(
         "@coder 짜고 @reviewer 검토", user_id="u1"

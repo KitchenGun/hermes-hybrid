@@ -1,15 +1,14 @@
-"""Tests for the Phase 10 sub-agent delegation interface.
+"""Tests for the Phase 10 sub-agent delegation interface (Phase 11 swap).
 
-Phase 8 (2026-05-06) deleted the profile system, so the prior
-``SequentialHermesDelegator`` (profile_id-based) is gone. Phase 10
-introduces ``OpenCodeAgentDelegator`` — one ``opencode`` subprocess per
-@handle, parallelized via ``asyncio.gather`` with a semaphore.
+Phase 8 deleted the profile system. Phase 10 introduced
+``ClaudeAgentDelegator``. Phase 11 (2026-05-06) swapped opencode →
+Claude CLI (Max OAuth) — class renamed to ``ClaudeAgentDelegator``.
 
 We lock down:
-  * delegate forwards to opencode.run with the right prompt (agent
+  * delegate forwards to adapter.run with the right prompt (agent
     SKILL.md frontmatter snippet + user message)
   * unknown @handle → SubAgentResult(success=False, error=...) without
-    calling opencode
+    calling the adapter
   * adapter exception → SubAgentResult(success=False, error=...)
     (delegation must NEVER raise)
   * delegate_many preserves request order
@@ -29,7 +28,7 @@ import pytest
 
 from src.agents import AgentEntry, AgentRegistry
 from src.core import (
-    OpenCodeAgentDelegator,
+    ClaudeAgentDelegator,
     SubAgentRequest,
     SubAgentResult,
     aggregate_responses,
@@ -47,15 +46,15 @@ def _registry() -> AgentRegistry:
 @dataclass
 class _StubResult:
     text: str = "stub response"
-    model_name: str = "gpt-5.5"
+    model_name: str = "opus"
     session_id: str = "sess-1"
     duration_ms: int = 250
     input_tokens: int = 100
     output_tokens: int = 50
-    total_cost_usd: float = 0.001
+    total_cost_usd: float = 0.0
 
 
-class _StubOpenCode:
+class _StubClaude:
     def __init__(self, *, raises: Exception | None = None, delay: float = 0.0):
         self.calls: list[dict[str, Any]] = []
         self._raises = raises
@@ -90,9 +89,9 @@ class _StubOpenCode:
 
 
 @pytest.mark.asyncio
-async def test_delegate_resolves_handle_and_calls_opencode():
-    adapter = _StubOpenCode()
-    deleg = OpenCodeAgentDelegator(adapter, _registry())
+async def test_delegate_resolves_handle_and_calls_claude():
+    adapter = _StubClaude()
+    deleg = ClaudeAgentDelegator(adapter, _registry())
     req = SubAgentRequest(
         agent_handle="@coder",
         user_message="fizzbuzz 짜줘",
@@ -104,7 +103,7 @@ async def test_delegate_resolves_handle_and_calls_opencode():
     assert result.response == "stub response"
     assert result.prompt_tokens == 100
     assert result.completion_tokens == 50
-    # opencode 호출 한 번 — prompt 안에 SKILL.md frontmatter snippet 포함
+    # claude 호출 한 번 — prompt 안에 SKILL.md frontmatter snippet 포함
     assert len(adapter.calls) == 1
     prompt = adapter.calls[0]["prompt"]
     assert "## Active sub-agent: @coder" in prompt
@@ -112,9 +111,9 @@ async def test_delegate_resolves_handle_and_calls_opencode():
 
 
 @pytest.mark.asyncio
-async def test_delegate_unknown_handle_returns_failure_without_opencode_call():
-    adapter = _StubOpenCode()
-    deleg = OpenCodeAgentDelegator(adapter, _registry())
+async def test_delegate_unknown_handle_returns_failure_without_claude_call():
+    adapter = _StubClaude()
+    deleg = ClaudeAgentDelegator(adapter, _registry())
     req = SubAgentRequest(
         agent_handle="@nobody",
         user_message="hi",
@@ -124,13 +123,13 @@ async def test_delegate_unknown_handle_returns_failure_without_opencode_call():
     result = await deleg.delegate(req)
     assert result.success is False
     assert "@nobody" in result.error
-    assert adapter.calls == []   # 등록되지 않은 핸들은 opencode 안 부름
+    assert adapter.calls == []   # 등록되지 않은 핸들은 claude 안 부름
 
 
 @pytest.mark.asyncio
-async def test_delegate_swallows_opencode_exception():
-    adapter = _StubOpenCode(raises=RuntimeError("opencode timeout"))
-    deleg = OpenCodeAgentDelegator(adapter, _registry())
+async def test_delegate_swallows_claude_exception():
+    adapter = _StubClaude(raises=RuntimeError("claude timeout"))
+    deleg = ClaudeAgentDelegator(adapter, _registry())
     req = SubAgentRequest(
         agent_handle="@coder",
         user_message="X",
@@ -141,7 +140,7 @@ async def test_delegate_swallows_opencode_exception():
     assert isinstance(result, SubAgentResult)
     assert result.success is False
     assert "RuntimeError" in result.error
-    assert "opencode timeout" in result.error
+    assert "claude timeout" in result.error
 
 
 # ---- delegate_many -------------------------------------------------------
@@ -149,8 +148,8 @@ async def test_delegate_swallows_opencode_exception():
 
 @pytest.mark.asyncio
 async def test_delegate_many_preserves_order_and_length():
-    adapter = _StubOpenCode()
-    deleg = OpenCodeAgentDelegator(adapter, _registry())
+    adapter = _StubClaude()
+    deleg = ClaudeAgentDelegator(adapter, _registry())
     handles = ["@coder", "@reviewer", "@tester"]
     requests = [
         SubAgentRequest(
@@ -168,8 +167,8 @@ async def test_delegate_many_preserves_order_and_length():
 @pytest.mark.asyncio
 async def test_delegate_many_runs_in_parallel():
     """3 calls × 100ms each should finish in <250ms (parallel), not 300+ ms (sequential)."""
-    adapter = _StubOpenCode(delay=0.10)
-    deleg = OpenCodeAgentDelegator(adapter, _registry(), max_concurrency=3)
+    adapter = _StubClaude(delay=0.10)
+    deleg = ClaudeAgentDelegator(adapter, _registry(), max_concurrency=3)
     requests = [
         SubAgentRequest(
             agent_handle=h, user_message="x",
@@ -192,8 +191,8 @@ async def test_delegate_many_runs_in_parallel():
 @pytest.mark.asyncio
 async def test_max_concurrency_caps_simultaneous_calls():
     """5 calls with max_concurrency=2 → peak_concurrent should be 2."""
-    adapter = _StubOpenCode(delay=0.05)
-    deleg = OpenCodeAgentDelegator(adapter, _registry(), max_concurrency=2)
+    adapter = _StubClaude(delay=0.05)
+    deleg = ClaudeAgentDelegator(adapter, _registry(), max_concurrency=2)
     handles = ["@coder", "@reviewer", "@tester", "@debugger", "@security"]
     requests = [
         SubAgentRequest(
@@ -208,8 +207,8 @@ async def test_max_concurrency_caps_simultaneous_calls():
 
 @pytest.mark.asyncio
 async def test_delegate_many_empty_list_returns_empty():
-    adapter = _StubOpenCode()
-    deleg = OpenCodeAgentDelegator(adapter, _registry())
+    adapter = _StubClaude()
+    deleg = ClaudeAgentDelegator(adapter, _registry())
     assert await deleg.delegate_many([]) == []
 
 
@@ -217,8 +216,8 @@ async def test_delegate_many_empty_list_returns_empty():
 async def test_delegate_many_single_failure_does_not_abort_batch():
     """One unknown handle in the middle should fail just that one;
     the other agents still get their results."""
-    adapter = _StubOpenCode()
-    deleg = OpenCodeAgentDelegator(adapter, _registry())
+    adapter = _StubClaude()
+    deleg = ClaudeAgentDelegator(adapter, _registry())
     requests = [
         SubAgentRequest(
             agent_handle=h, user_message="x",

@@ -1,8 +1,12 @@
 """Sub-agent delegation — Phase 10 (parallel @handle dispatch).
 
+Phase 11 (2026-05-06): opencode CLI → Claude CLI (Max OAuth) swap.
+``ClaudeAgentDelegator`` 가 master 의 동일 ClaudeCodeAdapter 를 재사용해
+각 ``@handle`` 별 독립 호출을 ``asyncio.gather`` 로 동시 진행.
+
 Phase 9 가 IntentRouter 가 추출한 ``@coder`` 같은 mention 들을 모아 단일
-master prompt 에 모든 SKILL.md snippet 을 inject 했다. Phase 10 은
-**진짜 병렬 실행** — 각 mention 에 대해 독립 opencode 호출을 띄우고
+master prompt 에 모든 SKILL.md snippet 을 inject 한다. Phase 10 은
+**진짜 병렬 실행** — 각 mention 에 대해 독립 claude 호출을 띄우고
 ``asyncio.gather`` 로 동시에 진행한 뒤 결과를 집계.
 
 기본 동작은 여전히 단일 master 호출 (``settings.master_parallel_agents``
@@ -23,7 +27,7 @@ fan-out:
     "### @coder\n...\n\n### @reviewer\n..."
 
 Why behind a flag:
-  * 각 호출이 별도 opencode subprocess — 비용/지연이 N 배.
+  * 각 호출이 별도 claude subprocess — 비용/지연이 N 배.
   * Max OAuth 시간당 한도 도달 위험.
   * 사용자가 의도적으로 켜야 의미 있음 (대부분 단일 master snippet inject
     로 충분).
@@ -72,7 +76,7 @@ class SubAgentResult(BaseModel):
 
 class Delegator(Protocol):
     """Anything that can run a SubAgentRequest. Async so concrete
-    implementations can do real I/O (opencode subprocess, MCP client, ...)."""
+    implementations can do real I/O (claude subprocess, MCP client, ...)."""
 
     async def delegate(self, request: SubAgentRequest) -> SubAgentResult:
         ...
@@ -83,19 +87,19 @@ class Delegator(Protocol):
         ...
 
 
-class OpenCodeAgentDelegator:
-    """Phase 10 — real parallel delegator using ``opencode`` CLI per agent.
+class ClaudeAgentDelegator:
+    """Phase 10/11 — real parallel delegator using Claude CLI per agent.
 
-    Each :class:`SubAgentRequest` becomes one opencode subprocess call.
+    Each :class:`SubAgentRequest` becomes one claude subprocess call.
     The agent's SKILL.md frontmatter (lookup via :class:`AgentRegistry`)
     is composed into the system prompt so the LLM follows that agent's
     role/inputs/outputs/constraints.
 
     Concurrency is bounded by ``max_concurrency`` (default 3) via an
-    :class:`asyncio.Semaphore`; this caps simultaneous opencode subprocesses
-    so the host doesn't burst-load WSL or the OAuth quota.
+    :class:`asyncio.Semaphore`; this caps simultaneous claude subprocesses
+    so the host doesn't burst-load WSL or the Max OAuth quota.
 
-    The constructor takes the OpenCodeAdapter (already concurrency-aware
+    The constructor takes the ClaudeCodeAdapter (already concurrency-aware
     via its own pool) — we install our own semaphore on top so this
     delegator's own per-call budget is independent of the adapter's
     default.
@@ -103,7 +107,7 @@ class OpenCodeAgentDelegator:
 
     def __init__(
         self,
-        opencode_adapter: Any,                 # OpenCodeAdapter-like
+        adapter: Any,                          # ClaudeCodeAdapter-like
         agents: "AgentRegistry | None" = None,
         *,
         max_concurrency: int = 3,
@@ -111,7 +115,7 @@ class OpenCodeAgentDelegator:
         if agents is None:
             from src.agents import AgentRegistry as _AR
             agents = _AR()
-        self.opencode = opencode_adapter
+        self.adapter = adapter
         self.agents = agents
         self.max_concurrency = max(1, max_concurrency)
 
@@ -129,7 +133,7 @@ class OpenCodeAgentDelegator:
 
         prompt = _compose_agent_prompt(entry, request.user_message)
         try:
-            result = await self.opencode.run(
+            result = await self.adapter.run(
                 prompt=prompt,
                 history=[],
             )
@@ -248,8 +252,8 @@ def aggregate_responses(results: list[SubAgentResult]) -> str:
 
 
 __all__ = [
+    "ClaudeAgentDelegator",
     "Delegator",
-    "OpenCodeAgentDelegator",
     "SubAgentRequest",
     "SubAgentResult",
     "aggregate_responses",

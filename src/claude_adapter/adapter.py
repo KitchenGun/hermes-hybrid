@@ -1,17 +1,19 @@
-"""Adapter for Claude Code CLI — the ONLY path that calls Claude.
+"""Adapter for Claude Code CLI — Hermes Master 의 단일 LLM lane.
 
-Invoked exclusively by the orchestrator's heavy path (`!heavy ...`). Uses
-the user's Claude Max subscription via the Claude Code CLI's OAuth token
-at `~/.claude/.credentials.json`, which means zero extra API cost.
+Phase 11 (2026-05-06): master = Claude CLI (Max OAuth) 단일 lane 으로
+전환됨. opencode 폐기. 사용자 Max 구독료만 (API key 별도 비용 X — $0
+marginal).
 
-Key design decisions:
-  - `claude -p --output-format json --no-session-persistence` → reliable
-    single-line JSON we can parse, no leftover session files.
-  - Prompt piped via stdin (safer than CLI arg for long/quoted text).
-  - Concurrency capped (Max subscription has session limits — avoid
-    stampeding).
-  - Not invoked by automatic tier escalation. Orchestrator never calls
-    this from the validator-driven retry loop.
+Key design:
+  - ``claude -p --output-format json --no-session-persistence`` →
+    한 줄 JSON 응답, leftover session 파일 X.
+  - Prompt 는 stdin (긴/특수문자 텍스트 안전).
+  - Concurrency cap: ``master_concurrency`` (default 1) — Max OAuth 시간당
+    한도 보호.
+  - Phase 9: HermesMaster 가 ``@handle`` mention SKILL.md inject 를
+    prompt 에 미리 합쳐 보냄.
+  - Phase 10: ClaudeAgentDelegator 가 병렬 fan-out 시 같은 어댑터를
+    재사용 (semaphore 가 자연스럽게 cap).
 """
 from __future__ import annotations
 
@@ -37,65 +39,41 @@ class ClaudeCodeTimeout(ClaudeCodeAdapterError):
 
 
 class ClaudeCodeAuthError(ClaudeCodeAdapterError):
-    """OAuth token expired / missing / Max subscription lapsed."""
-
-
-class ClaudeCodeResumeFailed(ClaudeCodeAdapterError):
-    """FIX#4: ``--resume <sid>`` pointed at a session that's gone.
-
-    Happens when the previous session was evicted by the CLI's TTL, or was
-    never actually persisted (e.g. prior call ran with
-    ``--no-session-persistence``), or the session file got corrupted.
-    The orchestrator catches this, invalidates the registry entry for the
-    user, and retries without ``--resume`` so the user's request still
-    goes through.
-    """
+    """OAuth token expired / missing / Max subscription lapsed / quota."""
 
 
 @dataclass
 class ClaudeCodeResult:
     text: str
     model_name: str
-    session_id: str | None
-    duration_ms: int
+    session_id: str | None = None
+    duration_ms: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     total_cost_usd: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
 
 
-# Patterns to classify non-zero exit output.
 _AUTH_ERROR_RE = re.compile(
     r"(not (logged in|authenticated)|oauth|401|unauthorized|expired|credentials)",
     re.IGNORECASE,
 )
-# "out of extra usage" / "out of credits" / hourly limit — treat as auth-ish
-# (user needs to wait for Max reset or add credits; not a retryable transient).
 _QUOTA_RE = re.compile(
     r"(out of extra usage|out of credits|usage limit|rate limit.*reset)",
-    re.IGNORECASE,
-)
-# FIX#4: detect --resume pointing at a missing / evicted / malformed session.
-_RESUME_FAIL_RE = re.compile(
-    r"(session\s+(not\s+found|does\s+not\s+exist|missing|unknown)|"
-    r"no\s+such\s+session|conversation\s+not\s+found|"
-    r"invalid\s+session[_\s-]?id|cannot\s+resume)",
     re.IGNORECASE,
 )
 
 
 class ClaudeCodeAdapter:
-    def __init__(self, settings: Settings, *, concurrency: int | None = None):
-        """Claude Code CLI adapter.
+    """``claude -p`` subprocess wrapper — Hermes Master 의 single LLM lane."""
 
-        ``concurrency`` overrides ``settings.claude_code_concurrency`` for
-        callers that need a separate semaphore — e.g. the C1-lite instance
-        (Haiku for the planning tier) runs with its own pool so it does
-        NOT share the heavy-path cap of 1. When omitted we fall back to
-        the heavy-path default, preserving existing behavior.
-        """
+    def __init__(self, settings: Settings, *, concurrency: int | None = None):
         self.settings = settings
-        effective = concurrency if concurrency is not None else settings.claude_code_concurrency
+        effective = (
+            concurrency
+            if concurrency is not None
+            else settings.master_concurrency
+        )
         self._sem = asyncio.Semaphore(max(1, effective))
 
     async def run(
@@ -105,42 +83,20 @@ class ClaudeCodeAdapter:
         history: list[dict[str, str]] | None = None,
         model: str | None = None,
         timeout_ms: int | None = None,
-        resume_session_id: str | None = None,
-        persist_session: bool = False,
-        mcp_config_path: str | None = None,
-        allowed_tools: list[str] | None = None,
-        env_source_path: str | None = None,
-        append_system_prompt: str | None = None,
     ) -> ClaudeCodeResult:
-        """Execute one Claude Code -p turn. Heavy path only.
+        """Single-turn Claude Code call.
 
-        Stateless default: history is flattened into the prompt (no
-        ``--resume``) and ``--no-session-persistence`` is set so each turn
-        leaves no session file behind. Predictable cost, no churn.
-
-        FIX#4 (session reuse): when the caller provides ``resume_session_id``
-        we attach ``--resume <sid>`` and drop ``--no-session-persistence``
-        so the CLI actually loads prior context. If the CLI reports the
-        session is missing we raise :class:`ClaudeCodeResumeFailed` and the
-        orchestrator falls back to a fresh run. ``persist_session=True`` on
-        a first-turn call asks the CLI to keep the new session around for
-        the registry to reuse later.
+        ``history`` 는 prompt 안에 평탄화돼 들어감 — stateless 호출.
+        Phase 11 후 ``resume_session_id`` / ``mcp_config_path`` /
+        ``allowed_tools`` / ``append_system_prompt`` 등 heavy 시절 부가
+        인자는 모두 제거됨.
         """
-        model = model or self.settings.claude_code_model
-        timeout_ms = timeout_ms or self.settings.claude_code_timeout_ms
-        cmd = self._build_cmd(
-            model=model,
-            resume_session_id=resume_session_id,
-            persist_session=persist_session,
-            mcp_config_path=mcp_config_path,
-            allowed_tools=allowed_tools,
-            env_source_path=env_source_path,
-            append_system_prompt=append_system_prompt,
+        model = model or self.settings.master_model
+        timeout_ms = timeout_ms or self.settings.master_timeout_ms
+        cmd = self._build_cmd(model=model)
+        stdin_payload = self._build_stdin(
+            prompt=prompt, history=history or []
         )
-        # When resuming, Claude Code already has the history — avoid re-sending
-        # it (which would waste tokens and confuse the conversation).
-        effective_history = [] if resume_session_id else (history or [])
-        stdin_payload = self._build_stdin(prompt=prompt, history=effective_history)
 
         async with self._sem:
             start = asyncio.get_event_loop().time()
@@ -173,14 +129,6 @@ class ClaudeCodeAdapter:
 
         if proc.returncode != 0:
             combined = stdout + "\n" + stderr
-            # FIX#4: check resume-specific failures first so the orchestrator
-            # can invalidate the registry entry and fall back to a fresh run
-            # rather than surfacing a generic error to the user.
-            if resume_session_id and _RESUME_FAIL_RE.search(combined):
-                raise ClaudeCodeResumeFailed(
-                    f"Claude Code could not resume session {resume_session_id!r}: "
-                    f"{combined[-300:]}"
-                )
             if _AUTH_ERROR_RE.search(combined) or _QUOTA_RE.search(combined):
                 raise ClaudeCodeAuthError(
                     f"Claude Code auth/quota failure: {combined[-300:]}"
@@ -197,15 +145,9 @@ class ClaudeCodeAdapter:
                 f"Claude Code returned non-JSON: {stdout[:300]}"
             ) from e
 
-        # `is_error=true` with subtype=error_during_execution etc.
         if data.get("is_error"):
             api_status = data.get("api_error_status")
             msg = data.get("result") or data.get("subtype") or "unknown"
-            if resume_session_id and _RESUME_FAIL_RE.search(str(msg)):
-                raise ClaudeCodeResumeFailed(
-                    f"Claude Code could not resume session "
-                    f"{resume_session_id!r}: {msg}"
-                )
             if api_status in (401, 403) or _AUTH_ERROR_RE.search(str(msg)):
                 raise ClaudeCodeAuthError(f"Claude Code auth error: {msg}")
             if _QUOTA_RE.search(str(msg)):
@@ -216,15 +158,12 @@ class ClaudeCodeAdapter:
 
         text = str(data.get("result") or "").strip()
         usage = data.get("usage") or {}
-        # Pick the last model actually used (JSON has a modelUsage dict keyed by
-        # model names; we prefer that over the `model` field on the result,
-        # since Claude Code may route internally to sub-agents).
         model_usage = data.get("modelUsage") or {}
         model_name = next(iter(model_usage.keys()), model)
 
         return ClaudeCodeResult(
             text=text,
-            model_name=model_name,
+            model_name=str(model_name),
             session_id=data.get("session_id"),
             duration_ms=duration_ms,
             input_tokens=int(usage.get("input_tokens", 0) or 0),
@@ -235,73 +174,24 @@ class ClaudeCodeAdapter:
 
     # ---- internals ----
 
-    def _build_cmd(
-        self,
-        *,
-        model: str,
-        resume_session_id: str | None = None,
-        persist_session: bool = False,
-        mcp_config_path: str | None = None,
-        allowed_tools: list[str] | None = None,
-        env_source_path: str | None = None,
-        append_system_prompt: str | None = None,
-    ) -> list[str]:
+    def _build_cmd(self, *, model: str) -> list[str]:
         args = [
-            self.settings.claude_code_cli_path,
+            self.settings.master_cli_path,
             "-p",
             "--model", model,
             "--output-format", "json",
+            "--no-session-persistence",
         ]
-        # FIX#4: when the caller wants to resume or save for future reuse,
-        # we must NOT pass --no-session-persistence — it would either make
-        # --resume fail immediately or silently drop the new session.
-        if resume_session_id:
-            args += ["--resume", resume_session_id]
-        elif not persist_session:
-            args.append("--no-session-persistence")
-
-        # MCP injection: callers like CalendarSkill register a stdio MCP
-        # server (e.g. cocal google_calendar) so the model can call its
-        # tools in this turn. ``--strict-mcp-config`` blocks any other
-        # ambient MCP from leaking in (user .claude.json etc.) keeping
-        # the tool surface deterministic.
-        if mcp_config_path:
-            args += [
-                "--mcp-config", mcp_config_path,
-                "--strict-mcp-config",
-            ]
-        if allowed_tools:
-            args += ["--allowedTools", *allowed_tools]
-        # Profile-specific instruction (e.g. journal_ops 24-필드 스키마 +
-        # sheets_append 절차). Passed via --append-system-prompt so Claude's
-        # built-in agent prompt stays intact while ours is layered on top.
-        # Claude prompt-caches the system prompt, so repeated turns are cheap.
-        if append_system_prompt:
-            args += ["--append-system-prompt", append_system_prompt]
-
-        if self.settings.claude_code_cli_backend == "wsl_subprocess":
+        if self.settings.master_cli_backend == "wsl_subprocess":
             inner = " ".join(shlex.quote(a) for a in args)
-            # Profile-scoped env (e.g. GOOGLE_SHEETS_WEBHOOK_URL for
-            # journal_ops, DISCORD_BRIEFING_WEBHOOK_URL for calendar_ops)
-            # lives in the Hermes profile .env. WSL bash -lc DOES source
-            # ~/.bashrc but NOT arbitrary profile .envs, so we explicitly
-            # load it before invoking claude. ``set -a`` exports all
-            # subsequent assignments; the ``[ -f … ]`` guard keeps the
-            # command working when the file is absent.
-            if env_source_path:
-                quoted = shlex.quote(env_source_path)
-                inner = (
-                    f"[ -f {quoted} ] && set -a && . {quoted} && set +a; "
-                    + inner
-                )
             return [
                 "wsl", "-d", self.settings.wsl_distro,
                 "bash", "-lc", inner,
             ]
-        if self.settings.claude_code_cli_backend == "local_subprocess":
+        if self.settings.master_cli_backend == "local_subprocess":
             return args
         raise ClaudeCodeAdapterError(
-            f"Unsupported backend: {self.settings.claude_code_cli_backend}"
+            f"Unsupported backend: {self.settings.master_cli_backend}"
         )
 
     @staticmethod
@@ -317,6 +207,17 @@ class ClaudeCodeAdapter:
         for turn in history:
             role = turn.get("role", "user")
             content = turn.get("content", "")
-            lines.append(f"[{role}] {content}")
-        lines.append(f"[user] {prompt}")
+            if not content:
+                continue
+            lines.append(f"[{role}]\n{content}")
+        lines.append(f"[user]\n{prompt}")
         return "\n\n".join(lines)
+
+
+__all__ = [
+    "ClaudeCodeAdapter",
+    "ClaudeCodeAdapterError",
+    "ClaudeCodeAuthError",
+    "ClaudeCodeResult",
+    "ClaudeCodeTimeout",
+]
