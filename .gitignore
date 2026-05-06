@@ -62,6 +62,14 @@ secrets/
 profiles/advisor_ops/runtime/
 profiles/installer_ops/runtime/
 
+# Phase 8 archive: 폐기된 profile memories — 사용자 개인 컨텍스트 (calendar_ops,
+# journal_ops, kk_job, mail_ops) 는 git history 에 들어가지 않도록 ignore.
+# advisor_ops + installer_ops 의 메타 컨텍스트는 _archive 안에서도 추적.
+_archive/profiles_memories/calendar_ops/
+_archive/profiles_memories/journal_ops/
+_archive/profiles_memories/kk_job/
+_archive/profiles_memories/mail_ops/
+
 # kk_job 프로파일의 runtime/ 은 cron 산출물 — probe HTML, raw/curated JSON,
 # Discord body 등 매 실행마다 갱신. skills/runtime/ 은 sheet_fallback CSV 등
 # 스킬 실행 중 생성되는 임시 산출물.
