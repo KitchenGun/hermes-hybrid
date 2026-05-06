@@ -86,6 +86,17 @@ class HermesMasterOrchestrator:
         from src.orchestrator.pipelines import PipelineCatalog
         self.pipelines = PipelineCatalog()
 
+        # Phase 14 — Memory Curator (MEMORY.md + USER.md auto-curate).
+        from src.core.memory_curator import MemoryCurator
+        self.memory_curator = MemoryCurator(
+            adapter=None,                        # set after self.adapter is built
+            memory_root=settings.memory_root,
+            experience_log_root=settings.experience_log_root,
+            every_n_tasks=settings.memory_curator_every_n_tasks,
+            max_chars=settings.memory_max_chars,
+            enabled=settings.memory_curator_enabled,
+        )
+
         self.intent_router = IntentRouter(
             settings, skills=self.skills, pipelines=self.pipelines,
         )
@@ -98,6 +109,7 @@ class HermesMasterOrchestrator:
             repo_root=getattr(settings, "_repo_root", None),
         )
         self.adapter = ClaudeCodeAdapter(settings)
+        self.memory_curator.adapter = self.adapter   # late-bind
         self.critic = Critic(self.policy_gate.validator)
         self.experience_logger: ExperienceLogger = (
             experience_logger
@@ -693,6 +705,11 @@ class HermesMasterOrchestrator:
         """
         parts: list[str] = [_SYSTEM_PROMPT]
 
+        # Phase 14 — auto-curated MEMORY.md + USER.md prepend
+        memory_block = self.memory_curator.read_prompt_prepend()
+        if memory_block:
+            parts.append(memory_block)
+
         handles = list(getattr(intent, "agent_handles", []) or [])
         if handles:
             for handle in handles:
@@ -776,6 +793,15 @@ class HermesMasterOrchestrator:
             )
         except Exception as e:  # noqa: BLE001
             log.warning("master.experience_log_failed", err=str(e))
+
+        # Phase 14 — Memory Curator post-task hook (best-effort, fire-and-forget).
+        # ExperienceLog 가 먼저 written 되어야 curator 가 최근 row 를 읽을 수 있음.
+        try:
+            asyncio.create_task(
+                self.memory_curator.maybe_curate_after_task(task)
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("master.memory_curator_schedule_failed", err=str(e))
 
 
 # ---- result type -----------------------------------------------------

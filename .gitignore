@@ -31,6 +31,9 @@ logs/
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 
+# Phase 14 (2026-05-07): auto-curated memory — user-private, gitignored.
+data/memory/
+
 # Hermes profiles — secrets and runtime state
 profiles/*/.env
 profiles/*/auth.json

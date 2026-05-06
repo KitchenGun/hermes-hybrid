@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     master_parallel_agents: bool = False
     master_parallel_max_concurrency: int = 3
 
+    # Phase 14 (2026-05-07): memory curator — auto MEMORY.md + USER.md.
+    # 매 N task 후 master 가 metadata 보고 1-2줄 메모 append. 1500자 초과 시
+    # 자동 LLM compaction. master prompt 에 자동 prepend (USER + MEMORY tail).
+    # Privacy: raw user_message 는 LLM 에 안 넘김 — handled_by/agent_handles/
+    # token count 등 metadata 만.
+    memory_curator_enabled: bool = True
+    memory_curator_every_n_tasks: int = 5
+    memory_root: Path = Path("./data/memory")
+    memory_max_chars: int = 1500
+
     # Phase 13 (2026-05-07): revision loop — plan/act/observe/reflect/retry.
     # Critic self_score < threshold 시 자동 retry. 3회까지, 모델 escalation
     # (haiku → sonnet → opus). default off — 사용자 opt-in 시 master 호출
