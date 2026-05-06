@@ -1,9 +1,10 @@
 from .critic import Critic, compute_self_score
 from .delegation import (
     Delegator,
-    SequentialHermesDelegator,
+    OpenCodeAgentDelegator,
     SubAgentRequest,
     SubAgentResult,
+    aggregate_responses,
 )
 from .experience_logger import ExperienceLogger, ExperienceRecord
 from .kanban import KanbanComment, KanbanStatus, KanbanStore, KanbanTask
@@ -19,11 +20,12 @@ __all__ = [
     "KanbanStatus",
     "KanbanStore",
     "KanbanTask",
-    "SequentialHermesDelegator",
+    "OpenCodeAgentDelegator",
     "SkillEntry",
     "SkillLibrary",
     "SubAgentRequest",
     "SubAgentResult",
+    "aggregate_responses",
     "compute_self_score",
     "import_sessions",
     "session_to_record",

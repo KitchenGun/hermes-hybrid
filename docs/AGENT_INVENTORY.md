@@ -157,6 +157,12 @@ print(reg.summary())  # {"implementation": 4, "quality": 4, ...}
 - ✅ **Phase 9 (2026-05-06)** — `@agent` 멘션 dispatch wiring 완료
   (IntentRouter 파싱 → master prompt 에 SKILL.md frontmatter inject →
   ExperienceLog 기록).
-- Phase 10 — `Delegator.delegate_many` 진짜 병렬 실행 (예: `@coder + @tester`
-  를 동시에 호출 + 결과 집계).
+- ✅ **Phase 10 (2026-05-06)** — `OpenCodeAgentDelegator.delegate_many`
+  진짜 병렬 실행 (`asyncio.gather` + `Semaphore(max_concurrency)`)
+  + `aggregate_responses` 로 결과 집계. opt-in `master_parallel_agents=true`.
+  - `@coder + @tester` 동시 호출 (독립 작업) 패턴 활용.
+  - 단순 연속 (`@coder → @reviewer`) 은 Phase 9 단일 호출이 더 효율적.
 - Phase 11 — Slack gateway / Discord 슬래시 `/agent <handle> <task>` 추가.
+- Phase 12 — Master meta-aggregator (LLM round-trip 으로 sub-agent 결과
+  종합).
+- Phase 13 — Curator 의 agent_handles 통계 자동 surface.

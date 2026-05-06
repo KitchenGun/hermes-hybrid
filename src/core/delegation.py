@@ -1,35 +1,50 @@
-"""Sub-agent delegation interface — Phase 5 stub.
+"""Sub-agent delegation — Phase 10 (parallel @handle dispatch).
 
-The end goal: an Orchestrator action can spin up a *sub-agent* against
-a different profile to handle a sub-task, run several in parallel, and
-aggregate the results back into the parent task. Hermes already does
-some delegation internally (its plan→act→reflect loop), but at a finer
-grain than profile-level work hand-off.
+Phase 9 가 IntentRouter 가 추출한 ``@coder`` 같은 mention 들을 모아 단일
+master prompt 에 모든 SKILL.md snippet 을 inject 했다. Phase 10 은
+**진짜 병렬 실행** — 각 mention 에 대해 독립 opencode 호출을 띄우고
+``asyncio.gather`` 로 동시에 진행한 뒤 결과를 집계.
 
-This module ships the **interface** + a **single sequential delegator**
-backed by HermesAdapter. Parallel execution and structured result
-aggregation are deferred to Phase 5b — locking the interface now
-prevents a breaking-change later when those land.
+기본 동작은 여전히 단일 master 호출 (``settings.master_parallel_agents``
+가 False). 사용자가 명시 opt-in 하면, 여러 ``@handle`` 멘션이 발견될 때
+fan-out:
 
-Why no real parallel execution yet:
-  * hermes CLI semantics around concurrent sessions per profile aren't
-    fully validated for our setup
-  * a botched parallel rollout corrupts shared profile state
-    (sessions/, jobs.json, memory)
-  * sequential first → we add parallelism after measuring sub-agent
-    success rates from the experience log
+    @bot @coder fizzbuzz 짜고 @reviewer 검토해줘
+        ↓ IntentRouter
+    agent_handles = ["@coder", "@reviewer"]
+        ↓ HermesMaster (master_parallel_agents=True 일 때)
+    delegate_many([
+        SubAgentRequest("@coder",   "fizzbuzz 짜고 @reviewer 검토해줘"),
+        SubAgentRequest("@reviewer", "fizzbuzz 짜고 @reviewer 검토해줘"),
+    ])
+        ↓ asyncio.gather  (semaphore 로 max_concurrency 제한)
+    [SubAgentResult, SubAgentResult]
+        ↓ aggregate_responses
+    "### @coder\n...\n\n### @reviewer\n..."
+
+Why behind a flag:
+  * 각 호출이 별도 opencode subprocess — 비용/지연이 N 배.
+  * Max OAuth 시간당 한도 도달 위험.
+  * 사용자가 의도적으로 켜야 의미 있음 (대부분 단일 master snippet inject
+    로 충분).
 """
 from __future__ import annotations
 
-from typing import Any, Protocol
+import asyncio
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, Field
 
+if TYPE_CHECKING:
+    # ``src.agents`` imports from ``src.core`` (SkillEntry) — defer to
+    # run-time inside methods to dodge the circular import.
+    from src.agents import AgentEntry, AgentRegistry
+
 
 class SubAgentRequest(BaseModel):
-    """One sub-task hand-off."""
+    """One sub-task hand-off to a specific sub-agent."""
 
-    profile_id: str
+    agent_handle: str                 # "@coder" / "@reviewer" / ...
     user_message: str
     parent_task_id: str
     parent_session_id: str
@@ -57,7 +72,7 @@ class SubAgentResult(BaseModel):
 
 class Delegator(Protocol):
     """Anything that can run a SubAgentRequest. Async so concrete
-    implementations can do real I/O (hermes subprocess, MCP client, ...)."""
+    implementations can do real I/O (opencode subprocess, MCP client, ...)."""
 
     async def delegate(self, request: SubAgentRequest) -> SubAgentResult:
         ...
@@ -68,40 +83,55 @@ class Delegator(Protocol):
         ...
 
 
-class SequentialHermesDelegator:
-    """Phase 5 stub — runs one sub-agent at a time via HermesAdapter.
+class OpenCodeAgentDelegator:
+    """Phase 10 — real parallel delegator using ``opencode`` CLI per agent.
 
-    The ``hermes_adapter`` is duck-typed (``HermesAdapter``-like with a
-    ``call(query, profile, ...)`` coroutine) so tests can inject a stub
-    without importing the real adapter.
+    Each :class:`SubAgentRequest` becomes one opencode subprocess call.
+    The agent's SKILL.md frontmatter (lookup via :class:`AgentRegistry`)
+    is composed into the system prompt so the LLM follows that agent's
+    role/inputs/outputs/constraints.
 
-    Why this lives next to ``Critic`` / ``ExperienceLogger`` (in core):
-    delegation is a growth-loop primitive — when Curator promotes a
-    skill, the natural next step is having the parent agent delegate
-    to that skill's profile. Keeping the interface in core/ makes that
-    path obvious.
+    Concurrency is bounded by ``max_concurrency`` (default 3) via an
+    :class:`asyncio.Semaphore`; this caps simultaneous opencode subprocesses
+    so the host doesn't burst-load WSL or the OAuth quota.
+
+    The constructor takes the OpenCodeAdapter (already concurrency-aware
+    via its own pool) — we install our own semaphore on top so this
+    delegator's own per-call budget is independent of the adapter's
+    default.
     """
 
-    def __init__(self, hermes_adapter: Any):
-        self.hermes = hermes_adapter
+    def __init__(
+        self,
+        opencode_adapter: Any,                 # OpenCodeAdapter-like
+        agents: "AgentRegistry | None" = None,
+        *,
+        max_concurrency: int = 3,
+    ):
+        if agents is None:
+            from src.agents import AgentRegistry as _AR
+            agents = _AR()
+        self.opencode = opencode_adapter
+        self.agents = agents
+        self.max_concurrency = max(1, max_concurrency)
 
     async def delegate(self, request: SubAgentRequest) -> SubAgentResult:
-        try:
-            # HermesAdapter.call signature varies between versions; pass
-            # only what we know is universal and let the adapter fill
-            # the rest from settings / defaults.
-            result = await self.hermes.call(
-                request.user_message,
-                profile=request.profile_id,
-            )
+        entry = self.agents.by_handle(request.agent_handle)
+        if entry is None:
             return SubAgentResult(
                 request=request,
-                success=True,
-                response=getattr(result, "text", "") or "",
-                prompt_tokens=getattr(result, "prompt_tokens", 0) or 0,
-                completion_tokens=getattr(result, "completion_tokens", 0) or 0,
-                cost_usd=float(getattr(result, "cost_usd", 0.0) or 0.0),
-                duration_ms=int(getattr(result, "duration_ms", 0) or 0),
+                success=False,
+                error=(
+                    f"unknown agent handle: {request.agent_handle} "
+                    "(not registered in AgentRegistry)"
+                ),
+            )
+
+        prompt = _compose_agent_prompt(entry, request.user_message)
+        try:
+            result = await self.opencode.run(
+                prompt=prompt,
+                history=[],
             )
         except Exception as e:  # noqa: BLE001
             return SubAgentResult(
@@ -110,17 +140,117 @@ class SequentialHermesDelegator:
                 error=f"{type(e).__name__}: {e}",
             )
 
+        return SubAgentResult(
+            request=request,
+            success=True,
+            response=getattr(result, "text", "") or "",
+            prompt_tokens=int(getattr(result, "input_tokens", 0) or 0),
+            completion_tokens=int(getattr(result, "output_tokens", 0) or 0),
+            cost_usd=float(getattr(result, "total_cost_usd", 0.0) or 0.0),
+            duration_ms=int(getattr(result, "duration_ms", 0) or 0),
+        )
+
     async def delegate_many(
-        self, requests: list[SubAgentRequest]
+        self,
+        requests: list[SubAgentRequest],
+        *,
+        max_concurrency: int | None = None,
     ) -> list[SubAgentResult]:
-        # Sequential by design. Phase 5b swaps this for asyncio.gather()
-        # once sub-agent contention is measured.
-        return [await self.delegate(r) for r in requests]
+        """Fan out via ``asyncio.gather`` with a semaphore.
+
+        Order is preserved: ``results[i]`` corresponds to ``requests[i]``.
+        Failures inside :meth:`delegate` are caught and returned as
+        ``success=False`` results — a single sub-agent crash does not
+        abort the batch.
+        """
+        if not requests:
+            return []
+        cap = max(1, max_concurrency or self.max_concurrency)
+        sem = asyncio.Semaphore(cap)
+
+        async def _run(req: SubAgentRequest) -> SubAgentResult:
+            async with sem:
+                return await self.delegate(req)
+
+        return await asyncio.gather(*[_run(r) for r in requests])
+
+
+# ---- prompt + aggregation helpers --------------------------------------
+
+
+_SUB_AGENT_SYSTEM_PROMPT = (
+    "You are acting as a Hermes sub-agent. The frontmatter below scopes "
+    "your role / inputs / outputs / constraints — stay strictly inside "
+    "those bounds. Be concise. Use Korean when the user does. Output only "
+    "what your role calls for; do not duplicate work that other sub-agents "
+    "would handle."
+)
+
+
+def _compose_agent_prompt(entry: "AgentEntry", user_message: str) -> str:
+    """Compose the system+snippet+user prompt for a sub-agent call.
+
+    Uses the same SKILL.md projection as :meth:`HermesMasterOrchestrator.
+    _agent_snippet` so the two paths produce identical agent context.
+    """
+    lines: list[str] = [_SUB_AGENT_SYSTEM_PROMPT, ""]
+    lines.append(
+        f"## Active sub-agent: {entry.handle} (role: {entry.role or '—'})"
+    )
+    if entry.description:
+        lines.append(f"description: {entry.description}")
+    if entry.when_to_use:
+        lines.append("when_to_use:")
+        lines.extend(f"  - {item}" for item in entry.when_to_use)
+    if entry.not_for:
+        lines.append("not_for:")
+        lines.extend(f"  - {item}" for item in entry.not_for)
+    if entry.inputs:
+        lines.append(f"inputs: {', '.join(entry.inputs)}")
+    if entry.outputs:
+        lines.append(f"outputs: {', '.join(entry.outputs)}")
+    if entry.primary_tools:
+        lines.append(f"primary_tools: {', '.join(entry.primary_tools)}")
+    lines.append("")
+    lines.append("## User")
+    lines.append(user_message)
+    return "\n".join(lines)
+
+
+def aggregate_responses(results: list[SubAgentResult]) -> str:
+    """Concatenate per-agent responses with handle headers.
+
+    Phase 10 의 단순 집계 — 후속 Phase 에서 master 가 결과들을 다시
+    한 번 종합 (LLM round-trip) 하는 패턴으로 확장 가능.
+
+    Format:
+        ### @coder
+        <coder response>
+
+        ### @reviewer
+        <reviewer response>
+
+        ### @debugger (failed)
+        <error message>
+    """
+    if not results:
+        return ""
+    parts: list[str] = []
+    for r in results:
+        header = f"### {r.request.agent_handle}"
+        if not r.success:
+            header += " (failed)"
+            body = r.error or "(no error message)"
+        else:
+            body = r.response or "(empty response)"
+        parts.append(f"{header}\n{body}")
+    return "\n\n".join(parts)
 
 
 __all__ = [
     "Delegator",
-    "SequentialHermesDelegator",
+    "OpenCodeAgentDelegator",
     "SubAgentRequest",
     "SubAgentResult",
+    "aggregate_responses",
 ]

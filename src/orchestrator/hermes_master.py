@@ -212,7 +212,14 @@ class HermesMasterOrchestrator:
                 response=f"⚠️ {decision.reason}",
             )
 
-        # Branch 4 — master LLM dispatch (the diagram's heart)
+        # Branch 4a — Phase 10: parallel agent fan-out (opt-in).
+        if (
+            self.settings.master_parallel_agents
+            and len(task.agent_handles) >= 2
+        ):
+            return await self._dispatch_parallel_agents(task, intent, t0)
+
+        # Branch 4b — master LLM dispatch (the diagram's heart)
         return await self._dispatch_master(task, intent, t0)
 
     # ---- master dispatch ---------------------------------------------
@@ -307,6 +314,103 @@ class HermesMasterOrchestrator:
             task=task,
             response=task.final_response,
             handled_by="master:degraded",
+        )
+
+    # ---- Phase 10: parallel agent fan-out ----------------------------
+
+    async def _dispatch_parallel_agents(
+        self,
+        task: TaskState,
+        intent: Any,
+        t0: float,
+    ) -> "MasterResult":
+        """Fan out one opencode call per ``@handle`` in parallel.
+
+        Triggered only when ``settings.master_parallel_agents=True`` AND
+        ``len(task.agent_handles) >= 2``. Single-handle messages still go
+        through the normal master path so single-shot prompts stay simple
+        and the experience log row matches the original Phase 9 shape.
+        """
+        from src.core.delegation import (
+            OpenCodeAgentDelegator,
+            SubAgentRequest,
+            aggregate_responses,
+        )
+
+        delegator = OpenCodeAgentDelegator(
+            self.opencode,
+            self.job_inventory._agent_registry(),  # noqa: SLF001 — same instance
+            max_concurrency=self.settings.master_parallel_max_concurrency,
+        )
+
+        requests = [
+            SubAgentRequest(
+                agent_handle=handle,
+                user_message=task.user_message,
+                parent_task_id=task.task_id,
+                parent_session_id=task.session_id,
+                context={
+                    "trigger_type": task.trigger_type,
+                    "trigger_source": task.trigger_source or "",
+                },
+            )
+            for handle in task.agent_handles
+        ]
+
+        log.info(
+            "master.parallel_dispatch_start",
+            handles=task.agent_handles,
+            max_concurrency=self.settings.master_parallel_max_concurrency,
+        )
+        results = await delegator.delegate_many(requests)
+
+        # Stamp aggregate token cost + tools onto the task so the
+        # ExperienceLog reflects N opencode calls accurately.
+        any_failed = False
+        for r in results:
+            task.record_model_output(
+                tier="C1",
+                text=r.response,
+                model_name="gpt-5.5",
+                prompt_tokens=r.prompt_tokens,
+                completion_tokens=r.completion_tokens,
+                substage=f"parallel:{r.request.agent_handle}",
+            )
+            if not r.success:
+                any_failed = True
+                task.record_error(
+                    "tool_error",
+                    f"{r.request.agent_handle}: {r.error}",
+                )
+
+        task.model_provider = "opencode"
+        task.model_name = "gpt-5.5"
+        aggregated = aggregate_responses(results)
+        task.final_response = aggregated
+
+        if all(r.success for r in results):
+            task.status = "succeeded"
+            handled_by = "master:parallel"
+        elif any(r.success for r in results):
+            task.status = "succeeded"
+            task.degraded = True
+            handled_by = "master:parallel_partial"
+        else:
+            task.status = "failed"
+            task.degraded = True
+            handled_by = "master:parallel_failed"
+
+        log.info(
+            "master.parallel_dispatch_end",
+            handled_by=handled_by,
+            agents=len(results),
+            successes=sum(1 for r in results if r.success),
+        )
+        self._finalize(task, handled_by=handled_by, t0=t0)
+        return MasterResult(
+            task=task,
+            response=aggregated,
+            handled_by=handled_by,
         )
 
     # ---- helpers ------------------------------------------------------

@@ -344,3 +344,113 @@ async def test_agent_handles_stamped_on_task_and_logged(tmp_path):
     line = files[0].read_text(encoding="utf-8").strip()
     rec = json.loads(line)
     assert rec["agent_handles"] == ["@coder", "@reviewer"]
+
+
+# ---- Phase 10: parallel @handle dispatch -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_parallel_off_default_uses_single_master_call(tmp_path):
+    """Default master_parallel_agents=False — 2+ handles 도 단일 호출."""
+    settings = _settings(tmp_path)
+    assert settings.master_parallel_agents is False
+
+    master = HermesMasterOrchestrator(settings)
+    master.opencode.run = AsyncMock(return_value=_ok_result("once"))
+
+    result = await master.handle(
+        "@coder + @reviewer 작업해", user_id="u1"
+    )
+    # 단일 master 호출만 — fan-out 안 함
+    assert master.opencode.run.call_count == 1
+    assert result.handled_by == "master:opencode"
+    assert result.response == "once"
+
+
+@pytest.mark.asyncio
+async def test_parallel_on_with_two_handles_fans_out(tmp_path):
+    """master_parallel_agents=True + 2 handles → 각 agent 별 호출."""
+    settings = _settings(tmp_path, master_parallel_agents=True)
+    master = HermesMasterOrchestrator(settings)
+    master.opencode.run = AsyncMock(return_value=_ok_result("agent ok"))
+
+    result = await master.handle(
+        "@coder 짜고 @reviewer 검토", user_id="u1"
+    )
+    # 2 handles → opencode 2번 호출
+    assert master.opencode.run.call_count == 2
+    assert result.handled_by == "master:parallel"
+    # aggregate_responses 형식 확인
+    assert "### @coder" in result.response
+    assert "### @reviewer" in result.response
+
+
+@pytest.mark.asyncio
+async def test_parallel_on_with_single_handle_uses_single_call(tmp_path):
+    """단일 handle 은 fan-out 안 함 — Phase 9 inject 만으로 충분."""
+    settings = _settings(tmp_path, master_parallel_agents=True)
+    master = HermesMasterOrchestrator(settings)
+    master.opencode.run = AsyncMock(return_value=_ok_result("solo"))
+
+    result = await master.handle("@coder 짜줘", user_id="u1")
+    assert master.opencode.run.call_count == 1
+    assert result.handled_by == "master:opencode"
+
+
+@pytest.mark.asyncio
+async def test_parallel_partial_failure_marks_degraded(tmp_path):
+    """일부 agent 실패 → handled_by=master:parallel_partial, degraded=True."""
+    settings = _settings(tmp_path, master_parallel_agents=True)
+    master = HermesMasterOrchestrator(settings)
+
+    call_count = {"n": 0}
+
+    async def _flaky_run(*, prompt, history, model=None, timeout_ms=None):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise OpenCodeAdapterError("simulated failure")
+        return _ok_result("ok")
+
+    master.opencode.run = _flaky_run  # type: ignore[assignment]
+
+    result = await master.handle(
+        "@coder 짜고 @reviewer 검토", user_id="u1"
+    )
+    assert result.handled_by == "master:parallel_partial"
+    assert result.task.degraded is True
+    assert result.task.status == "succeeded"
+    # 응답에 실패한 agent 표시
+    assert "(failed)" in result.response
+
+
+@pytest.mark.asyncio
+async def test_parallel_full_failure_marks_failed(tmp_path):
+    """모든 agent 실패 → handled_by=master:parallel_failed."""
+    settings = _settings(tmp_path, master_parallel_agents=True)
+    master = HermesMasterOrchestrator(settings)
+    master.opencode.run = AsyncMock(
+        side_effect=OpenCodeAdapterError("all fail")
+    )
+
+    result = await master.handle(
+        "@coder + @reviewer", user_id="u1"
+    )
+    assert result.handled_by == "master:parallel_failed"
+    assert result.task.status == "failed"
+    assert result.task.degraded is True
+
+
+@pytest.mark.asyncio
+async def test_parallel_records_each_agent_token_usage(tmp_path):
+    """각 sub-call 의 prompt/completion tokens 가 model_outputs 에 기록."""
+    settings = _settings(tmp_path, master_parallel_agents=True)
+    master = HermesMasterOrchestrator(settings)
+    master.opencode.run = AsyncMock(return_value=_ok_result("response"))
+
+    result = await master.handle(
+        "@coder 짜고 @reviewer 검토", user_id="u1"
+    )
+    # 2개 모델 출력이 기록 — substage 가 parallel:@coder / @reviewer
+    substages = [m.substage for m in result.task.model_outputs]
+    assert "parallel:@coder" in substages
+    assert "parallel:@reviewer" in substages

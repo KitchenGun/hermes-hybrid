@@ -50,6 +50,15 @@ class Settings(BaseSettings):
     opencode_cli_backend: Literal["wsl_subprocess", "local_subprocess"] = "wsl_subprocess"
     opencode_cli_path: str = "/home/kang/.local/bin/opencode"
 
+    # Phase 10 (2026-05-06): parallel @handle dispatch.
+    # 사용자 메시지에 ``@coder`` / ``@reviewer`` 같은 mention 이 2개 이상
+    # 있을 때 master 가 단일 호출에 모든 SKILL.md snippet 을 inject 하는
+    # 대신 (Phase 9 default), 각 agent 별로 독립 opencode 호출을 동시 실행
+    # 후 결과를 집계하는 ``OpenCodeAgentDelegator`` 경로로 라우팅.
+    # 비용/지연이 N 배라 default off — 명시 opt-in.
+    master_parallel_agents: bool = False
+    master_parallel_max_concurrency: int = 3
+
     # Claude Code CLI (heavy path — uses Max subscription OAuth, zero API cost)
     # 2026-05-04: OpenAI/Anthropic API legacy fully removed — Claude CLI is the
     # only cloud lane. ollama is the only local lane.
