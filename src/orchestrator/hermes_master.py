@@ -245,6 +245,12 @@ class HermesMasterOrchestrator:
         t0: float,
     ) -> "MasterResult":
         prompt = self._compose_prompt(task, intent)
+
+        # Phase 13: revision loop opt-in. Critic self_score 가 threshold 보다
+        # 낮으면 자동 retry + 모델 escalation. default off (single-shot).
+        if self.settings.revision_loop_enabled:
+            return await self._dispatch_master_with_revision(task, intent, t0, prompt)
+
         try:
             result = await self.adapter.run(
                 prompt=prompt,
@@ -326,6 +332,116 @@ class HermesMasterOrchestrator:
             task=task,
             response=task.final_response,
             handled_by="master:degraded",
+        )
+
+    # ---- Phase 13: revision loop -------------------------------------
+
+    async def _dispatch_master_with_revision(
+        self,
+        task: TaskState,
+        intent: Any,
+        t0: float,
+        prompt: str,
+    ) -> "MasterResult":
+        """plan/act/observe/reflect/retry — opt-in via settings.revision_loop_enabled.
+
+        RevisionLoop 가 self_score < threshold 시 retry context 추가하고
+        모델 escalate. cap 도달 시 best attempt 반환.
+        """
+        from src.orchestrator.revision_loop import RevisionLoop
+
+        escalation = tuple(
+            m.strip() for m in self.settings.revision_model_escalation.split(",")
+            if m.strip()
+        ) or ("haiku", "sonnet", "opus")
+
+        # Lightweight text scorer — Critic.evaluate 의 verdict + score
+        # 계산을 단순 wrapper 로 호출. RevisionLoop 는 0~1 float 만 필요.
+        def _scorer(text: str) -> float:
+            from src.core.critic import compute_self_score
+            verdict = self.policy_gate.post_validate(
+                task,
+                output_text=text,
+                timed_out=False,
+                tool_error=False,
+            )
+            return compute_self_score(
+                verdict,
+                output_text=text,
+                timed_out=False,
+                tool_error=False,
+            )
+
+        loop = RevisionLoop(
+            self.adapter,
+            critic_scorer=_scorer,
+            max_retries=self.settings.revision_loop_max_retries,
+            score_threshold=self.settings.revision_score_threshold,
+            model_escalation=escalation,
+        )
+
+        try:
+            rev_result = await loop.run(
+                prompt=prompt,
+                history=task.history_window,
+                initial_model=self.settings.master_model,
+            )
+        except ClaudeCodeAuthError as e:
+            task.record_error("tool_error", f"claude auth: {e}")
+            task.status = "failed"
+            task.degraded = True
+            task.final_response = (
+                "⚠️ Claude CLI 인증/할당량 오류. WSL 에서 `claude /login` 후 봇 재시작."
+            )
+            self._finalize(task, handled_by="master:auth_error", t0=t0)
+            return MasterResult(
+                task=task, response=task.final_response,
+                handled_by="master:auth_error",
+            )
+
+        # Stamp every attempt as a model_output
+        for att in rev_result.attempts:
+            task.record_model_output(
+                tier="C1",
+                text=att.response,
+                model_name=att.model,
+                prompt_tokens=att.prompt_tokens,
+                completion_tokens=att.completion_tokens,
+                substage=f"revision:{att.attempt_index}",
+            )
+            if not att.success:
+                task.record_error("tool_error", att.error)
+
+        task.model_provider = "claude_cli"
+        task.model_name = rev_result.final_model
+        task.internal_confidence = rev_result.final_self_score
+        task.final_response = rev_result.final_response
+
+        if rev_result.succeeded:
+            task.status = "succeeded"
+            handled_by = (
+                "master:claude:revised"
+                if rev_result.attempt_count > 1
+                else "master:claude"
+            )
+        else:
+            task.status = "succeeded"   # 응답은 있음 — 단지 score 낮음
+            task.degraded = True
+            handled_by = "master:revision_degraded"
+
+        log.info(
+            "master.revision_done",
+            attempts=rev_result.attempt_count,
+            final_model=rev_result.final_model,
+            final_score=rev_result.final_self_score,
+            escalated=rev_result.escalated,
+            handled_by=handled_by,
+        )
+        self._finalize(task, handled_by=handled_by, t0=t0)
+        return MasterResult(
+            task=task,
+            response=rev_result.final_response,
+            handled_by=handled_by,
         )
 
     # ---- Phase 12: pipeline workflow ---------------------------------

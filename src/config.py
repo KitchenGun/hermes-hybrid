@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     master_parallel_agents: bool = False
     master_parallel_max_concurrency: int = 3
 
+    # Phase 13 (2026-05-07): revision loop — plan/act/observe/reflect/retry.
+    # Critic self_score < threshold 시 자동 retry. 3회까지, 모델 escalation
+    # (haiku → sonnet → opus). default off — 사용자 opt-in 시 master 호출
+    # 횟수가 늘어나 Max OAuth 한도 빨리 소진할 수 있음. 단순 응답엔 불필요.
+    revision_loop_enabled: bool = False
+    revision_loop_max_retries: int = 3
+    revision_score_threshold: float = 0.5
+    # 기본 escalation 순서. master_model 이 명시되면 그 위치부터 시작.
+    revision_model_escalation: str = "haiku,sonnet,opus"
+
     # Ollama (optional)
     ollama_enabled: bool = False
     ollama_base_url: str = "http://localhost:11434"
