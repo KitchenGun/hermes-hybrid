@@ -219,6 +219,11 @@ class Orchestrator:
         # into the validator so `trust_hermes_reflection` can short-circuit.
         self._last_hermes_turns: int = 0
 
+        # 2026-05-06: lazy-built HermesMasterOrchestrator. Only constructed
+        # the first time master_enabled is observed True so the legacy
+        # tests don't pay the cost.
+        self._hermes_master: "Any | None" = None
+
         # P0-3 (2026-05-05): one-shot deprecation cue for JobFactory v1.
         # When the operator has v1 active without the kill switch, surface
         # the migration path. Logged once per Orchestrator instance, not
@@ -249,6 +254,19 @@ class Orchestrator:
         heavy: bool = False,
         forced_profile: str | None = None,
     ) -> OrchestratorResult:
+        # 2026-05-06: when master_enabled, all dispatch goes through
+        # the diagram-aligned HermesMasterOrchestrator. Default OFF so
+        # existing tests + opencode-less environments keep working.
+        if self.settings.master_enabled:
+            return await self._handle_via_master(
+                user_message,
+                user_id=user_id,
+                session_id=session_id,
+                history=history,
+                heavy=heavy,
+                forced_profile=forced_profile,
+            )
+
         session_id = session_id or str(uuid.uuid4())
         history_window = list(history or [])
         memory_inject_count = 0
@@ -1720,6 +1738,45 @@ class Orchestrator:
             # poison the response path. The structlog line above is the
             # durable signal.
             log.warning("experience_logger.append_failed", err=str(e))
+
+    async def _handle_via_master(
+        self,
+        user_message: str,
+        *,
+        user_id: str,
+        session_id: str | None,
+        history: list[dict[str, str]] | None,
+        heavy: bool,
+        forced_profile: str | None,
+    ) -> OrchestratorResult:
+        """Bridge Orchestrator.handle → HermesMasterOrchestrator.
+
+        Same OrchestratorResult shape so callers don't notice the
+        switch. master_enabled is read once per Orchestrator instance
+        — flip it without restarting requires .env reload + rebuild.
+        """
+        if self._hermes_master is None:
+            from src.orchestrator.hermes_master import HermesMasterOrchestrator
+            self._hermes_master = HermesMasterOrchestrator(
+                self.settings,
+                self.repo,
+                skills=self.skills,
+                memory=self.memory,
+                experience_logger=self.experience_logger,
+            )
+        result = await self._hermes_master.handle(
+            user_message,
+            user_id=user_id,
+            session_id=session_id,
+            history=history,
+            heavy=heavy,
+            forced_profile=forced_profile,
+        )
+        return OrchestratorResult(
+            task=result.task,
+            response=result.response,
+            handled_by=result.handled_by,
+        )
 
     async def _persist(self, task: TaskState) -> None:
         if self.repo is not None:
