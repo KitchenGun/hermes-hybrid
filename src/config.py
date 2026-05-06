@@ -231,6 +231,19 @@ class Settings(BaseSettings):
     memory_inject_enabled: bool = False
     memory_inject_top_k: int = 3
 
+    # Memory search backend — Phase 4 (2026-05-06).
+    # ``like``: SQL LIKE substring match (default, zero deps, fine for
+    #          small corpora and Korean which doesn't tokenize on spaces).
+    # ``embedding``: ollama embed API + cosine similarity. Requires the
+    #          embedding model to be pulled (``ollama pull bge-m3``).
+    #          Falls back to ``like`` automatically when the embed call
+    #          fails (e.g. ollama down, model missing) so a backend swap
+    #          can never silently disable memory search.
+    memory_search_backend: Literal["like", "embedding"] = "like"
+    memory_embedding_model: str = "bge-m3"
+    memory_embedding_base_url: str = "http://localhost:11434"
+    memory_embedding_timeout_s: int = 10
+
     # JobFactory v1 — 두 단계 게이트 (legacy: profile keyword matching).
     # 1) job_factory_enabled=True : _handle_locked()에서 factory.decide() 호출 시작.
     #    no_match 시 degraded 응답에 힌트 메시지 추가.
