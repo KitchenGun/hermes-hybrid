@@ -137,6 +137,7 @@ async def test_memory_inject_into_history_window(tmp_path, monkeypatch):
 
     s = Settings(
         _env_file=None,  # type: ignore[call-arg]
+        master_enabled=False,
         memory_inject_enabled=True,
         memory_inject_top_k=2,
         require_allowlist=False,
@@ -180,6 +181,7 @@ async def test_memory_inject_disabled_keeps_history_window_unchanged(tmp_path):
 
     s = Settings(
         _env_file=None,  # type: ignore[call-arg]
+        master_enabled=False,
         memory_inject_enabled=False,  # default
         require_allowlist=False,
         ollama_enabled=False,
@@ -214,6 +216,7 @@ async def test_memory_inject_swallows_search_errors(tmp_path):
 
     s = Settings(
         _env_file=None,  # type: ignore[call-arg]
+        master_enabled=False,
         memory_inject_enabled=True,
         require_allowlist=False,
         ollama_enabled=False,

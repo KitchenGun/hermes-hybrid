@@ -26,6 +26,13 @@ def _isolate_experience_log(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "HERMES_EXPERIENCE_LOG_ROOT", str(tmp_path / "experience")
     )
+    # 2026-05-06: production default master_enabled=True. Tests that build
+    # ``Settings(_env_file=None, ...)`` without passing master_enabled
+    # would inherit the True default and try to route through the
+    # opencode-backed master path, which the rest of the test setup
+    # doesn't expect. Force OFF via env so any Settings() built without
+    # an explicit override stays on the legacy path.
+    monkeypatch.setenv("HERMES_MASTER_ENABLED", "false")
 
 
 @pytest.fixture
@@ -50,5 +57,10 @@ def settings(tmp_path) -> Settings:
         # that path. Tests that specifically need v2 should either build
         # their own Settings or override this fixture's value.
         use_new_job_factory=False,
+        # 2026-05-06: production default flipped to True (master_enabled).
+        # Same reasoning — tests written before the master path exists
+        # need the legacy dispatch. Master-specific tests build their own
+        # Settings (test_hermes_master.py) so they aren't affected.
+        master_enabled=False,
     )
     return s

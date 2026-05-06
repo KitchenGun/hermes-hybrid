@@ -55,8 +55,11 @@ class Settings(BaseSettings):
     # All-via-master 설계: 모든 LLM 호출이 ``opencode`` CLI 의 master 모델
     # (gpt-5.5) 를 통과한다. opencode 가 auth + quota 를 알아서 처리하므로
     # API key 는 필요 없음 (Claude Max OAuth 와 같은 $0 marginal 패턴).
-    # ``master_enabled=False`` 가 default — opencode 미설치 환경 보호.
-    master_enabled: bool = False
+    # 2026-05-06: production default = True (다이어그램의 다이어그램 흐름).
+    # 사용자 환경에 opencode 가 없으면 .env 에 ``MASTER_ENABLED=false`` 로
+    # 끌 수 있고, 그 경우 (commit 4 에서 정리되기 전까지의) legacy dispatch
+    # 가 동작. 단위 테스트는 ``conftest.py`` 의 settings fixture 가 명시 OFF.
+    master_enabled: bool = True
     master_model: str = "gpt-5.5"
     master_timeout_ms: int = 120_000
     master_concurrency: int = 1

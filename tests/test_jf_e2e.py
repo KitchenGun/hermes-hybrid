@@ -139,6 +139,7 @@ def _settings_v2_on(tmp_path: Path) -> Settings:
         ollama_enabled=False,
         state_db_path=tmp_path / "test.db",
         use_new_job_factory=True,    # Phase 7 flag ON
+        master_enabled=False,        # legacy dispatch path under test
     )
 
 
@@ -150,6 +151,7 @@ def _settings_v2_off(tmp_path: Path) -> Settings:
         ollama_enabled=False,
         state_db_path=tmp_path / "test.db",
         use_new_job_factory=False,   # default
+        master_enabled=False,        # legacy dispatch path under test
     )
 
 
@@ -166,9 +168,10 @@ async def test_v2_flag_off_uses_legacy_path(tmp_path):
     """Sanity: with ``use_new_job_factory=False`` the orchestrator never
     builds the v2 dispatcher."""
     settings = _settings_v2_off(tmp_path)
+    settings.ollama_enabled = True
     o = _build_orch(
         settings,
-        local_scripts=[_resp("legacy reply", "gpt-4o-mini")],
+        ollama_local_scripts=[_resp("legacy reply", settings.ollama_work_model)],
     )
     # Pre-build a dispatcher stub that would crash if called.
     crash = _StubDispatcher(canned=_ok_result())
