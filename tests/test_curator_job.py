@@ -19,6 +19,8 @@ from src.jobs.curator_job import (
     CuratorJob,
     aggregate_stats,
     render_summary_md,
+    find_promotion_candidates,
+    find_archive_candidates,
 )
 from src.state import TaskState
 
@@ -30,10 +32,19 @@ def _append(
     status: str = "succeeded",
     degraded: bool = False,
     tool_calls: list[dict] | None = None,
+    profile: str | None = None,
+    job_id: str | None = None,
+    skill_ids: list[str] | None = None,
 ):
     task = TaskState(session_id="s", user_id="u1", user_message="m")
     task.status = status
     task.degraded = degraded
+    if profile is not None:
+        task.job_profile_id = profile
+    if job_id is not None:
+        task.job_id = job_id
+    if skill_ids is not None:
+        task.skill_ids = list(skill_ids)
     if tool_calls:
         from src.state.task_state import ToolOutput
         for tc in tool_calls:
@@ -196,3 +207,110 @@ def test_render_summary_md_handles_empty_total():
     )
     assert "No records in window" in md
     assert "Curator stats" in md
+
+
+# ---- Phase 3: skill promotion / archive candidates -----------------------
+
+
+def test_promotion_candidate_meets_thresholds(tmp_path: Path):
+    """5 successful runs of (calendar_ops, morning_briefing) with the
+    same skill_id sequence should surface as a promotion candidate."""
+    logger = ExperienceLogger(tmp_path, enabled=True)
+    for _ in range(5):
+        _append(
+            logger,
+            handled_by="hermes-session:cron",
+            status="succeeded",
+            profile="calendar_ops",
+            job_id="morning_briefing",
+            skill_ids=["calendar_ops/productivity/google_calendar"],
+        )
+    from src.core import ExperienceLogger as L
+    records = list(L(tmp_path).query(since=datetime.now(timezone.utc) - timedelta(hours=1)))
+    promo = find_promotion_candidates(records)
+    assert len(promo) == 1
+    c = promo[0]
+    assert c["profile_id"] == "calendar_ops"
+    assert c["job_id"] == "morning_briefing"
+    assert c["runs"] == 5
+    assert c["successes"] == 5
+    assert c["failure_rate"] == 0.0
+    assert c["top_skills"][0]["skill_id"] == "calendar_ops/productivity/google_calendar"
+
+
+def test_promotion_skipped_when_failure_rate_high(tmp_path: Path):
+    """5 runs, but 2 failures (40% failure) → above PROMOTION_MAX_FAILURE_RATE."""
+    logger = ExperienceLogger(tmp_path, enabled=True)
+    for _ in range(3):
+        _append(logger, handled_by="x", profile="kk_job", job_id="search_jobs",
+                skill_ids=["kk_job/research/web_search"])
+    for _ in range(2):
+        _append(logger, handled_by="x", status="failed", profile="kk_job",
+                job_id="search_jobs", skill_ids=["kk_job/research/web_search"])
+    from src.core import ExperienceLogger as L
+    records = list(L(tmp_path).query(since=datetime.now(timezone.utc) - timedelta(hours=1)))
+    assert find_promotion_candidates(records) == []
+
+
+def test_promotion_skipped_when_runs_below_minimum(tmp_path: Path):
+    logger = ExperienceLogger(tmp_path, enabled=True)
+    for _ in range(4):
+        _append(logger, handled_by="x", profile="kk_job", job_id="x",
+                skill_ids=["a"])
+    from src.core import ExperienceLogger as L
+    records = list(L(tmp_path).query(since=datetime.now(timezone.utc) - timedelta(hours=1)))
+    assert find_promotion_candidates(records) == []
+
+
+def test_archive_candidate_when_high_failure_skill(tmp_path: Path):
+    """skill 'flaky_tool' runs 12 times with 6 failures (50%) → archive."""
+    logger = ExperienceLogger(tmp_path, enabled=True)
+    for _ in range(6):
+        _append(logger, handled_by="x", skill_ids=["flaky_tool"])
+    for _ in range(6):
+        _append(logger, handled_by="x", status="failed", skill_ids=["flaky_tool"])
+    from src.core import ExperienceLogger as L
+    records = list(L(tmp_path).query(since=datetime.now(timezone.utc) - timedelta(hours=1)))
+    archive = find_archive_candidates(records)
+    assert len(archive) == 1
+    assert archive[0]["skill_id"] == "flaky_tool"
+    assert archive[0]["failure_rate"] == 0.5
+
+
+def test_archive_skipped_when_runs_below_minimum(tmp_path: Path):
+    logger = ExperienceLogger(tmp_path, enabled=True)
+    # 8 runs total — below ARCHIVE_MIN_RUNS=10
+    for _ in range(4):
+        _append(logger, handled_by="x", skill_ids=["s1"])
+    for _ in range(4):
+        _append(logger, handled_by="x", status="failed", skill_ids=["s1"])
+    from src.core import ExperienceLogger as L
+    records = list(L(tmp_path).query(since=datetime.now(timezone.utc) - timedelta(hours=1)))
+    assert find_archive_candidates(records) == []
+
+
+def test_curator_markdown_includes_candidate_sections(tmp_path: Path):
+    logger = ExperienceLogger(tmp_path / "exp", enabled=True)
+    out = tmp_path / "curator"
+
+    # Promotion candidate
+    for _ in range(5):
+        _append(
+            logger, handled_by="hermes-session:cron", status="succeeded",
+            profile="calendar_ops", job_id="morning_briefing",
+            skill_ids=["calendar_ops/productivity/google_calendar"],
+        )
+    # Archive candidate
+    for _ in range(6):
+        _append(logger, handled_by="x", skill_ids=["broken_tool"])
+    for _ in range(6):
+        _append(logger, handled_by="x", status="failed", skill_ids=["broken_tool"])
+
+    job = CuratorJob(logger, out, window_days=7)
+    job.run()
+    md_files = list(out.glob("*.md"))
+    body = md_files[0].read_text(encoding="utf-8")
+    assert "Skill promotion candidates" in body
+    assert "Skill archive candidates" in body
+    assert "morning_briefing" in body
+    assert "broken_tool" in body

@@ -57,6 +57,126 @@ def _empty_tool_stat() -> dict[str, Any]:
     return {"calls": 0, "ok": 0, "failures": 0, "failure_rate": 0.0}
 
 
+# Phase 3 (2026-05-06): skill promotion / archive thresholds.
+# Tuned conservatively — humans still review every candidate before
+# anything moves to ``profiles/*/skills/`` or ``skills/archived/``.
+PROMOTION_MIN_RUNS = 5            # too few runs → not enough evidence
+PROMOTION_MAX_FAILURE_RATE = 0.20 # ≥ 20% fail rate → not promotion-grade
+ARCHIVE_MIN_RUNS = 10             # archive needs more evidence than promote
+ARCHIVE_MIN_FAILURE_RATE = 0.30   # ≥ 30% fail → archive candidate
+
+
+def find_promotion_candidates(
+    records: list[ExperienceRecord],
+) -> list[dict[str, Any]]:
+    """Group successful records by (profile_id, job_id) and surface
+    those that hit the promotion thresholds.
+
+    The candidate is a *recipe*: profile_id + job_id + skill_ids
+    sequence. A human reviewer decides whether to materialize it as a
+    new SKILL.md under the relevant profile.
+    """
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in records:
+        if not r.profile or not r.job_id:
+            continue
+        key = (r.profile, r.job_id)
+        b = buckets.setdefault(
+            key,
+            {
+                "profile_id": r.profile,
+                "job_id": r.job_id,
+                "runs": 0,
+                "successes": 0,
+                "failures": 0,
+                "skill_id_counter": defaultdict(int),
+                "last_used": None,
+            },
+        )
+        b["runs"] += 1
+        if r.outcome == "succeeded":
+            b["successes"] += 1
+        elif r.outcome == "failed":
+            b["failures"] += 1
+        for sid in r.skill_ids:
+            b["skill_id_counter"][sid] += 1
+        if b["last_used"] is None or r.ts > b["last_used"]:
+            b["last_used"] = r.ts
+
+    candidates: list[dict[str, Any]] = []
+    for b in buckets.values():
+        runs = b["runs"]
+        if runs < PROMOTION_MIN_RUNS:
+            continue
+        fail_rate = b["failures"] / runs if runs else 0.0
+        if fail_rate > PROMOTION_MAX_FAILURE_RATE:
+            continue
+        # Surface the most-frequent skill_ids as the candidate's recipe.
+        top_skills = sorted(
+            b["skill_id_counter"].items(),
+            key=lambda kv: -kv[1],
+        )[:5]
+        candidates.append(
+            {
+                "profile_id": b["profile_id"],
+                "job_id": b["job_id"],
+                "runs": runs,
+                "successes": b["successes"],
+                "failures": b["failures"],
+                "failure_rate": round(fail_rate, 3),
+                "top_skills": [{"skill_id": s, "count": c} for s, c in top_skills],
+                "last_used": b["last_used"],
+            }
+        )
+    candidates.sort(key=lambda c: (-c["successes"], c["profile_id"], c["job_id"]))
+    return candidates
+
+
+def find_archive_candidates(
+    records: list[ExperienceRecord],
+) -> list[dict[str, Any]]:
+    """Group records by skill_id and surface those above the archive
+    thresholds. Skill that fails too often *while still seeing real
+    traffic* is the target — a long-untouched skill stays alive."""
+    buckets: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "skill_id": "",
+            "runs": 0,
+            "failures": 0,
+            "last_used": None,
+        }
+    )
+    for r in records:
+        for sid in r.skill_ids:
+            b = buckets[sid]
+            b["skill_id"] = sid
+            b["runs"] += 1
+            if r.outcome == "failed" or r.outcome == "degraded":
+                b["failures"] += 1
+            if b["last_used"] is None or r.ts > b["last_used"]:
+                b["last_used"] = r.ts
+
+    candidates: list[dict[str, Any]] = []
+    for b in buckets.values():
+        runs = b["runs"]
+        if runs < ARCHIVE_MIN_RUNS:
+            continue
+        fail_rate = b["failures"] / runs if runs else 0.0
+        if fail_rate < ARCHIVE_MIN_FAILURE_RATE:
+            continue
+        candidates.append(
+            {
+                "skill_id": b["skill_id"],
+                "runs": runs,
+                "failures": b["failures"],
+                "failure_rate": round(fail_rate, 3),
+                "last_used": b["last_used"],
+            }
+        )
+    candidates.sort(key=lambda c: (-c["failure_rate"], -c["runs"]))
+    return candidates
+
+
 def aggregate_stats(records: list[ExperienceRecord]) -> dict[str, Any]:
     """Pure function: records → stats dict. Used directly by CuratorJob
     and exercised in tests without touching the filesystem."""
@@ -100,6 +220,11 @@ def aggregate_stats(records: list[ExperienceRecord]) -> dict[str, Any]:
     return {
         "by_handled_by": dict(by_handled),
         "by_tool": dict(by_tool),
+        # Phase 3: skill promotion/archive candidates. Empty lists are
+        # legitimate signals — "this window had no candidate" is itself
+        # information for the curator.
+        "promotion_candidates": find_promotion_candidates(records),
+        "archive_candidates": find_archive_candidates(records),
     }
 
 
@@ -157,6 +282,47 @@ def render_summary_md(
             lines.append(
                 f"| `{name}` | {s['calls']} | {s['ok']} | {s['failures']} "
                 f"| {s['failure_rate']:.1%} |"
+            )
+        lines.append("")
+
+    # Phase 3: Promotion / Archive candidates surfaced for human review.
+    promo = stats.get("promotion_candidates") or []
+    if promo:
+        lines.append("## Skill promotion candidates")
+        lines.append("")
+        lines.append(
+            "_같은 (profile, job) 가 5회 이상 성공 + 실패율 ≤ 20% — 사람 review 후 "
+            "`profiles/{profile}/skills/...` 로 승격 검토._"
+        )
+        lines.append("")
+        lines.append("| profile | job_id | runs | succ | fail_rate | top skills | last |")
+        lines.append("|---|---|---:|---:|---:|---|---|")
+        for c in promo[:10]:
+            top = ", ".join(
+                f"`{s['skill_id']}`×{s['count']}" for s in c["top_skills"][:3]
+            ) or "—"
+            lines.append(
+                f"| `{c['profile_id']}` | `{c['job_id']}` | {c['runs']} | "
+                f"{c['successes']} | {c['failure_rate']:.1%} | {top} | "
+                f"{c['last_used'] or '—'} |"
+            )
+        lines.append("")
+
+    archive = stats.get("archive_candidates") or []
+    if archive:
+        lines.append("## Skill archive candidates")
+        lines.append("")
+        lines.append(
+            "_단일 skill 이 10회 이상 + 실패율 ≥ 30% — 사람 review 후 "
+            "`skills/archived/` 로 이동 검토._"
+        )
+        lines.append("")
+        lines.append("| skill_id | runs | fail | fail_rate | last |")
+        lines.append("|---|---:|---:|---:|---|")
+        for c in archive[:10]:
+            lines.append(
+                f"| `{c['skill_id']}` | {c['runs']} | {c['failures']} | "
+                f"{c['failure_rate']:.1%} | {c['last_used'] or '—'} |"
             )
         lines.append("")
 
@@ -268,4 +434,11 @@ def run_curator(
     return job.run(since=since, until=until)
 
 
-__all__ = ["CuratorJob", "run_curator", "aggregate_stats", "render_summary_md"]
+__all__ = [
+    "CuratorJob",
+    "run_curator",
+    "aggregate_stats",
+    "render_summary_md",
+    "find_promotion_candidates",
+    "find_archive_candidates",
+]
