@@ -84,6 +84,9 @@ class ExperienceRecord(BaseModel):
     memory_inject_count: int = 0
     # Phase 9: sub-agent mention dispatch. IntentRouter 가 검증한 핸들들.
     agent_handles: list[str] = Field(default_factory=list)
+    # Phase 12 (2026-05-07): pipeline workflow.
+    pipeline_id: str | None = None
+    pipeline_stage_count: int = 0          # pipeline 인 경우 실행된 stage 수
 
     # Outcome
     status: str = "pending"           # TaskState.status at end
@@ -200,6 +203,8 @@ def _record_from_task(
         model_name=task.model_name,
         memory_inject_count=task.memory_inject_count,
         agent_handles=list(task.agent_handles),
+        pipeline_id=task.pipeline_id,
+        pipeline_stage_count=len(task.pipeline_results),
         input_text_hash=_sha16(task.user_message),
         input_text_length=len(task.user_message or ""),
         response_hash=_sha16(task.final_response),

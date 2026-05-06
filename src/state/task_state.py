@@ -153,6 +153,14 @@ class TaskState(BaseModel):
     # inject. ExperienceLog 에서 agent 별 사용 빈도 집계 가능.
     agent_handles: list[str] = Field(default_factory=list)
 
+    # Phase 12 (2026-05-07): pipeline workflow dispatch.
+    # IntentRouter 가 trigger_keyword 매치 시 pipeline_id stamp →
+    # HermesMaster 가 sequential PipelineRunner 호출. 단계별 결과는
+    # pipeline_results 에 누적 (handle / response / tokens / duration).
+    pipeline_id: str | None = None
+    pipeline_stage: int = 0                  # 마지막 완료 단계 (0-based)
+    pipeline_results: list[dict[str, Any]] = Field(default_factory=list)
+
     # Execution
     status: Status = "pending"
     current_tier: Tier = "L2"

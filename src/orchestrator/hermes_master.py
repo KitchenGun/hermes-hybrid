@@ -81,7 +81,14 @@ class HermesMasterOrchestrator:
         self.skills: SkillRegistry = (
             skills if skills is not None else default_registry(settings)
         )
-        self.intent_router = IntentRouter(settings, skills=self.skills)
+        # Phase 12 — pipeline catalog (yaml). Shared between IntentRouter
+        # (for matching) and HermesMaster (for resolving via pipeline_id).
+        from src.orchestrator.pipelines import PipelineCatalog
+        self.pipelines = PipelineCatalog()
+
+        self.intent_router = IntentRouter(
+            settings, skills=self.skills, pipelines=self.pipelines,
+        )
         self.policy_gate = PolicyGate(
             settings,
             repo=repo,
@@ -148,6 +155,7 @@ class HermesMasterOrchestrator:
             job_category=intent.job_category,
             skill_ids=list(intent.skill_ids),
             agent_handles=list(getattr(intent, "agent_handles", []) or []),
+            pipeline_id=getattr(intent, "pipeline_id", None),
         )
         task.mark("created_at")
 
@@ -212,14 +220,20 @@ class HermesMasterOrchestrator:
                 response=f"⚠️ {decision.reason}",
             )
 
-        # Branch 4a — Phase 10: parallel agent fan-out (opt-in).
+        # Branch 4a — Phase 12: pipeline workflow (sequential agents).
+        # @handle 명시 mention 우선이라 IntentRouter 가 이미 명시 mention
+        # 있을 때 pipeline_id 를 안 stamp 함 — 여기 도달했다면 안전.
+        if task.pipeline_id:
+            return await self._dispatch_pipeline(task, intent, t0)
+
+        # Branch 4b — Phase 10: parallel agent fan-out (opt-in).
         if (
             self.settings.master_parallel_agents
             and len(task.agent_handles) >= 2
         ):
             return await self._dispatch_parallel_agents(task, intent, t0)
 
-        # Branch 4b — master LLM dispatch (the diagram's heart)
+        # Branch 4c — master LLM dispatch (the diagram's heart)
         return await self._dispatch_master(task, intent, t0)
 
     # ---- master dispatch ---------------------------------------------
@@ -312,6 +326,99 @@ class HermesMasterOrchestrator:
             task=task,
             response=task.final_response,
             handled_by="master:degraded",
+        )
+
+    # ---- Phase 12: pipeline workflow ---------------------------------
+
+    async def _dispatch_pipeline(
+        self,
+        task: TaskState,
+        intent: Any,
+        t0: float,
+    ) -> "MasterResult":
+        """Execute a sequential pipeline (e.g. feature_dev: @finder → ...).
+
+        IntentRouter 가 trigger_keyword 매치로 pipeline_id stamp.
+        PipelineRunner 가 단계별 SKILL.md inject + 결과 hand-off + 진행
+        보고. 단계 결과는 task.pipeline_results 에 누적, 최종 응답은
+        ``aggregate_text`` 로 ``### @handle`` 헤더 포함 종합.
+        """
+        from src.orchestrator.pipeline_runner import PipelineRunner
+
+        pipeline = self.pipelines.get(task.pipeline_id) if task.pipeline_id else None
+        if pipeline is None:
+            log.warning("pipeline.unknown", pipeline_id=task.pipeline_id)
+            # fallback to single-shot
+            return await self._dispatch_master(task, intent, t0)
+
+        runner = PipelineRunner(
+            self.adapter,
+            self.job_inventory._agent_registry(),  # noqa: SLF001
+        )
+
+        log.info(
+            "master.pipeline_start",
+            pipeline_id=pipeline.pipeline_id,
+            stages=list(pipeline.sequence),
+        )
+
+        result = await runner.run(
+            pipeline=pipeline,
+            user_message=task.user_message,
+        )
+
+        # Stamp each stage as a model_output for ExperienceLog.
+        for stage in result.stages:
+            task.record_model_output(
+                tier="C1",
+                text=stage.response,
+                model_name=self.settings.master_model,
+                prompt_tokens=stage.prompt_tokens,
+                completion_tokens=stage.completion_tokens,
+                substage=f"pipeline:{stage.handle}",
+            )
+            task.pipeline_results.append({
+                "handle": stage.handle,
+                "stage_index": stage.stage_index,
+                "success": stage.success,
+                "duration_ms": stage.duration_ms,
+                "prompt_tokens": stage.prompt_tokens,
+                "completion_tokens": stage.completion_tokens,
+            })
+            if not stage.success:
+                task.record_error("tool_error", f"{stage.handle}: {stage.error}")
+
+        task.pipeline_stage = result.stages[-1].stage_index if result.stages else 0
+        task.model_provider = "claude_cli"
+        task.model_name = self.settings.master_model
+
+        aggregated = result.aggregate_text()
+        task.final_response = aggregated
+
+        if result.failed_count == 0:
+            task.status = "succeeded"
+            handled_by = f"master:pipeline:{pipeline.pipeline_id}"
+        elif result.succeeded_count > 0:
+            task.status = "succeeded"
+            task.degraded = True
+            handled_by = f"master:pipeline_partial:{pipeline.pipeline_id}"
+        else:
+            task.status = "failed"
+            task.degraded = True
+            handled_by = f"master:pipeline_failed:{pipeline.pipeline_id}"
+
+        log.info(
+            "master.pipeline_end",
+            pipeline_id=pipeline.pipeline_id,
+            handled_by=handled_by,
+            stages=len(result.stages),
+            successes=result.succeeded_count,
+        )
+        self._finalize(task, handled_by=handled_by, t0=t0)
+        return MasterResult(
+            task=task,
+            response=aggregated,
+            handled_by=handled_by,
         )
 
     # ---- Phase 10: parallel agent fan-out ----------------------------

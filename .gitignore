@@ -29,6 +29,7 @@ logs/
 # Claude Code local settings (개인용, 팀 공유 settings.json은 허용)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.claude/worktrees/
 
 # Hermes profiles — secrets and runtime state
 profiles/*/.env

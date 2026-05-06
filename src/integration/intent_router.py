@@ -2,11 +2,14 @@
 
 Phase 9 (2026-05-06): ``@handle`` mention 파싱 + AgentRegistry 검증.
 Phase 11 (2026-05-06): heavy 분기 폐기 (master = single lane).
+Phase 12 (2026-05-07): pipeline trigger_keyword 매치 — sequential agent workflow.
 
   * ``/ping`` 등 RuleLayer 매치 — instant reply, no LLM
   * ``/memo`` / ``/kanban`` 등 슬래시 skill — 자체 handler 호출
   * ``@coder`` / ``@reviewer`` 등 멘션 — 인식해서 IntentResult 에 stamp
-    (master 가 prompt 에 SKILL.md inject)
+    (master 가 prompt 에 SKILL.md inject) — **명시 mention 우선**
+  * pipeline trigger_keyword 매치 → IntentResult.pipeline_id stamp
+    (master 가 PipelineRunner 로 sequential 실행) — mention 없을 때만
   * forced_profile 분기 폐기 — channel-pinned 자동화는 더 이상 없음
   * 그 외 모든 자유 텍스트는 master 에 전달
 
@@ -18,10 +21,18 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from typing import TYPE_CHECKING
+
 from src.agents import AgentRegistry
 from src.config import Settings
 from src.router import RuleLayer, RuleMatch
 from src.skills import SkillContext, SkillMatch, SkillRegistry, default_registry
+
+if TYPE_CHECKING:
+    # ``src.orchestrator/__init__.py`` 가 IntentRouter 를 import 하므로
+    # 직접 import 하면 circular. 런타임엔 IntentRouter.__init__ 안에서
+    # lazy import.
+    from src.orchestrator.pipelines import PipelineCatalog
 
 
 # `@handle` mention 추출 — 부정 lookbehind 로 email-ish (`user@example.com`)
@@ -54,6 +65,9 @@ class IntentResult:
     # Phase 9: 사용자 입력에서 발견된 ``@handle`` 중 실제 AgentRegistry 에
     # 등록된 sub-agent 핸들들. 등록 외 mention 은 필터링됨 (e.g. email).
     agent_handles: list[str] = field(default_factory=list)
+    # Phase 12: pipeline trigger_keyword 매치 시 stamp.
+    # @handle 명시 mention 이 있으면 stamp X (mention 우선).
+    pipeline_id: str | None = None
 
     @property
     def short_circuited(self) -> bool:
@@ -77,12 +91,18 @@ class IntentRouter:
         rules: RuleLayer | None = None,
         skills: SkillRegistry | None = None,
         agents: AgentRegistry | None = None,
+        pipelines: "PipelineCatalog | None" = None,
     ):
         self.settings = settings
         self.rules = rules if rules is not None else RuleLayer()
         self.skills = skills if skills is not None else default_registry(settings)
         # Phase 9 — agent registry 로 ``@handle`` 멘션 검증.
         self.agents = agents if agents is not None else AgentRegistry()
+        # Phase 12 — pipeline catalog (yaml 로드). 순환 import 회피용 lazy.
+        if pipelines is None:
+            from src.orchestrator.pipelines import PipelineCatalog as _PC
+            pipelines = _PC()
+        self.pipelines = pipelines
 
     async def route(
         self,
@@ -135,11 +155,20 @@ class IntentRouter:
                 agent_handles=agent_handles,
             )
 
-        # 3. fallthrough — master decides agent/skill
+        # 3. Phase 12: pipeline trigger_keyword 매치 — @handle 명시
+        # mention 이 없을 때만 (mention 이 있으면 단일/병렬 dispatch 우선).
+        pipeline_id: str | None = None
+        if not agent_handles:
+            matched = self.pipelines.match(user_message)
+            if matched is not None:
+                pipeline_id = matched.pipeline_id
+
+        # 4. fallthrough — master decides agent/skill
         return IntentResult(
             trigger_type="discord_message",
             trigger_source=f"user:{user_id}",
             agent_handles=agent_handles,
+            pipeline_id=pipeline_id,
         )
 
     def _parse_agent_handles(self, message: str) -> list[str]:
