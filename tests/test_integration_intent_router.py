@@ -4,9 +4,11 @@ The router is a deterministic short-circuit layer in front of the
 master LLM. We lock down:
   * RuleLayer match → handled_by=rule, response populated, master skipped
   * Slash skill match → handled_by=skill:<name>, slash_skill stamped
-  * forced_profile → trigger_type=forced_profile, profile_id stamped
   * heavy → trigger_type=discord_message, trigger_source=heavy:<uid>
   * fallthrough → trigger_type=discord_message, profile_id=None
+
+Phase 8 (2026-05-06) 후 forced_profile 분기는 폐기 — 시그니처는 호환을
+위해 남기지만 항상 무시.
 """
 from __future__ import annotations
 
@@ -60,7 +62,8 @@ async def test_slash_skill_match_short_circuits_with_skill_match():
 
 
 @pytest.mark.asyncio
-async def test_forced_profile_sets_trigger_type():
+async def test_forced_profile_arg_is_ignored_phase8():
+    """Phase 8 후 forced_profile 인자는 무시되고 일반 fallthrough 와 동일."""
     router = IntentRouter(_settings())
     result = await router.route(
         user_message="오늘 운동 30분 했어",
@@ -69,10 +72,10 @@ async def test_forced_profile_sets_trigger_type():
         forced_profile="journal_ops",
     )
     assert not result.short_circuited
-    assert result.trigger_type == "forced_profile"
-    assert result.trigger_source == "journal_ops"
-    assert result.profile_id == "journal_ops"
-    assert result.forced_profile == "journal_ops"
+    assert result.trigger_type == "discord_message"
+    assert result.trigger_source == "user:42"
+    assert result.profile_id is None
+    assert result.forced_profile is None
 
 
 @pytest.mark.asyncio

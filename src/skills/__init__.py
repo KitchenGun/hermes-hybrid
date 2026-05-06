@@ -1,7 +1,6 @@
 from typing import Any
 
 from .base import Skill, SkillContext, SkillMatch
-from .calendar import CalendarSkill
 from .hybrid_budget import HybridBudgetSkill
 from .hybrid_memo import HybridMemoSkill
 from .hybrid_status import HybridStatusSkill
@@ -10,24 +9,13 @@ from .registry import SkillRegistry
 
 
 def default_registry(settings: Any | None = None) -> SkillRegistry:
-    """Factory for the standard set of Phase 2 skills.
+    """Factory for the standard set of slash skills.
 
-    Order matters — earlier entries win on ambiguous prefixes. The
-    hybrid-* commands are all disjoint so the order is cosmetic among
-    them, but **CalendarSkill is listed first** because its match is a
-    keyword regex (not a slash prefix), and we want it to win over any
-    future skill that might happen to scan the same words.
-
-    The Calendar skill is **gated on ``settings.calendar_skill_enabled``**
-    — if the caller doesn't pass settings, or the flag is off, the skill
-    isn't registered at all. That way existing tests (most of which
-    build the default registry without settings) don't accidentally
-    pick up calendar regex matches against unrelated messages.
+    Phase 8 (2026-05-06) 후 CalendarSkill 폐기 — 캘린더 조회/CRUD 는 master
+    가 직접 @researcher / @devops 를 통해 처리. 슬래시 skill 은 deterministic
+    short-circuit 만 — /memo, /kanban, /hybrid-* 류.
     """
-    skills: list[Skill] = []
-    if settings is not None and getattr(settings, "calendar_skill_enabled", False):
-        skills.append(CalendarSkill())
-    skills += [
+    skills: list[Skill] = [
         HybridStatusSkill(),
         HybridBudgetSkill(),
         HybridMemoSkill(),
@@ -41,7 +29,6 @@ __all__ = [
     "SkillContext",
     "SkillMatch",
     "SkillRegistry",
-    "CalendarSkill",
     "HybridStatusSkill",
     "HybridBudgetSkill",
     "HybridMemoSkill",

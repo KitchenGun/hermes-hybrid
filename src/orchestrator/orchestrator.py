@@ -1,41 +1,33 @@
 """Orchestrator — diagram-aligned thin wrapper.
 
-After the all-via-master migration (2026-05-06) the legacy ollama / Claude
-CLI tier ladder + JobFactory v1/v2 + Router lives in :mod:`hermes_master`
-+ :mod:`integration` packages. ``Orchestrator`` is now the public entry
-that the gateway (Discord, Telegram) talks to:
-
+Phase 8 (2026-05-06) 후 책임 축소:
   * ``handle`` delegates to :class:`HermesMasterOrchestrator`
   * ``replay`` re-runs a prior task by id
   * ``get_status`` reads a TaskState back
-  * HITL surface (``requires_confirmation`` / ``enter_confirmation_gate``
-    / ``record_confirmation_message`` / ``resume_after_confirmation`` /
-    ``list_pending_confirmations`` / ``build_preview``) — confirmation
-    flow lives here because it spans persistence + Discord rendering,
-    not the master path.
 
-The class is intentionally lightweight; everything dispatch-related is
-delegated. ``master_enabled=False`` is a transient compatibility flag
-for unit tests that don't want the master path; production always has
-it ON. Once the test surface is fully ported (Phase 7) the flag goes
-away.
+폐기:
+  * HITL surface (requires_confirmation / enter_confirmation_gate /
+    record_confirmation_message / resume_after_confirmation /
+    list_pending_confirmations / build_preview) — profile yaml 의존
+  * ProfileLoader — profile 자체 폐기
+  * forced_profile 분기는 인자만 호환 보존, 효과 없음
+
+``master_enabled=False`` 는 단위 테스트용 — production 은 항상 True.
 """
 from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.config import Settings
 from src.core import Critic, ExperienceLogger
 from src.integration import IntentRouter
 from src.memory import InMemoryMemory, MemoryBackend
-from src.obs import bind_task_id, get_logger
-from src.orchestrator.profile_loader import JobMeta, ProfileLoader
+from src.obs import get_logger
 from src.skills import SkillRegistry, default_registry
-from src.state import ConfirmationContext, Repository, TaskState
+from src.state import Repository, TaskState
 from src.validator import Validator
 
 log = get_logger(__name__)
@@ -50,8 +42,7 @@ class OrchestratorResult:
 
 class Orchestrator:
     """Public entry. Delegates dispatch to HermesMasterOrchestrator
-    when ``master_enabled=True``; otherwise returns a degraded notice
-    (the legacy ollama/Claude CLI tier ladder was removed in commit-4)."""
+    when ``master_enabled=True``; otherwise returns a degraded notice."""
 
     def __init__(
         self,
@@ -78,13 +69,8 @@ class Orchestrator:
                 enabled=settings.experience_log_enabled,
             )
         )
-        # HITL relies on a profile yaml index — kept as a runtime
-        # component because gateway code asks ``requires_confirmation``
-        # at button-click time without going through the master.
-        self.profile_loader = ProfileLoader(settings.profiles_dir)
         # Critic / Validator stay accessible to the gateway in case it
-        # wants to score a manually-constructed response (e.g. confirm
-        # gate replays).
+        # wants to score a manually-constructed response.
         self.validator = Validator(settings)
         self.critic = Critic(self.validator)
         # IntentRouter handles RuleLayer + slash skill short-circuits
@@ -112,7 +98,7 @@ class Orchestrator:
         session_id: str | None = None,
         history: list[dict[str, str]] | None = None,
         heavy: bool = False,
-        forced_profile: str | None = None,
+        forced_profile: str | None = None,  # 호환 — Phase 8 후 무시
     ) -> OrchestratorResult:
         async with self._user_locks[user_id]:
             # 1. Try short-circuits via IntentRouter — RuleLayer hit and
@@ -140,7 +126,7 @@ class Orchestrator:
                 )
 
             # 3. Master disabled — surface a clear hint rather than a
-            #    silent failure. Legacy dispatch is gone (commit-4).
+            #    silent failure.
             task = TaskState(
                 session_id=session_id or "no-session",
                 user_id=user_id,
@@ -307,146 +293,6 @@ class Orchestrator:
         if self.repo is None:
             return None
         return await self.repo.get_task(task_id)
-
-    # ---- HITL (human-in-the-loop) ----
-
-    def requires_confirmation(self, profile_id: str, job_name: str) -> bool:
-        """Quick check — does this profile job declare
-        ``safety.requires_confirmation``? Returns ``False`` if HITL is
-        globally disabled or the job has no safety section."""
-        if not self.settings.hitl_enabled:
-            return False
-        return self.profile_loader.requires_confirmation(profile_id, job_name)
-
-    async def enter_confirmation_gate(
-        self,
-        task: TaskState,
-        *,
-        profile_id: str,
-        job_name: str,
-        preview_title: str,
-        preview_body: str,
-        pending_payload: dict[str, Any],
-        preview_color: int = 0xFEE75C,
-    ) -> ConfirmationContext:
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            seconds=self.settings.hitl_timeout_seconds
-        )
-        ctx = ConfirmationContext(
-            profile_id=profile_id,
-            job_name=job_name,
-            preview_title=preview_title,
-            preview_body=preview_body,
-            preview_color=preview_color,
-            pending_payload=pending_payload,
-            expires_at=expires_at,
-        )
-        task.confirmation_context = ctx
-        task.status = "awaiting_confirmation"
-        task.mark("awaiting_confirmation_at")
-        await self._persist(task)
-        log.info(
-            "hitl.gate_entered",
-            task_id=task.task_id,
-            profile_id=profile_id,
-            job_name=job_name,
-            expires_at=expires_at.isoformat(),
-        )
-        return ctx
-
-    async def record_confirmation_message(
-        self, task_id: str, *, message_id: int, channel_id: int
-    ) -> None:
-        if self.repo is None:
-            return
-        task = await self.repo.get_task(task_id)
-        if task is None or task.confirmation_context is None:
-            return
-        task.confirmation_context = task.confirmation_context.model_copy(
-            update={
-                "discord_message_id": message_id,
-                "discord_channel_id": channel_id,
-            }
-        )
-        task.touch()
-        await self._persist(task)
-
-    async def resume_after_confirmation(
-        self,
-        task_id: str,
-        *,
-        decision: str,
-        actor_user_id: str,
-    ) -> tuple[TaskState, bool] | None:
-        if self.repo is None:
-            return None
-        task = await self.repo.get_task(task_id)
-        if task is None or task.status != "awaiting_confirmation":
-            return None
-        if str(task.user_id) != str(actor_user_id):
-            log.warning(
-                "hitl.actor_mismatch",
-                task_id=task_id,
-                owner=task.user_id,
-                actor=actor_user_id,
-            )
-            return None
-
-        ctx = task.confirmation_context
-        if ctx is not None and ctx.is_expired() and decision == "confirm":
-            decision = "timeout"
-
-        if decision == "confirm":
-            task.status = "acting"
-            task.mark("confirmed_at")
-            await self._persist(task)
-            log.info("hitl.confirmed", task_id=task_id)
-            return task, True
-
-        task.status = "failed"
-        task.degraded = True
-        reason = "사용자 취소" if decision == "cancel" else "확인 시간 초과"
-        task.final_response = f"⚠️ {reason}으로 실행을 건너뜁니다. (task `{task_id}`)"
-        task.mark("finalized_at")
-        await self._persist(task)
-        log.info("hitl.declined", task_id=task_id, decision=decision)
-        return task, False
-
-    async def list_pending_confirmations(self) -> list[TaskState]:
-        if self.repo is None:
-            return []
-        return await self.repo.list_awaiting_confirmations()
-
-    def build_preview(
-        self,
-        meta: JobMeta,
-        pending_payload: dict[str, Any],
-    ) -> tuple[str, str, int]:
-        title = f"📝 {meta.job_name} 실행 확인"
-        color = 0xFEE75C
-        lines = [
-            f"프로파일: `{meta.profile_id}`",
-            f"잡: `{meta.job_name}`",
-        ]
-        if meta.description:
-            lines.append(f"설명: {meta.description}")
-        if pending_payload:
-            for k, v in list(pending_payload.items())[:8]:
-                text = str(v)
-                if len(text) > 80:
-                    text = text[:77] + "..."
-                lines.append(f"• **{k}**: {text}")
-        lines.append("\n[확인] / [취소]")
-        return title, "\n".join(lines), color
-
-    # ---- persistence ----
-
-    async def _persist(self, task: TaskState) -> None:
-        if self.repo is not None:
-            try:
-                await self.repo.save_task(task)
-            except Exception as e:  # noqa: BLE001
-                log.warning("repo.save_failed", err=str(e))
 
 
 __all__ = ["BudgetExhausted", "Orchestrator", "OrchestratorResult"]

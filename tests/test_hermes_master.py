@@ -30,11 +30,8 @@ from src.orchestrator.hermes_master import HermesMasterOrchestrator
 
 
 def _settings(tmp_path, **overrides) -> Settings:
-    # Use a real-but-empty profiles dir so JobFactory's existence check
-    # passes. Master path doesn't actually scan profiles in unit tests
-    # (we mock opencode.run).
-    profiles_dir = tmp_path / "profiles"
-    profiles_dir.mkdir(parents=True, exist_ok=True)
+    """Build a Settings for master orchestrator tests. Phase 8 후 profiles_dir
+    필드는 제거됐으므로 master 가 agents/ 만 본다."""
     base = {
         "_env_file": None,
         "discord_bot_token": "",
@@ -45,9 +42,7 @@ def _settings(tmp_path, **overrides) -> Settings:
         "experience_log_root": tmp_path / "experience",
         "master_enabled": True,
         "memory_inject_enabled": False,
-        "use_new_job_factory": False,
         "state_db_path": tmp_path / "test.db",
-        "profiles_dir": profiles_dir,
     }
     base.update(overrides)
     return Settings(**base)  # type: ignore[arg-type]

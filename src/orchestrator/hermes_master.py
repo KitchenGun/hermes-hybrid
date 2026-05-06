@@ -6,7 +6,7 @@ All-via-master design (Phase plan 2026-05-06):
         ↓
     IntentRouter — short-circuits RuleLayer / slash skills / forced profile
         ↓ (else)
-    PolicyGate — allowlist / budget / requires_confirmation
+    PolicyGate — allowlist / budget
         ↓ (allow)
     JobInventory — profile + job + skill specs to compose the master prompt
         ↓
@@ -91,7 +91,6 @@ class HermesMasterOrchestrator:
             validator=Validator(settings),
         )
         self.job_inventory = JobInventory(
-            settings.profiles_dir,
             repo_root=getattr(settings, "_repo_root", None),
         )
         self.opencode = OpenCodeAdapter(settings)
@@ -149,29 +148,12 @@ class HermesMasterOrchestrator:
             forced_profile=forced_profile,
             trigger_type=intent.trigger_type,
             trigger_source=intent.trigger_source,
-            profile_id_field=intent.profile_id,  # see helper below
-            memory_inject_count=memory_inject_count,
-            slash_skill=intent.slash_skill,
-            job_id=intent.job_id,
-            job_category=intent.job_category,
-            skill_ids=list(intent.skill_ids),
-        ) if False else TaskState(
-            session_id=session_id,
-            user_id=user_id,
-            user_message=user_message,
-            history_window=history_window,
-            heavy=heavy,
-            forced_profile=forced_profile,
-            trigger_type=intent.trigger_type,
-            trigger_source=intent.trigger_source,
             memory_inject_count=memory_inject_count,
             slash_skill=intent.slash_skill,
             job_id=intent.job_id,
             job_category=intent.job_category,
             skill_ids=list(intent.skill_ids),
         )
-        if intent.profile_id:
-            task.job_profile_id = intent.profile_id
         task.mark("created_at")
 
         bind_task_id(task.task_id)
@@ -234,16 +216,6 @@ class HermesMasterOrchestrator:
                 task, t0,
                 handled_by="deny:budget",
                 response=f"⚠️ {decision.reason}",
-            )
-        if decision.action == "needs_confirmation":
-            return self._reject(
-                task, t0,
-                handled_by="needs_confirmation",
-                response=(
-                    f"🔒 `{decision.profile_id}` / `{decision.job_name}` 는 "
-                    "확인이 필요한 작업입니다. (HITL 흐름 미구현 — Phase 5b)"
-                ),
-                degraded=True,
             )
 
         # Branch 4 — master LLM dispatch (the diagram's heart)
@@ -382,28 +354,14 @@ class HermesMasterOrchestrator:
     def _compose_prompt(
         self, task: TaskState, intent: Any
     ) -> str:
-        """Stitch a system prompt + profile/job context + user message.
+        """Stitch a system prompt + user message.
 
-        Profile-specific SOUL is included only when IntentRouter pinned
-        a profile (forced_profile or future master-driven selection).
+        Phase 8 후 profile/job context 가 사라졌으므로 system prompt 만.
+        향후 master 가 IntentRouter 결과의 ``@coder`` 같은 mention 을
+        인식하면 해당 agent 의 SKILL.md 를 inject 하는 wiring 이 추가될
+        예정 (Phase 9).
         """
-        parts: list[str] = [_SYSTEM_PROMPT]
-
-        if intent.profile_id:
-            spec = self.job_inventory.profiles().get(intent.profile_id)
-            if spec is not None:
-                parts.append(
-                    f"\n## Active profile: `{intent.profile_id}`\n"
-                    f"{spec.soul_excerpt}"
-                )
-                if spec.auto_load_skills:
-                    parts.append(
-                        "\nAvailable skills: "
-                        + ", ".join(f"`{s}`" for s in spec.auto_load_skills)
-                    )
-
-        parts.append("\n## User\n" + task.user_message)
-        return "\n".join(parts)
+        return _SYSTEM_PROMPT + "\n\n## User\n" + task.user_message
 
     def _reject(
         self,

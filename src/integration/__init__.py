@@ -20,7 +20,7 @@ Why a façade rather than moving the source files:
     routing concerns
 """
 from .intent_router import IntentResult, IntentRouter
-from .job_inventory import JobInventory, JobSpec, ProfileSpec
+from .job_inventory import JobInventory
 from .policy_gate import PolicyDecision, PolicyGate
 from .session_importer import import_sessions, session_to_record
 
@@ -28,10 +28,8 @@ __all__ = [
     "IntentResult",
     "IntentRouter",
     "JobInventory",
-    "JobSpec",
     "PolicyDecision",
     "PolicyGate",
-    "ProfileSpec",
     "import_sessions",
     "session_to_record",
 ]

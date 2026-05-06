@@ -1,20 +1,15 @@
-"""Intent Router — diagram-aligned wrapper of the existing RuleLayer +
-SkillRegistry + forced_profile gating.
+"""Intent Router — diagram-aligned wrapper of RuleLayer + SkillRegistry.
 
-In the all-via-master design (Phase 6 of the migration plan), the
-JobFactory v2 dispatcher is removed; the master LLM does free-text
-classification itself. The Intent Router's remaining job is to handle
-the *deterministic* short-circuits before the master is even called:
+Phase 8 (2026-05-06) 후 책임 축소:
 
-  * ``/ping`` and other RuleLayer matches (instant reply, no LLM)
-  * ``/memo``, ``/kanban``, etc. — slash skills that have their own
-    handler and don't need master reasoning
-  * forced_profile (Discord channel-pinned) — short-circuit to a
-    specific profile
+  * ``/ping`` 등 RuleLayer 매치 — instant reply, no LLM
+  * ``/memo`` / ``/kanban`` 등 슬래시 skill — 자체 handler 호출
+  * forced_profile 분기 폐기 — channel-pinned 자동화는 더 이상 없음
+  * 그 외 모든 자유 텍스트는 master 에 전달 (master 가 어떤 agent /
+    어떤 skill 을 호출할지 결정)
 
-Anything that doesn't match these short-circuits goes to the master
-with ``trigger_type=discord_message`` and the master decides which
-profile / job / skill to invoke.
+``forced_profile`` 인자는 호환을 위해 시그니처에 남겨두지만 무시됨 (gateway
+의 일부 코드가 한동안 이 인자를 넘길 수 있음 — 단계적 정리).
 """
 from __future__ import annotations
 
@@ -30,7 +25,7 @@ from src.skills import SkillContext, SkillMatch, SkillRegistry, default_registry
 class IntentResult:
     """What the Intent Router decided about an incoming user message.
 
-    Fields mirror the routing context columns in ExperienceRecord, so the
+    Fields mirror the routing context columns in ExperienceRecord so the
     HermesMasterOrchestrator can stamp them onto the task verbatim.
     """
     # short-circuit handling — when set, the master is bypassed
@@ -42,8 +37,8 @@ class IntentResult:
     # routing context for the master path
     trigger_type: str = "discord_message"
     trigger_source: str | None = None
-    profile_id: str | None = None
-    forced_profile: str | None = None
+    profile_id: str | None = None        # 호환 필드. Phase 8 후 미사용.
+    forced_profile: str | None = None    # 호환 필드. Phase 8 후 미사용.
     job_id: str | None = None
     job_category: str | None = None
     slash_skill: str | None = None
@@ -56,7 +51,7 @@ class IntentResult:
 
 
 class IntentRouter:
-    """Wrapper around RuleLayer + SkillRegistry + forced_profile.
+    """Wrapper around RuleLayer + SkillRegistry.
 
     The master orchestrator calls :meth:`route` once per incoming message
     and either returns the short-circuit response (RuleLayer / slash
@@ -81,7 +76,7 @@ class IntentRouter:
         user_message: str,
         user_id: str,
         session_id: str,
-        forced_profile: str | None = None,
+        forced_profile: str | None = None,  # 호환 — Phase 8 후 무시
         heavy: bool = False,
         memory: Any = None,
         repo: Any = None,
@@ -89,12 +84,11 @@ class IntentRouter:
     ) -> IntentResult:
         """Resolve the message into an IntentResult.
 
-        Order of precedence (must match orchestrator's existing behavior):
+        Order of precedence:
           1. RuleLayer (instant deterministic reply)
           2. Slash skills (HybridMemoSkill, KanbanSkill, ...)
-          3. forced_profile (channel-pinned, short-circuits LLM choice)
-          4. heavy (user-explicit, signals C2-style dispatch)
-          5. fallthrough — discord_message, master decides
+          3. heavy (user-explicit, signals C2-style dispatch)
+          4. fallthrough — discord_message, master decides
         """
         # 1. RuleLayer
         rule_match = self.rules.match(user_message)
@@ -122,23 +116,14 @@ class IntentRouter:
                 job_category="chat",
             )
 
-        # 3. forced_profile (Discord channel-pinned, e.g. journal_ops on #일기)
-        if forced_profile:
-            return IntentResult(
-                trigger_type="forced_profile",
-                trigger_source=forced_profile,
-                profile_id=forced_profile,
-                forced_profile=forced_profile,
-            )
-
-        # 4. heavy
+        # 3. heavy
         if heavy:
             return IntentResult(
                 trigger_type="discord_message",
                 trigger_source=f"heavy:{user_id}",
             )
 
-        # 5. fallthrough — master decides profile/job/skill
+        # 4. fallthrough — master decides agent/skill
         return IntentResult(
             trigger_type="discord_message",
             trigger_source=f"user:{user_id}",

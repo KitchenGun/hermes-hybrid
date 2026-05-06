@@ -1,17 +1,14 @@
-"""Policy Gate — diagram-aligned policy decisions on a task.
+"""Policy Gate — diagram-aligned policy decisions on a task (Phase 8).
 
-Wraps three orthogonal concerns the diagram lumps together:
-  * **safety**: ``requires_confirmation`` (HITL gate) per profile job
-  * **budget**: daily cloud token cap, per-user in-flight cap
-  * **tier**: validator decision (retry / tier-up / final-failure) on
-    LLM outputs
+Phase 8 (2026-05-06) 후 책임 축소:
+  * **safety**: profile yaml 의존이 사라져 ``requires_confirmation`` 자체
+    가 없어짐. 향후 master 가 직접 사용자 확인 prompt 를 띄우는 패턴으로
+    대체.
+  * **budget**: 일일 cloud 토큰 cap, allowlist 검증 (defense-in-depth).
+  * **tier**: validator decision (retry / tier-up / final-failure) 그대로.
 
-The Hermes Master Orchestrator calls :meth:`pre_dispatch` before any
-LLM call to check budget / safety, and :meth:`post_validate` on the
-result to decide retry / escalate. Existing implementations
-(:class:`Validator`, :class:`ProfileLoader`, repo budget tracking) are
-delegated to — the Policy Gate is the orchestrator-facing single
-contract.
+Hermes Master Orchestrator 가 LLM 호출 전 ``pre_dispatch`` 를 부르고,
+응답에 ``post_validate`` 를 호출. ``Validator`` 위에 단일 contract.
 """
 from __future__ import annotations
 
@@ -19,7 +16,6 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from src.config import Settings
-from src.orchestrator.profile_loader import ProfileLoader
 from src.state import TaskState
 from src.validator import ValidationResult, Validator
 
@@ -28,7 +24,6 @@ PolicyAction = Literal[
     "allow",
     "deny_budget",
     "deny_allowlist",
-    "needs_confirmation",
 ]
 
 
@@ -42,7 +37,7 @@ class PolicyDecision:
 
 
 class PolicyGate:
-    """Single entry for safety / budget / tier policy."""
+    """Single entry for budget / allowlist / tier policy."""
 
     def __init__(
         self,
@@ -50,16 +45,10 @@ class PolicyGate:
         *,
         repo: Any = None,
         validator: Validator | None = None,
-        profile_loader: ProfileLoader | None = None,
     ):
         self.settings = settings
         self.repo = repo
         self.validator = validator if validator is not None else Validator(settings)
-        self.profile_loader = (
-            profile_loader
-            if profile_loader is not None
-            else ProfileLoader(settings.profiles_dir)
-        )
 
     # ---- pre-dispatch -------------------------------------------------
 
@@ -75,7 +64,6 @@ class PolicyGate:
         Order:
           1. allowlist (already enforced at gateway, but defense-in-depth)
           2. daily cloud token budget
-          3. requires_confirmation on the matched profile job (HITL)
         """
         # 1. allowlist — gateway enforces but we double-check.
         if self.settings.require_allowlist and self.settings.allowed_user_ids:
@@ -104,23 +92,6 @@ class PolicyGate:
                         f"daily token budget reached "
                         f"({used}/{self.settings.cloud_token_budget_daily})"
                     ),
-                    profile_id=profile_id,
-                    job_name=job_name,
-                )
-
-        # 3. HITL — does this profile job declare requires_confirmation?
-        if profile_id and job_name and self.settings.hitl_enabled:
-            try:
-                needs = self.profile_loader.requires_confirmation(
-                    profile_id, job_name
-                )
-            except Exception:  # noqa: BLE001
-                needs = False
-            if needs:
-                return PolicyDecision(
-                    action="needs_confirmation",
-                    reason="profile job declares safety.requires_confirmation",
-                    requires_confirmation=True,
                     profile_id=profile_id,
                     job_name=job_name,
                 )
