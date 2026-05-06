@@ -124,16 +124,20 @@ ExperienceLogger.append → logs/experience/{date}.jsonl  (input/response 는 sh
 
 ## 4. 요구사항
 
-- **OS**: Windows 10/11 + WSL2 Ubuntu
-- **Python**: 3.11+
-- **opencode CLI**: WSL 안 (`~/.local/bin/opencode`), 1회 `opencode auth login`
-- **Claude Code CLI**: WSL 안 (`~/.local/bin/claude`), Max 구독 OAuth (heavy 경로용)
-- **Ollama**: optional — 로컬 fallback / memory embedding 시 필요
+- **OS**: Windows 10/11 + WSL2 Ubuntu (WSL 은 opencode/claude CLI subprocess 호출용)
+- **Python**: 3.11+ (Windows host)
+- **opencode CLI**: WSL 안 (`~/.local/bin/opencode`). 1회 `opencode auth login` (Max OAuth — $0 marginal). **모든 master LLM 호출의 단일 lane**
+- **Claude Code CLI**: WSL 안 (`~/.local/bin/claude`), Max 구독 OAuth — `!heavy` 경로 전용 (선택)
+- **Ollama**: optional — `HERMES_MEMORY_SEARCH_BACKEND=embedding` 일 때만 필요 (master 핫패스 X)
 
 ```bash
-# Optional Ollama models (memory embedding 사용 시)
-ollama pull bge-m3                       # memory embedding (선택)
+# Optional — memory embedding 사용 시
+ollama pull bge-m3
 ```
+
+> **폐기됨 (Phase 8/10 후 의존 X)**: Hermes CLI (`hermes`), profile cron, Hermes
+> dashboard (`hermes-dashboard.service`), Hermes gateway 자동 등록. 봇은 Windows
+> host 에서 단독으로 돌고 WSL 은 CLI subprocess 만 띄움.
 
 ---
 
@@ -150,13 +154,17 @@ pip install -e ".[dev,ollama]"
 
 # 2. .env 작성
 copy .env.example .env
-notepad .env       # 최소 4 항목 (§6)
+notepad .env       # 최소 3 항목 (§6.1)
 
-# 3. WSL CLI 확인
-wsl -d Ubuntu -- bash -lc "opencode --version && claude --version"
+# 3. WSL 진입점 검증
+wsl -d Ubuntu -- bash -lc "opencode --version && (claude --version 2>/dev/null || echo 'claude (heavy 경로) 선택 사항')"
 
-# 4. 프리플라이트
-python -m src.preflight
+# 4. opencode 1회 인증 (subprocess 안에서 진행 못 함 — 사용자가 직접)
+wsl -d Ubuntu -- bash -lc "opencode auth login"
+
+# 5. 프리플라이트 (Discord allowlist + Ollama health 검증)
+.\.venv\Scripts\Activate.ps1
+python -c "import asyncio; from src.preflight import run_preflight; from src.config import Settings; r = asyncio.run(run_preflight(Settings(), require_gateway_stopped=False)); print('OK' if r.ok else 'FAIL', r.errors, r.warnings)"
 ```
 
 ---
@@ -165,21 +173,25 @@ python -m src.preflight
 
 > 변수 → agent 매핑은 [docs/AGENT_ENV.md](docs/AGENT_ENV.md) 의 카탈로그 참조.
 
-### 6.1 필수 (4개)
+### 6.1 필수 (3개)
 ```env
 DISCORD_BOT_TOKEN=<your-bot-token>
 DISCORD_ALLOWED_USER_IDS=<your-discord-user-id>     # 허용 user CSV (R12 fail-closed)
-HERMES_MASTER_ENABLED=true                           # opencode CLI 통과
-HERMES_HOME=/home/kang/.hermes                       # WSL 경로
+MASTER_ENABLED=true                                  # opencode CLI 통과
 ```
 
 ### 6.2 Hermes Master (All-via-master)
 ```env
-HERMES_MASTER_MODEL=gpt-5.5
-HERMES_OPENCODE_CLI_PATH=/home/kang/.local/bin/opencode
-HERMES_OPENCODE_CLI_BACKEND=wsl_subprocess           # wsl_subprocess | local_subprocess
-HERMES_MASTER_TIMEOUT_MS=120000
+MASTER_MODEL=gpt-5.5
+OPENCODE_CLI_PATH=/home/kang/.local/bin/opencode
+OPENCODE_CLI_BACKEND=wsl_subprocess                  # wsl_subprocess | local_subprocess
+MASTER_TIMEOUT_MS=120000
+WSL_DISTRO=Ubuntu                                    # WSL 배포판 (subprocess 호출 대상)
 ```
+
+> pydantic Settings 는 env var ↔ field 이름을 case-insensitive 로 매칭한다.
+> `MASTER_ENABLED=true` 가 `Settings.master_enabled` 에 매핑. 기존 `.env` 의
+> `HERMES_MASTER_*` 류 prefix 는 매칭 X (extra="ignore" 로 silently drop).
 
 ### 6.3 Agent webhooks (@devops 가 사용)
 ```env
@@ -193,22 +205,22 @@ BRAVE_SEARCH_API_KEY=<for-@researcher-web_search>
 
 ### 6.4 성장 루프 (default-on)
 ```env
-HERMES_EXPERIENCE_LOG_ENABLED=true                   # 모든 task → JSONL
-HERMES_EXPERIENCE_LOG_ROOT=./logs/experience
+EXPERIENCE_LOG_ENABLED=true                          # 모든 task → JSONL
+EXPERIENCE_LOG_ROOT=./logs/experience
 ```
 
 ### 6.5 Memory inject (default-off — privacy review 후 켜기)
 ```env
-HERMES_MEMORY_INJECT_ENABLED=false
-HERMES_MEMORY_INJECT_TOP_K=3
-HERMES_MEMORY_SEARCH_BACKEND=like                    # like | embedding (bge-m3)
-HERMES_MEMORY_EMBEDDING_MODEL=bge-m3
+MEMORY_INJECT_ENABLED=false
+MEMORY_INJECT_TOP_K=3
+MEMORY_SEARCH_BACKEND=like                           # like | embedding (bge-m3)
+MEMORY_EMBEDDING_MODEL=bge-m3
 ```
 
 ### 6.5a Phase 10 — Parallel @handle dispatch (default-off — opt-in)
 ```env
-HERMES_MASTER_PARALLEL_AGENTS=false                  # 2+ @handle 시 fan-out
-HERMES_MASTER_PARALLEL_MAX_CONCURRENCY=3             # 동시 opencode subprocess 수
+MASTER_PARALLEL_AGENTS=false                         # 2+ @handle 시 fan-out
+MASTER_PARALLEL_MAX_CONCURRENCY=3                    # 동시 opencode subprocess 수
 ```
 
 > 켜면 N 개 멘션 → N 개 opencode 호출이라 비용/지연/Max OAuth 한도가 N 배.
@@ -223,8 +235,8 @@ TELEGRAM_ALLOWED_USER_IDS=<your-id>
 
 ### 6.7 예산
 ```env
-CLOUD_TOKEN_BUDGET_DAILY=100000
-PER_USER_IN_FLIGHT_MAX=1
+CLOUD_TOKEN_BUDGET_DAILY=100000                      # PolicyGate 일일 cap
+PER_USER_IN_FLIGHT_MAX=1                             # R13 — per-user 동시 요청 cap
 ```
 
 전체 변수는 [src/config.py](src/config.py) 의 `Settings` 클래스 + [.env.example](.env.example) 참조.
@@ -234,13 +246,26 @@ PER_USER_IN_FLIGHT_MAX=1
 ## 7. 실행
 
 ```powershell
-# 원클릭 (Windows)
+# 원클릭 (Windows) — Ollama 워밍업 + WSL 키프얼라이브 + 봇 부팅
 .\run_all.bat
 
-# 단계별 디버그
+# 단계별 디버그 (run_all.bat 의 [3/3] 만 직접)
 .\.venv\Scripts\Activate.ps1
 python scripts\run_bot.py
 ```
+
+`run_all.bat` 의 3 단계 (Phase 10 기준):
+
+| # | 단계 | 비고 |
+|---|---|---|
+| 1 | **Ollama 부팅 (선택)** | `HERMES_MEMORY_SEARCH_BACKEND=embedding` 일 때만 필요. 그 외 INFO 메시지로 skip. |
+| 2 | **WSL 워밍업 + keepalive** | microsoft/WSL#10205 회피 — 마지막 로그인 세션이 사라져도 systemd-user 가 죽지 않도록 hidden bash loop |
+| 3 | **Discord 봇 부팅** | `start.bat` → `start.ps1` → `python scripts/run_bot.py` |
+
+> 기존 `run_all.bat` 의 `[2.5] gateway units / [3] hermes-dashboard / [4]
+> register_cron_jobs` 단계는 Phase 8 polishing (commit `06319ce` /
+> `2026-05-06-cleanup`) 으로 모두 제거됨. WSL 측 봇 디렉터리가 stale 이면
+> `git pull` + `find . -name __pycache__ -exec rm -rf {} +` 후 재시작 필요.
 
 ---
 
@@ -345,7 +370,7 @@ hermes-hybrid/
 │  ├─ documentation/{documenter,commenter}/SKILL.md
 │  └─ infrastructure/{devops,optimizer}/SKILL.md
 │
-├─ tests/                        # pytest, 269 pass / 5 skip
+├─ tests/                        # pytest, 276 pass / 5 skip (Phase 10)
 ├─ logs/
 │  ├─ experience/                # task append-only JSONL
 │  ├─ reflection/                # 주간 markdown
@@ -369,14 +394,16 @@ hermes-hybrid/
 ## 11. 테스트
 
 ```powershell
-pytest -q                                 # 전체 (269 pass / 5 skip)
-pytest tests/test_experience_logger.py    # 11 tests, JSONL contract
-pytest tests/test_critic.py               # 11 tests, self_score lookup
-pytest tests/test_reflection_job.py       # 9 tests, weekly stats
-pytest tests/test_curator_job.py          # 9 tests, handler stat
-pytest tests/test_skill_library.py        # 8 tests, SKILL.md scanner
-pytest tests/test_memory_search.py        # 13 tests, search + inject
+pytest -q                                 # 전체 (276 pass / 5 skip, Phase 10)
+pytest tests/test_hermes_master.py        # 21 tests, master 분기 (Phase 9 inject + Phase 10 fan-out)
+pytest tests/test_delegation.py           # 12 tests, OpenCodeAgentDelegator 병렬 + aggregate
+pytest tests/test_integration_intent_router.py  # @handle 파싱
+pytest tests/test_integration_policy_gate.py    # allowlist + budget
+pytest tests/test_experience_logger.py    # JSONL contract + agent_handles
+pytest tests/test_critic.py               # self_score lookup
 pytest tests/test_agent_registry.py       # 17-agent 인덱싱
+pytest tests/test_memory_search.py        # search + inject
+pytest tests/test_preflight.py            # allowlist + Ollama warn + R6
 ```
 
 ---
@@ -422,8 +449,29 @@ pytest tests/test_agent_registry.py       # 17-agent 인덱싱
 ### "opencode: command not found" (WSL)
 ```bash
 wsl -d Ubuntu -- bash -lc "which opencode"
-# 경로 다르면 .env 의 HERMES_OPENCODE_CLI_PATH 수정
+# 경로 다르면 .env 의 OPENCODE_CLI_PATH 수정
 # 인증 필요 시: opencode auth login
+```
+
+### "Job Factory v2 init failed" / "ModuleNotFoundError" 류 봇 응답
+**원인**: 봇이 stale 빌드 (Phase 8 이전 코드) 로 실행 중. `src/job_factory/`,
+`src/hermes_adapter/` 등 폐기된 모듈을 import 시도 → 옛 fallback 메시지 노출.
+
+**복구**:
+```bash
+# 1) 봇 종료 (WSL or Windows 어디서 띄우든)
+systemctl --user stop hermes-gateway   # WSL 측 / 또는 taskkill /im python.exe
+# 2) 코드 동기화
+cd <봇-cwd> && git fetch && git reset --hard origin/main
+# 3) stale .pyc 일괄 삭제 (중요)
+find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null
+find . -name "*.pyc" -delete
+# 4) 가상환경 재설치
+.venv/bin/pip install -e . --upgrade
+# 5) 부팅 검증
+.venv/bin/python -c "from src.orchestrator.orchestrator import Orchestrator; from src.config import Settings; Orchestrator(Settings()); print('OK')"
+# 6) 재시작
+.\run_all.bat   # Windows / 또는 systemctl --user start <unit>
 ```
 
 ### Discord bot 이 메시지에 반응 안 함
@@ -435,7 +483,7 @@ wsl -d Ubuntu -- bash -lc "which opencode"
 - Max OAuth 시간당 한도 도달 시 1시간 대기
 
 ### ExperienceLog 가 안 쌓인다
-- `HERMES_EXPERIENCE_LOG_ENABLED=true` 확인
+- `.env` 의 `EXPERIENCE_LOG_ENABLED=true` 확인
 - `logs/experience/` 디렉터리 권한 (Windows host filesystem)
 - 봇 재시작 후 한 메시지 보내고 `wc -l logs/experience/{date}.jsonl`
 
@@ -452,10 +500,10 @@ del data\state.db-wal
 del data\state.db-shm
 ```
 
-### Phase 8 마이그레이션 — profile/.env 통합
+### Phase 8 마이그레이션 — profile/.env 통합 (이미 완료된 환경은 무시)
 ```bash
 # 기존 profile/.env 의 실 값을 root .env 로 옮김 (P8 plan 의 §3.4)
-cat profiles/calendar_ops/.env profiles/journal_ops/.env  # backup 시 한 번만 확인
+# (이미 profiles/ 가 git rm 됐다면 _archive/profiles_envs/{profile}/.env.template 참조)
 # 변수 카탈로그: docs/AGENT_ENV.md
 ```
 

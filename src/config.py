@@ -26,15 +26,10 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_allowed_user_ids: str = ""  # comma-separated
 
-    # Hermes adapter
-    hermes_cli_backend: Literal["wsl_subprocess", "local_subprocess", "mcp"] = "wsl_subprocess"
-    hermes_wsl_distro: str = "Ubuntu"
-    hermes_cli_path: str = "/home/kang/.local/bin/hermes"
-    hermes_home: str = "/home/kang/.hermes"  # used for reading session JSON (R1)
-    hermes_timeout_ms: int = 180_000
-    hermes_max_turns: int = 20
-    hermes_concurrency: int = 3  # R13: cap parallel subprocess calls
-    gateway_service_name: str = "hermes-gateway"  # for R6 pre-check
+    # WSL subprocess defaults — opencode/Claude CLI subprocess 호출에 사용.
+    # Phase 8/10 후 hermes CLI 의존 폐기 — hermes_cli_* 필드는 모두 제거됨.
+    wsl_distro: str = "Ubuntu"
+    gateway_service_name: str = "hermes-gateway"  # R6 — 공식 Hermes gateway 충돌 회피
 
     # Hermes Master Orchestrator (Phase: diagram-aligned migration, 2026-05-06).
     # All-via-master 설계: 모든 LLM 호출이 ``opencode`` CLI 의 master 모델

@@ -200,7 +200,7 @@ class OpenCodeAdapter:
             inner = " ".join(shlex.quote(a) for a in args)
             return [
                 "wsl",
-                "-d", self.settings.hermes_wsl_distro,
+                "-d", self.settings.wsl_distro,
                 "bash", "-lc", inner,
             ]
         return args

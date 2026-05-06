@@ -24,7 +24,6 @@ from src.llm.adapters import (
     AdapterResponse,
     ChatMessage,
     ClaudeCLIAdapter,
-    HermesProfileAdapter,
     LLMAdapter,
     OllamaAdapter,
     flatten_to_prompt,
@@ -191,55 +190,6 @@ class _FakeClaudeAdapter:
         return self.result
 
 
-@dataclass
-class _FakeHermesResult:
-    text: str = "hermes-reply"
-    session_id: str = "hsid-1"
-    tier_used: str = "L2"
-    model_name: str = "gpt-4o-mini"
-    provider: str = "openai"
-    duration_ms: int = 88
-    stdout_raw: str = ""
-    stderr_raw: str = ""
-    prompt_tokens: int = 30
-    completion_tokens: int = 15
-    primary_model: str = "gpt-4o-mini"
-    turns_used: int = 1
-    raw_json: dict = None
-
-    def __post_init__(self):
-        if self.raw_json is None:
-            self.raw_json = {}
-
-
-class _FakeHermesAdapter:
-    def __init__(self):
-        self.calls: list[dict[str, Any]] = []
-        self.result = _FakeHermesResult()
-
-    async def run(
-        self,
-        query: str,
-        *,
-        model: str | None = None,
-        provider: str | None = None,
-        resume_session: str | None = None,
-        max_turns: int | None = None,
-        extra_args: list[str] | None = None,
-        timeout_ms: int | None = None,
-        profile: str | None = None,
-        preload_skills: list[str] | None = None,
-    ) -> _FakeHermesResult:
-        self.calls.append({
-            "query": query,
-            "model": model,
-            "provider": provider,
-            "profile": profile,
-            "timeout_ms": timeout_ms,
-        })
-        return self.result
-
-
 # ---- OllamaAdapter --------------------------------------------------------
 
 
@@ -368,54 +318,19 @@ async def test_claude_cli_adapter_invokes_with_split_prompt():
     assert resp.duration_ms == 42
 
 
-# ---- HermesProfileAdapter -------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_hermes_profile_adapter_pins_profile_and_flattens():
-    fake = _FakeHermesAdapter()
-    a = HermesProfileAdapter(fake, profile="journal_ops")
-    assert a.provider == "hermes_profile"
-    assert a.model == "journal_ops"
-
-    req = AdapterRequest(
-        messages=[
-            ChatMessage(role="system", content="ctx"),
-            ChatMessage(role="user", content="log activity"),
-        ],
-        timeout_s=60.0,
-    )
-    resp = await a.generate(req)
-
-    call = fake.calls[0]
-    # Hermes call had profile pinned and model/provider deferred to config.yaml.
-    assert call["profile"] == "journal_ops"
-    assert call["model"] is None
-    assert call["provider"] is None
-    assert call["timeout_ms"] == 60_000
-    # Query is the flattened prompt — both system and user content present.
-    assert "ctx" in call["query"]
-    assert "log activity" in call["query"]
-
-    # Response normalized; model is the profile name (stable arm key).
-    assert resp.provider == "hermes_profile"
-    assert resp.model == "journal_ops"
-    assert resp.text == "hermes-reply"
-    assert resp.prompt_tokens == 30
-    assert resp.completion_tokens == 15
-    assert resp.duration_ms == 88
-
-
 # ---- Protocol conformance -------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_all_adapters_satisfy_llmadapter_protocol():
-    """isinstance() against runtime_checkable LLMAdapter must accept all 3."""
+    """isinstance() against runtime_checkable LLMAdapter must accept all live adapters.
+
+    Phase 8/10 (2026-05-06) 후 HermesProfileAdapter 폐기 — Ollama / Claude CLI
+    만 남음 (bench harness 용).
+    """
     adapters = [
         OllamaAdapter(_FakeLLMClient()),
         ClaudeCLIAdapter(_FakeClaudeAdapter(), model="haiku"),
-        HermesProfileAdapter(_FakeHermesAdapter(), profile="calendar_ops"),
     ]
     for a in adapters:
         assert isinstance(a, LLMAdapter), f"{type(a).__name__} not LLMAdapter"
@@ -424,6 +339,4 @@ async def test_all_adapters_satisfy_llmadapter_protocol():
             AdapterRequest(messages=[ChatMessage(role="user", content="hi")]),
         )
         assert isinstance(resp, AdapterResponse)
-        assert resp.provider in {
-            "ollama", "openai", "claude_cli", "hermes_profile",
-        }
+        assert resp.provider in {"ollama", "claude_cli"}

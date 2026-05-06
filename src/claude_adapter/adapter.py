@@ -295,7 +295,7 @@ class ClaudeCodeAdapter:
                     + inner
                 )
             return [
-                "wsl", "-d", self.settings.hermes_wsl_distro,
+                "wsl", "-d", self.settings.wsl_distro,
                 "bash", "-lc", inner,
             ]
         if self.settings.claude_code_cli_backend == "local_subprocess":

@@ -65,11 +65,10 @@ def main() -> int:
         if env_dir:
             sessions_dir = Path(env_dir)
         else:
-            home = Path.home() / ".hermes" / "sessions"
-            if home.exists():
-                sessions_dir = home
-            else:
-                sessions_dir = Path(settings.hermes_home) / "sessions"
+            # Phase 8/10 후 hermes_home Settings 필드 폐기 — 기본 경로
+            # 만 검사 (사용자가 hermes CLI 를 별도로 깔았다면 ~/.hermes
+            # 가 자연스러운 위치).
+            sessions_dir = Path.home() / ".hermes" / "sessions"
 
     if not sessions_dir.exists():
         print(f"⚠️ sessions_dir not found: {sessions_dir}")

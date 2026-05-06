@@ -1,15 +1,14 @@
 """LLMAdapter Protocol + request/response dataclasses.
 
-Every Job Factory v2 LLM call goes through this surface. The Protocol
-contract is intentionally minimal — provider/model identity, a single
-``generate`` method, and a normalized response shape. Concrete adapters
-wrap the lower-level clients in ``src/llm/`` and ``src/claude_adapter``
-and ``src/hermes_adapter``.
+Phase 10 (2026-05-06): JobFactory v2 폐기 후 master 는 ``OpenCodeAdapter``
+(`src/opencode_adapter/`) 만 사용. 이 모듈의 Protocol 은 bench harness
+(``scripts/bench_local_models.py``) 의 Ollama / Claude CLI 비교 측정 시
+유지. master 핫패스 가 아님.
 
 Why a separate layer over the existing :class:`src.llm.base.LLMClient`?
-  * ``LLMClient`` has no ``provider`` axis — needed by ScoreMatrix keys.
-  * Hermes (profile-based) and Claude Code CLI take ``query`` / ``prompt``
-    rather than messages; flattening logic belongs in the adapter, not in
+  * ``LLMClient`` has no ``provider`` axis — needed by bench score keys.
+  * Claude Code CLI takes ``query`` / ``prompt`` rather than messages;
+    flattening logic belongs in the adapter, not in
     every caller.
   * ``AdapterResponse`` carries ``provider`` + ``duration_ms`` for ledger
     /selector observability.

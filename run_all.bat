@@ -5,15 +5,15 @@ title hermes-hybrid launcher
 
 echo ==========================================
 echo   hermes-hybrid full stack launcher
+echo   Phase 10 — opencode/gpt-5.5 master
 echo ==========================================
 echo.
 
-REM ---- 1. Ollama ----
-REM 봇의 preflight 가 ``OLLAMA_ENABLED=true`` 일 때 ``http://localhost:11434``
-REM 에 즉시 probe 한다. 처음 부팅에서 shell:startup 의 Ollama.lnk 보다 봇이
-REM 먼저 떠버리면 preflight error 로 봇이 종료. 여기서 ollama 가 listen 할
-REM 때까지 wait 해서 race 를 차단한다.
-echo [1/3] Starting Ollama server...
+REM ---- 1. Ollama (optional — needed only for memory embedding) ----
+REM Phase 8 후 master 는 opencode CLI 를 사용 (gpt-5.5, $0 marginal).
+REM Ollama 는 memory_search_backend=embedding 일 때 bge-m3 호출용 fallback 으로만 의미.
+REM ollama_enabled=false 면 이 단계 전체를 skip 해도 무방.
+echo [1/3] Starting Ollama server (optional)...
 tasklist /FI "IMAGENAME eq ollama.exe" 2>nul | find /I "ollama.exe" >nul
 if %errorlevel%==0 (
     echo        Ollama already running. Skipping launch.
@@ -21,72 +21,28 @@ if %errorlevel%==0 (
     start "ollama-serve" /MIN cmd /c "ollama serve"
     echo        Launched in minimized window.
 )
-echo        Waiting up to 30s for port 11434 to listen...
-powershell -NoProfile -Command "$ok=$false; for($i=0; $i -lt 30; $i++){ try { (Invoke-WebRequest -Uri 'http://localhost:11434/api/tags' -TimeoutSec 1 -UseBasicParsing) | Out-Null; $ok=$true; break } catch { Start-Sleep -Seconds 1 } }; if($ok){ Write-Host '       Ollama is up.' -ForegroundColor Green } else { Write-Host '       WARN: Ollama did not respond — bot preflight will likely fail' -ForegroundColor Yellow; exit 1 }"
+echo        Probing port 11434 (up to 15s)...
+powershell -NoProfile -Command "$ok=$false; for($i=0; $i -lt 15; $i++){ try { (Invoke-WebRequest -Uri 'http://localhost:11434/api/tags' -TimeoutSec 1 -UseBasicParsing) | Out-Null; $ok=$true; break } catch { Start-Sleep -Seconds 1 } }; if($ok){ Write-Host '       Ollama is up.' -ForegroundColor Green } else { Write-Host '       INFO: Ollama not running. OK unless HERMES_MEMORY_SEARCH_BACKEND=embedding.' -ForegroundColor DarkYellow }"
 echo.
 
 REM ---- 2. WSL warm-up + persistent session keep-alive ----
-echo [2/5] Warming up WSL (Ubuntu)...
+REM 봇 자체는 Windows host 에서 Python 으로 돈다. WSL 은 opencode/claude CLI
+REM subprocess 호출용. keepalive 는 microsoft/WSL#10205 회피 — 마지막 로그인
+REM 세션이 사라지면 systemd-user 가 die 하므로 hidden bash loop 로 잡아둔다.
+echo [2/3] Warming up WSL (Ubuntu) + spawning keep-alive...
 wsl -d Ubuntu -- echo "WSL ready"
 if errorlevel 1 (
-    echo        ERROR: WSL warm-up failed. Check that 'wsl -d Ubuntu' works.
+    echo        ERROR: WSL warm-up failed. Check 'wsl -d Ubuntu' works.
     pause
     exit /b 1
 )
-
-REM Persistent WSL session — required workaround for microsoft/WSL#10205
-REM where systemd-user dies whenever the last login session ends, even
-REM with linger=yes. Without this, hermes-gateway dies seconds later.
-echo        Spawning hidden WSL session keep-alive (microsoft/WSL#10205 workaround)...
 start "hermes-wsl-keepalive" /B wsl -d Ubuntu --user kang -- bash -lc "while true; do sleep 60; done"
+echo        WSL warm + keepalive spawned.
 echo.
 
-REM ---- 2.5/2.6. Gateway systemd-user units (calendar_ops + kk_job) ----
-REM Why this is one shell-out instead of two cmd-quoted heredocs:
-REM   cmd.exe terminates a double-quoted argument at the first line break,
-REM   so the previous form embedded `[Service]` / `Environment=` / `[Install]`
-REM   etc. directly in the batch parser, where each line was attempted as a
-REM   cmd command and failed with "is not recognized". Net result: gateway
-REM   units silently never got refreshed. The .sh script does the heredocs
-REM   under bash where they actually work, and we just shell out once.
-REM
-REM   Hermes gateway exits 1 without a controlling TTY, so the script wraps
-REM   ExecStart in `script -qfc` to provide a pseudo-TTY. See
-REM   ARCHITECTURE.md "Hermes runtime — gateway vs dashboard".
-echo [2.5/5] Installing gateway systemd-user units (calendar_ops + kk_job)...
-wsl -d Ubuntu -- bash /mnt/e/hermes-hybrid/scripts/install_gateway_units.sh
-if errorlevel 1 (
-    echo        WARN: install_gateway_units.sh failed. Check: wsl -d Ubuntu -- journalctl --user -u hermes-gateway-calendar_ops -n 30
-) else (
-    echo        Gateway units installed/refreshed.
-)
-echo.
-
-REM ---- 3. Hermes Dashboard (via systemd user service) ----
-echo [3/5] Starting Hermes web dashboard (port 9119)...
-REM Prebuild web UI if missing (hermes's auto-build is unreliable in our setup).
-wsl -d Ubuntu -- bash -lc "[ -f ~/.hermes/hermes-agent/hermes_cli/web_dist/index.html ] || (echo '        Building web UI (first run)...'; cd ~/.hermes/hermes-agent/web && npm install --silent && npm run build > /dev/null 2>&1)"
-REM Use systemd user service ? it handles detachment, auto-restart, and logging
-REM properly. Avoids wsl.exe/cmd.exe quote+lifecycle issues under Task Scheduler.
-wsl -d Ubuntu -- bash -lc "systemctl --user restart hermes-dashboard.service"
-echo        Waiting for port 9119 to open (up to 15s)...
-wsl -d Ubuntu -- bash -lc "for i in $(seq 1 15); do ss -tln 2>/dev/null | grep -q ':9119 ' && exit 0; sleep 1; done; exit 1"
-if errorlevel 1 (
-    echo        WARN: dashboard not listening yet. Check: wsl -d Ubuntu -- journalctl --user -u hermes-dashboard -n 50
-) else (
-    echo        Dashboard up: http://localhost:9119
-)
-echo.
-
-REM ---- 4. Register cron jobs ----
-echo [4/5] Registering cron jobs (idempotent)...
-wsl -d Ubuntu -- bash -lc "python3 /mnt/e/hermes-hybrid/scripts/register_cron_jobs.py 2>/dev/null" 2>nul
-echo        Done.
-echo.
-
-REM ---- 5. Bot ----
-echo [5/5] Starting Discord bot...
-echo        (bot logs will appear below; Ctrl+C to stop)
+REM ---- 3. Discord bot ----
+echo [3/3] Starting Discord bot...
+echo        (logs in logs/bot-YYYYMMDD-HHMMSS.log; Ctrl+C to stop)
 echo ------------------------------------------
 echo.
 call "%~dp0start.bat"

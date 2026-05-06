@@ -1,7 +1,8 @@
 """Preflight checks (R15) — run at startup; refuse to boot on hard failure.
 
-Also provides a helper to stop the conflicting official Hermes Discord
-gateway service (R6) so we don't end up with two bots on the same token.
+Phase 8/10 (2026-05-06): master = opencode CLI / gpt-5.5. Hermes CLI
+의존 없음 — 관련 check 제거. allowlist + Ollama health (memory embedding
+용) + 공식 hermes-gateway 충돌 회피 (R6) 만 남김.
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ class PreflightReport:
 
 
 async def _wsl_run(settings: Settings, cmd: str, timeout: float = 10.0) -> tuple[int, str, str]:
-    args = ["wsl", "-d", settings.hermes_wsl_distro, "bash", "-lc", cmd]
+    args = ["wsl", "-d", settings.wsl_distro, "bash", "-lc", cmd]
     proc = await asyncio.create_subprocess_exec(
         *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
@@ -37,23 +38,9 @@ async def _wsl_run(settings: Settings, cmd: str, timeout: float = 10.0) -> tuple
     return proc.returncode or 0, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
 
-async def check_hermes_available(settings: Settings) -> tuple[bool, str]:
-    rc, out, err = await _wsl_run(settings, f"test -x {shlex.quote(settings.hermes_cli_path)} && echo ok")
-    if rc == 0 and "ok" in out:
-        return True, ""
-    return False, f"hermes CLI not executable at {settings.hermes_cli_path}: {err or out}"
-
-
-async def check_hermes_doctor(settings: Settings) -> tuple[bool, str]:
-    rc, out, err = await _wsl_run(
-        settings, f"{shlex.quote(settings.hermes_cli_path)} doctor 2>&1 | tail -5", timeout=30.0
-    )
-    if rc != 0:
-        return False, f"hermes doctor failed: {(err or out)[-200:]}"
-    return True, ""
-
-
 async def gateway_is_running(settings: Settings) -> bool:
+    """R6: 공식 hermes-gateway 가 같은 Discord token 으로 봇 실행 중인지 검사.
+    설치만 돼있고 비활성이면 False."""
     rc, _out, _err = await _wsl_run(
         settings,
         f"systemctl --user is-active {shlex.quote(settings.gateway_service_name)} 2>/dev/null",
@@ -83,38 +70,32 @@ async def run_preflight(settings: Settings, *, require_gateway_stopped: bool) ->
             "Set user IDs or explicitly set REQUIRE_ALLOWLIST=false to disable the gate."
         )
 
-    # 2026-05-04: OpenAI/Anthropic API key checks removed (legacy purged).
-    # Claude CLI uses Max OAuth and is checked via Hermes CLI reachability below.
-
-    # Hermes CLI reachability
-    ok, reason = await check_hermes_available(settings)
-    if not ok:
-        errors.append(reason)
-
-    # Ollama health (only when enabled)
+    # Ollama health (only when enabled — memory embedding 용 fallback).
+    # Phase 8 후 master = opencode 라 본 메시지 처리에는 Ollama 불필요.
+    # `memory_search_backend=embedding` + bge-m3 사용 시에만 의미.
     if settings.ollama_enabled:
         try:
             installed = await list_ollama_models(settings.ollama_base_url)
         except LLMError as e:
-            errors.append(
-                f"OLLAMA_ENABLED=true but Ollama server is unreachable "
-                f"({settings.ollama_base_url}): {e}"
+            warnings.append(
+                f"OLLAMA_ENABLED=true but Ollama server unreachable "
+                f"({settings.ollama_base_url}): {e}. Memory embedding fallback "
+                "won't work; master path is unaffected."
             )
         else:
-            required = [
-                settings.ollama_router_model,
-                settings.ollama_work_model,
-                settings.ollama_worker_model,
-            ]
-            # Ollama reports names as "family:tag". We compare exact strings.
-            missing = [m for m in required if m not in installed]
-            if missing:
+            # bge-m3 누락 시 warning (memory embedding 사용자만 영향)
+            if (
+                settings.memory_search_backend == "embedding"
+                and settings.memory_embedding_model not in installed
+            ):
                 warnings.append(
-                    f"Ollama running but model(s) not pulled: {missing}. "
-                    f"Run `ollama pull <name>`. Missing models will fall back to cloud."
+                    f"memory_search_backend=embedding but "
+                    f"{settings.memory_embedding_model!r} not pulled in Ollama. "
+                    f"Run `ollama pull {settings.memory_embedding_model}` "
+                    "or switch to memory_search_backend=like."
                 )
 
-    # Gateway conflict
+    # R6: 공식 hermes-gateway 충돌 회피
     if require_gateway_stopped:
         if await gateway_is_running(settings):
             stopped, msg = await stop_official_gateway(settings)
