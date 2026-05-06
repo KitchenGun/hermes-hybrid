@@ -118,8 +118,15 @@ class Settings(BaseSettings):
     # Per-user
     per_user_in_flight_max: int = 1             # R13
 
-    # Kanban store — Phase 6 (2026-05-06). agent 간 hand-off 채널.
-    kanban_store_path: Path = Path("./data/kanban.json")
+    # Kanban — Phase 2-A (Nous Hermes Agent 모델 정렬, 2026-05-07).
+    # Phase 6 JSON stub 폐기. SQLite + dispatcher + master CLI worker spawn.
+    kanban_db_path: Path = Path("./data/kanban.db")
+    kanban_workspaces_root: Path = Path("./data/kanban/workspaces")
+    kanban_dispatcher_enabled: bool = True
+    kanban_dispatcher_poll_seconds: int = 60
+    kanban_claim_ttl_seconds: int = 300
+    kanban_spawn_failure_limit: int = 5
+    kanban_notify_channel_id: int = 0  # 0 = silent, opt-in
 
     # Storage
     state_db_path: Path = Path("./data/state.db")

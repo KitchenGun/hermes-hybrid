@@ -100,7 +100,6 @@ ExperienceLogger.append → logs/experience/{date}.jsonl  (input/response 는 sh
 | **ReflectionJob** | [src/jobs/reflection_job.py](src/jobs/reflection_job.py) | 주간 통계 — 성공률, handler/tier 분포, p50/p95 latency, top failure buckets. |
 | **CuratorJob** | [src/jobs/curator_job.py](src/jobs/curator_job.py) | handler/tool 별 success/failure rate + skill promotion / archive 후보 markdown. |
 | **SessionImporter** | [src/core/session_importer.py](src/core/session_importer.py) | claude session JSON → ExperienceLog 통합 (hourly timer). |
-| **KanbanStore** | [src/core/kanban.py](src/core/kanban.py) | agent 간 hand-off 채널 (single-file JSON). |
 | **Memory search** | [src/memory/sqlite.py](src/memory/sqlite.py) + [src/memory/embedding.py](src/memory/embedding.py) | LIKE substring + 옵션 임베딩 검색 (bge-m3). |
 | **Telegram gateway** | [src/gateway/telegram_bot.py](src/gateway/telegram_bot.py) | long-poll, stdlib only. allowlist 동일 적용. |
 
