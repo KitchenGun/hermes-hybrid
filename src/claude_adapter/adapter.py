@@ -106,6 +106,7 @@ class ClaudeCodeAdapter:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    cwd=str(self.settings.project_root),
                 )
                 try:
                     stdout_b, stderr_b = await asyncio.wait_for(
@@ -175,12 +176,19 @@ class ClaudeCodeAdapter:
     # ---- internals ----
 
     def _build_cmd(self, *, model: str) -> list[str]:
+        # ``-p`` (print) mode disables interactive permission prompts. Without
+        # ``--permission-mode``, edits to paths that aren't pre-allowed in
+        # ``.claude/settings.json`` are auto-denied — Claude responds with a
+        # "권한 프롬프트를 한번 더 승인해주세요" text. ``acceptEdits`` lets the
+        # master auto-approve Edit/Write/MultiEdit only; Bash/외부 호출은 여전히
+        # allow 패턴에 의존 → R12 fail-closed 정책 보존.
         args = [
             self.settings.master_cli_path,
             "-p",
             "--model", model,
             "--output-format", "json",
             "--no-session-persistence",
+            "--permission-mode", "acceptEdits",
         ]
         if self.settings.master_cli_backend == "wsl_subprocess":
             inner = " ".join(shlex.quote(a) for a in args)

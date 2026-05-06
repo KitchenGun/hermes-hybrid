@@ -454,3 +454,86 @@ async def test_parallel_records_each_agent_token_usage(tmp_path):
     substages = [m.substage for m in result.task.model_outputs]
     assert "parallel:@coder" in substages
     assert "parallel:@reviewer" in substages
+
+
+# ---- Phase 16: permission-denied circuit breaker ---------------------
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_response_replaced_with_notice(tmp_path):
+    """Claude 가 권한 거부 안내문을 응답으로 만들어 보내면 봇이 그 응답을
+    그대로 송출하는 대신 settings 점검 안내문으로 교체한다 (회로 차단기)."""
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+
+    # 실제 스크린샷에서 본 거부 안내문 형태
+    raw_denied = (
+        "파일 쓰기 권한이 다시 거부되었습니다. 사용자 측에서 권한 프롬프트를 "
+        "한번 더 승인해주셔야 진행 가능합니다.\n"
+        "profiles/mail_ops/accounts.yaml 작성 권한을 허용해주세요."
+    )
+    master.adapter.run = AsyncMock(return_value=_ok_result(raw_denied))
+
+    result = await master.handle("파일 만들어줘", user_id="u1")
+    assert result.handled_by == "master:permission_denied"
+    assert "권한 거부가 발생했습니다" in result.response
+    assert ".claude/settings.json" in result.response
+    # 원본 거부 안내문이 사용자에게 그대로 노출되지 않아야 함
+    assert "한번 더 승인해주셔야" not in result.response
+    assert result.task.degraded is True
+    assert result.task.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_english_phrase_also_caught(tmp_path):
+    """영문 'permission denied' 패턴도 동일하게 잡힌다."""
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+    master.adapter.run = AsyncMock(
+        return_value=_ok_result(
+            "I tried to write the file but got permission denied. "
+            "Please approve the prompt."
+        )
+    )
+    result = await master.handle("write something", user_id="u1")
+    assert result.handled_by == "master:permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_normal_response_passes_through_circuit_breaker(tmp_path):
+    """일반 응답은 detector 영향 받으면 안 됨 — false positive 회귀 방지."""
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+    master.adapter.run = AsyncMock(
+        return_value=_ok_result("여기 코드입니다:\n```python\nprint('hi')\n```")
+    )
+    result = await master.handle("hello world 짜줘", user_id="u1")
+    assert result.handled_by == "master:claude"
+    assert "권한 거부" not in result.response
+
+
+def test_permission_denied_regex_matches_known_phrases():
+    """detector 패턴이 실제 관찰된 거부 표현들을 모두 잡는지 직접 검증."""
+    from src.orchestrator.hermes_master import _looks_like_permission_denied
+
+    matches = [
+        "파일 쓰기 권한이 다시 거부되었습니다",
+        "권한 프롬프트를 한번 더 승인해주셔야",
+        "작성 권한을 허용해주세요",
+        "permission denied",
+        "Permission Denied: cannot write",
+        "approval is required to continue",
+    ]
+    for phrase in matches:
+        assert _looks_like_permission_denied(phrase), f"missed: {phrase!r}"
+
+    non_matches = [
+        "여기 코드입니다",
+        "hello world",
+        "파일을 작성했습니다",
+        "",
+    ]
+    for phrase in non_matches:
+        assert not _looks_like_permission_denied(phrase), (
+            f"false positive on: {phrase!r}"
+        )

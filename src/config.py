@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     master_concurrency: int = 1                   # Max OAuth 시간당 한도 보호
     master_cli_backend: Literal["wsl_subprocess", "local_subprocess"] = "wsl_subprocess"
     master_cli_path: str = "/home/kang/.local/bin/claude"
+    # Repo root — Claude CLI subprocess 의 cwd 로 전달돼야 ``.claude/settings.json``
+    # allow 패턴이 정상 적용된다. ``src/config.py`` 의 부모의 부모 = 리포 루트.
+    # ``PROJECT_ROOT`` env 로 worktree override 가능 (pydantic-settings 자동 매핑).
+    project_root: Path = Path(__file__).resolve().parents[1]
 
     # Phase 10 (2026-05-06): parallel @handle dispatch.
     # 사용자 메시지에 ``@coder`` / ``@reviewer`` 같은 mention 이 2개 이상

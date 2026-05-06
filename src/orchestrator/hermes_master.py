@@ -29,6 +29,7 @@ Phase 11 (2026-05-06): opencode CLI 폐기. Master = Claude CLI (Max OAuth)
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import uuid
 from typing import Any
@@ -58,6 +59,23 @@ _SYSTEM_PROMPT = (
     "Be concise, use Korean when the user does. If the user asks for "
     "code, produce runnable code."
 )
+
+
+# Phase 16 (2026-05-07) — circuit breaker for permission-denied loops.
+# ``claude -p`` 가 권한 거부에 걸리면 응답 텍스트로 "권한 프롬프트를 한번 더
+# 승인해주세요" 류 안내문을 만들어 보낸다. 봇이 이를 그대로 송출하면 사용자
+# "승인한다" 답변이 새 prompt 가 돼 동일 거부를 또 받는 무한 루프가 생긴다.
+# A/B/C 가 정상 적용되면 거의 발생하지 않지만, 회로 차단기로 잡아 운영 안정성
+# 을 보장.
+_PERMISSION_DENIED_RE = re.compile(
+    r"(권한.{0,30}(거부|허용해주|프롬프트|승인해주)"
+    r"|permission denied|허가되지 않|approval.*required)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _looks_like_permission_denied(text: str) -> bool:
+    return bool(text and _PERMISSION_DENIED_RE.search(text))
 
 
 class HermesMasterOrchestrator:
@@ -314,6 +332,12 @@ class HermesMasterOrchestrator:
             substage="master",
         )
 
+        # Phase 16 — circuit breaker. Claude 가 권한 거부에 걸려 안내문을
+        # 응답으로 만들어 보낸 경우, 같은 prompt 재호출은 동일 결과를 낳으므로
+        # 사용자에게 settings/permission-mode 점검을 안내하고 종료.
+        if _looks_like_permission_denied(result.text):
+            return self._handle_permission_denied(task, result.text, t0)
+
         verdict = self.critic.evaluate(
             task,
             output_text=result.text,
@@ -428,6 +452,14 @@ class HermesMasterOrchestrator:
         task.model_name = rev_result.final_model
         task.internal_confidence = rev_result.final_self_score
         task.final_response = rev_result.final_response
+
+        # Phase 16 — circuit breaker (revision loop edition). Final attempt
+        # 의 응답이 권한 거부 안내문이면 retry/escalation 도 동일 결과를
+        # 낳았다는 뜻 → 사용자에게 settings 점검 안내.
+        if _looks_like_permission_denied(rev_result.final_response):
+            return self._handle_permission_denied(
+                task, rev_result.final_response, t0
+            )
 
         if rev_result.succeeded:
             task.status = "succeeded"
@@ -773,6 +805,41 @@ class HermesMasterOrchestrator:
         task.final_response = response
         self._finalize(task, handled_by=handled_by, t0=t0)
         return MasterResult(task=task, response=response, handled_by=handled_by)
+
+    def _handle_permission_denied(
+        self,
+        task: TaskState,
+        raw_text: str,
+        t0: float,
+    ) -> "MasterResult":
+        """Phase 16 회로 차단기 — Claude 응답이 권한 거부 안내로 판정될 때.
+
+        Claude CLI 가 ``-p`` 모드 + 권한 거부에 걸리면 응답 텍스트로
+        "권한 프롬프트를 한번 더 승인해주세요" 류 메시지를 만들어 보낸다.
+        같은 prompt 재호출은 동일 결과를 낳으므로 사용자에게 즉시
+        settings/permission-mode 점검 안내로 응답을 교체.
+        """
+        notice = (
+            "⚠️ Claude 측에서 권한 거부가 발생했습니다. 같은 메시지 재전송은 "
+            "동일 결과를 낳습니다. `.claude/settings.json` 의 allow 패턴 또는 "
+            "`--permission-mode` 설정을 점검하세요. "
+            f"(현재 mode: `acceptEdits`, cwd: `{self.settings.project_root}`)"
+        )
+        log.warning(
+            "master.permission_denied_detected",
+            raw_head=raw_text[:160].replace("\n", " "),
+        )
+        task.status = "failed"
+        task.degraded = True
+        task.final_response = notice
+        self._finalize(
+            task, handled_by="master:permission_denied", t0=t0,
+        )
+        return MasterResult(
+            task=task,
+            response=notice,
+            handled_by="master:permission_denied",
+        )
 
     def _finalize(
         self, task: TaskState, *, handled_by: str, t0: float

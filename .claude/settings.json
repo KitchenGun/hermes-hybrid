@@ -5,6 +5,8 @@
       "Read(/mnt/e/hermes-hybrid/**)",
       "Edit(/mnt/e/hermes-hybrid/**)",
       "Write(E:\\hermes-hybrid\\**)",
+      "Edit(E:\\hermes-hybrid\\**)",
+      "Read(E:\\hermes-hybrid\\**)",
       "Bash(wsl -d Ubuntu -- bash -lc \"curl*9119*\")",
       "Bash(curl -fsS http://127.0.0.1:9119/*)",
       "Bash(curl http://127.0.0.1:9119/*)",
