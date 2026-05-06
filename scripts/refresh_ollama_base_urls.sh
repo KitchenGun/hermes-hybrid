@@ -14,7 +14,7 @@
 set -u
 
 PROFILE_ROOT="$HOME/.hermes/profiles"
-PROFILES=(journal_ops calendar_ops mail_ops kk_job)
+PROFILES=(journal_ops calendar_ops mail_ops kk_job advisor_ops)
 
 HOST_IP=$(ip route show default | awk '/default/{print $3; exit}')
 if [ -z "$HOST_IP" ]; then

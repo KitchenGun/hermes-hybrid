@@ -66,6 +66,55 @@ MAX_RETRIES = 1            # 5xx만 1회 재시도 (4xx는 즉시 실패)
 TIMEOUT_SEC = 15
 USER_AGENT = "hermes-hybrid-journal/0.1 (+https://github.com/anthropics/hermes-hybrid)"
 
+# Korean → canonical column-name aliases. Local LLMs (qwen3:14b, gpt-oss:20b)
+# occasionally emit Korean keys despite the Title-Case examples in the prompt
+# — extracting "활동":"미용실 펌" instead of "Activity":"미용실 펌". Without
+# this map, _validate_required fails with "missing Activity" even though the
+# value is right there under a different key, which masquerades as a user
+# error in the Discord reply. Keep this list narrow: only the keys the prompt
+# explicitly enumerates in Korean (Date / Activity / time / score / etc.).
+KOREAN_KEY_ALIASES: dict[str, str] = {
+    "날짜": "Date",
+    "요일": "Weekday",
+    "시작시간": "Start Time",
+    "시작 시간": "Start Time",
+    "시작": "Start Time",
+    "종료시간": "End Time",
+    "종료 시간": "End Time",
+    "종료": "End Time",
+    "지속시간": "Duration",
+    "소요시간": "Duration",
+    "활동": "Activity",
+    "활동명": "Activity",
+    "분류": "Category",
+    "카테고리": "Category",
+    "세부분류": "Subcategory",
+    "태그": "Tags",
+    "우선순위": "Priority",
+    "집중도": "Focus Score",
+    "집중": "Focus Score",
+    "컨디션": "Energy Score",
+    "에너지": "Energy Score",
+    "난이도": "Difficulty",
+    "딥워크": "Deep Work",
+    "계획여부": "Planned/Unplanned",
+    "결과": "Outcome",
+    "메모": "Notes",
+    "노트": "Notes",
+    "장소": "Location",
+    "위치": "Location",
+    "기기": "Device",
+    "방해": "Interruptions",
+    "기분": "Mood",
+}
+
+# Score columns must be 1~5 ints (or null). Out-of-range values used to flow
+# through and surface as cell strings like "10" — the prompt's prose says the
+# LLM should clamp, but local models slip up (e.g. "컨디션 10" → Energy
+# Score: 10). Drop invalid scores to None at the script boundary so a single
+# rogue value can't poison Apps Script's setValues row.
+SCORE_COLUMNS: tuple[str, ...] = ("Focus Score", "Energy Score", "Difficulty")
+
 # Discord embed colors (decimal).
 DISCORD_RED = 0xED4245
 DISCORD_ALERT_TIMEOUT_SEC = 5
@@ -114,13 +163,14 @@ def _merge_planned_unplanned(r: dict[str, Any]) -> dict[str, Any]:
 
 
 def _canonicalize_keys(r: dict[str, Any]) -> dict[str, Any]:
-    """Map common case/snake variants ("date", "start_time", "deep_work") to
-    canonical Title-Case ("Date", "Start Time", "Deep Work"). Local LLMs
-    (gpt-oss:20b, qwen3) often emit lowercased or snake_cased keys despite
-    the Title-Case examples in the prompt; rejecting those just because of
-    case turned a working extraction into a "missing required field" failure
-    and a 300s timeout retry. Normalize defensively at the script boundary
-    so the LLM's output style doesn't gate row insertion.
+    """Map common case/snake variants ("date", "start_time", "deep_work") and
+    Korean aliases ("활동", "컨디션") to canonical Title-Case ("Date",
+    "Start Time", "Activity", "Energy Score"). Local LLMs (gpt-oss:20b,
+    qwen3) often emit lowercased, snake_cased, or Korean keys despite the
+    Title-Case examples in the prompt; rejecting those just because of case
+    turned a working extraction into a "missing required field" failure and
+    a 300s timeout retry. Normalize defensively at the script boundary so
+    the LLM's output style doesn't gate row insertion.
     """
     r = _merge_planned_unplanned(r)
     canonical = {col.lower().replace(" ", "_").replace("/", "_"): col for col in COLUMNS}
@@ -130,7 +180,14 @@ def _canonicalize_keys(r: dict[str, Any]) -> dict[str, Any]:
         if k in canonical.values():
             out[k] = v
             continue
-        # 2) normalize: lowercase, strip spaces/underscores/slashes
+        # 2) Korean alias (e.g. "활동" → "Activity"). Match key as-is and
+        # also after stripping internal whitespace, since LLMs sometimes
+        # emit "시작 시간" with or without the space.
+        ko = KOREAN_KEY_ALIASES.get(k) or KOREAN_KEY_ALIASES.get(k.replace(" ", ""))
+        if ko is not None:
+            out[ko] = v
+            continue
+        # 3) normalize: lowercase, strip spaces/underscores/slashes
         norm = k.lower().replace(" ", "_").replace("/", "_").replace("-", "_")
         col = canonical.get(norm)
         if col is not None:
@@ -138,6 +195,38 @@ def _canonicalize_keys(r: dict[str, Any]) -> dict[str, Any]:
         else:
             out[k] = v  # unknown key — preserve so caller can debug
     return out
+
+
+def _coerce_score(val: Any) -> Any:
+    """Coerce a Focus/Energy/Difficulty value to a 1~5 int or None.
+
+    Accepts ints in range, numeric strings ("4"), and clamps anything outside
+    1~5 (including the "컨디션 10" case observed in production). The prompt
+    instructs the LLM to keep scores within 1~5, but local models occasionally
+    pass through the user's raw number — this is the last safety net before
+    the value reaches Apps Script.
+    """
+    if val is None:
+        return None
+    if isinstance(val, bool):  # bool is an int subclass — reject explicitly
+        return None
+    if isinstance(val, int):
+        return val if 1 <= val <= 5 else None
+    if isinstance(val, float):
+        if val.is_integer():
+            i = int(val)
+            return i if 1 <= i <= 5 else None
+        return None
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return None
+        try:
+            i = int(s)
+        except ValueError:
+            return None
+        return i if 1 <= i <= 5 else None
+    return None
 
 
 def _normalize(rows: list[dict[str, Any]]) -> list[list[Any]]:
@@ -159,6 +248,8 @@ def _normalize(rows: list[dict[str, Any]]) -> list[list[Any]]:
         row: list[Any] = []
         for col in COLUMNS:
             val = r.get(col)
+            if col in SCORE_COLUMNS:
+                val = _coerce_score(val)
             if col == "Tags" and isinstance(val, list):
                 val = ", ".join(str(t) for t in val)
             elif val is None:
@@ -215,9 +306,15 @@ def _validate_required(rows: list[dict[str, Any]]) -> None:
         if not canon.get("Activity"):
             missing.append("Activity")
         if missing:
+            # Include the raw keys the LLM actually sent — without this, a
+            # repeat of the "활동":"미용실 펌" → missing-Activity case looks
+            # like a phantom user error from the bot's reply alone, with no
+            # way to tell whether canonicalization or the LLM's output is at
+            # fault. Sorted for deterministic ordering across Python builds.
+            raw_keys = sorted(r.keys()) if isinstance(r, dict) else []
             print(
                 f"[post_to_sheet] row {i}: missing required field(s): "
-                f"{', '.join(missing)}",
+                f"{', '.join(missing)} | got keys: {raw_keys}",
                 file=sys.stderr,
             )
             sys.exit(1)

@@ -99,15 +99,61 @@ ExecStart=
 ExecStart=/usr/bin/script -qfc "/home/kang/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile kk_job gateway run --replace" /home/kang/.hermes/profiles/kk_job/logs/gateway.log
 OVR
 
-# ── 3. Reload + enable.
+# ── 3. advisor_ops gateway: full unit + TTY-wrapper override.
+#       advisor_ops 의 cron scheduler 가 자동 tick 하려면 그 profile 의
+#       gateway 프로세스가 떠 있어야 한다. 이게 없으면 weekly_advisor_scan
+#       이 last_run_at=null 인 채로 영원히 대기. 패턴은 kk_job 과 동일.
+cat > "$SYSTEMD_USER_DIR/hermes-gateway-advisor_ops.service" <<UNIT
+[Unit]
+Description=Hermes Agent Gateway - advisor_ops profile
+After=network.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=$HERMES_VENV/bin/python -m hermes_cli.main --profile advisor_ops gateway run --replace
+WorkingDirectory=$HERMES_AGENT
+EnvironmentFile=-/home/kang/.hermes/.env
+EnvironmentFile=-/home/kang/.hermes/profiles/advisor_ops/.env
+# DISCORD_BOT_TOKEN 충돌 회피 — calendar_ops override 와 동일 사유.
+Environment=DISCORD_BOT_TOKEN=
+Environment="PATH=$HERMES_VENV/bin:$HERMES_AGENT/node_modules/.bin:/home/kang/.hermes/node/bin:/home/kang/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="VIRTUAL_ENV=$HERMES_VENV"
+Environment="HERMES_HOME=$PROFILES_HOME/advisor_ops"
+Restart=on-failure
+RestartSec=30
+RestartForceExitStatus=75
+KillMode=mixed
+KillSignal=SIGTERM
+ExecReload=/bin/kill -USR1 \$MAINPID
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+UNIT
+
+mkdir -p "$SYSTEMD_USER_DIR/hermes-gateway-advisor_ops.service.d"
+mkdir -p "$PROFILES_HOME/advisor_ops/logs"
+cat > "$SYSTEMD_USER_DIR/hermes-gateway-advisor_ops.service.d/override.conf" <<'OVR'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/script -qfc "/home/kang/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile advisor_ops gateway run --replace" /home/kang/.hermes/profiles/advisor_ops/logs/gateway.log
+OVR
+
+# ── 4. Reload + enable.
 systemctl --user daemon-reload
 systemctl --user reset-failed hermes-gateway-calendar_ops.service 2>/dev/null || true
 systemctl --user reset-failed hermes-gateway-kk_job.service 2>/dev/null || true
+systemctl --user reset-failed hermes-gateway-advisor_ops.service 2>/dev/null || true
 systemctl --user enable --now hermes-gateway-calendar_ops.service
 systemctl --user enable --now hermes-gateway-kk_job.service
+systemctl --user enable --now hermes-gateway-advisor_ops.service
 
-# ── 4. Status report.
-for svc in hermes-gateway-calendar_ops hermes-gateway-kk_job; do
+# ── 5. Status report.
+for svc in hermes-gateway-calendar_ops hermes-gateway-kk_job hermes-gateway-advisor_ops; do
     state=$(systemctl --user is-active "$svc.service" 2>&1 || true)
     echo "[install_gateway_units] $svc: $state"
 done

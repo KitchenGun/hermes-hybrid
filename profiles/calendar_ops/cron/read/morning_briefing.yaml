@@ -32,6 +32,27 @@ ledger:
   tags: ["calendar", "read", "briefing", "daily"]
 
 prompt: |
+  ⚠️  엄격한 도구 사용 규칙 (위반시 잡 fail) ⚠️
+  1. datetime 인자는 반드시 ISO 8601 full format: "2026-05-05T00:00:00+09:00"
+     (초 ":00" 포함, 시간대 "+09:00" 포함). 절대 "2026-05-05T00:00" 같은
+     단축형 사용 금지. mcp_google_calendar_list_events 의 timeMin/timeMax 가
+     단축형이면 MCP 가 reject 하고 잡이 죽는다.
+  2. 학습 데이터의 옛 날짜(2023, 2024) 절대 사용 금지. user prompt 의 [현재 날짜]
+     기준으로만 계산.
+  3. timeMin/timeMax 는 한 호출에 하루 범위만 사용 (예: 오늘=00:00:00+09:00 ~
+     다음날 00:00:00+09:00).
+  4. mcp_google_calendar_list_events 호출 시 fields 인자는
+     ["id","summary","start","end","location","attendees"] 만 사용 (htmlLink,
+     transparency 등 빼서 응답 길이 축소 — model context 절약).
+  5. 도구 호출은 plain text 로 emit 하지 말 것. write_file/terminal/MCP 모두 실제
+     tool_use 로만. 만약 텍스트로 "terminal(command=...)" 같은 형식 출력 시 잡
+     실패로 간주.
+  6. 파일 경로는 이 prompt 본문에 적힌 절대경로 그대로 복사. 절대 추측 금지.
+     이 잡은 WSL Linux 에서 도는데 학습 데이터 영향으로 모델이 자꾸
+     "/mnt/c/Users/User/.hermes/..." 같은 Windows 경로를 환각하는데 그런 경로는
+     존재하지 않는다. post_webhook.py 의 실제 경로는 정확히
+     "/home/kang/.hermes/profiles/calendar_ops/skills/messaging/discord_notify/scripts/post_webhook.py"
+
   역할: 개인 캘린더 비서. `SOUL.md` 준수.
 
   ## MCP 호출 규칙 (필수)
@@ -53,20 +74,24 @@ prompt: |
         📅 내일 (M월 D일 요일)
           • ...
      각 섹션 0건이면 "일정 없음".
-  4) **두 단계로 webhook 발송 (필수). 파이프 명령은 Hermes 보안 스캔에 차단되니 파일 경유.**
-     - 단계 4-A: `write_file` 도구로 본문을 임시 파일에 저장
-       ```
-       write_file(path="/tmp/morning_briefing_body.txt", content="<3) 단계 본문>")
-       ```
-     - 단계 4-B: `terminal` 도구로 post_webhook.py 실행 (파이프 없이, --body-file 옵션 사용)
-       ```
-       terminal(command="python3 /home/kang/.hermes/profiles/calendar_ops/skills/messaging/discord_notify/scripts/post_webhook.py --title '오늘의 일정 브리핑' --color 0x5865F2 --footer 'calendar_ops · morning_briefing' --body-file /tmp/morning_briefing_body.txt")
-       ```
+  4) **단일 terminal 호출로 webhook 발송 (필수).**
+     `terminal` 도구 한 번으로 post_webhook.py 실행. `--body` 인자에 3) 단계의
+     본문 텍스트를 직접 전달 (write_file 단계 불필요). 본문에 작은따옴표가 들어가면
+     쉘 escape 위해 큰따옴표로 인자 감싸고 안의 큰따옴표는 \" 로 escape.
+     ```
+     terminal(command="python3 /home/kang/.hermes/profiles/calendar_ops/skills/messaging/discord_notify/scripts/post_webhook.py --title '오늘의 일정 브리핑' --color 0x5865F2 --footer 'calendar_ops · morning_briefing' --body \"<3) 단계 본문 그대로>\"")
+     ```
      exit code 0 = HTTP 204 성공. 4xx/5xx 시 1회 재시도, 그래도 실패면 에러 보고.
   5) terminal 결과를 최종 응답에 한 줄: "✅ 전송 완료 (status=204)" 또는 "⚠️ 전송 실패 (exit=N)".
 
-  6) **Kanban task 발행 (Phase 2 통합)**: 다음 조건 하나라도 만족하는 미팅을 Kanban
-     task로 발행 (사용자 사전 준비 추적용).
+  ⚠️ **반드시 위 단계 4 (write_file → terminal post_webhook) 까지 완료해라**.
+     도구 호출은 plain text 가 아니라 실제 tool_use 형식으로 emit. write_file 의
+     content 인자에는 "본문 단계 3) 결과를 그대로" 넣고, terminal 의 command 인자는
+     위 정확한 명령 한 줄을 통째로. 이 두 도구 호출 후 단계 5 한 줄 응답만 출력.
+     아래 단계 6 (Kanban) 은 OPTIONAL — 단계 4 가 성공한 후에만 시도, 실패시 즉시 종료.
+
+  6) **(OPTIONAL) Kanban task 발행 (Phase 2 통합)**: 단계 4 webhook 송신 성공 (exit 0)
+     일 때만 시도. 실패시 건너뛰고 잡 종료.
      조건:
        a) attendees 2명 이상 (외부 회의/미팅)
        b) 제목/설명에 키워드: 면접/미팅/회의/interview/sync/review

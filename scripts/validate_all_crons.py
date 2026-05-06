@@ -81,63 +81,298 @@ def trigger_job(profile: str, job_id: str) -> bool:
     return ok
 
 
+def _wsl_default_gw_ip() -> str | None:
+    """Default gateway IP inside WSL — usually the Windows host on mirrored
+    networking. Used as a fallback when ``localhost`` doesn't reach ollama."""
+    try:
+        out = subprocess.check_output(
+            ["ip", "route", "show", "default"], text=True, timeout=2
+        )
+        parts = out.split()
+        return parts[2] if len(parts) >= 3 else None
+    except Exception:
+        return None
+
+
+def _ollama_probe() -> str | None:
+    """Return the host that responded on port 11434, or None."""
+    import urllib.request
+
+    candidates = ["localhost"]
+    gw = _wsl_default_gw_ip()
+    if gw:
+        candidates.append(gw)
+    for host in candidates:
+        try:
+            with urllib.request.urlopen(
+                f"http://{host}:11434/api/tags", timeout=2
+            ) as r:
+                if r.status == 200:
+                    return host
+        except Exception:
+            continue
+    return None
+
+
+def ensure_ollama_up(timeout: int = 60) -> bool:
+    """Block until ollama answers ``/api/tags`` on either localhost or the
+    WSL default-gateway IP.  If it doesn't respond, attempt to spawn
+    ``ollama serve`` on the **Windows** side via cmd.exe interop — this
+    mirrors run_all.bat step 1, since ollama runs as a Windows process and
+    listens on a port WSL reaches via mirrored networking. Returns True on
+    success, False on timeout.
+    """
+    host = _ollama_probe()
+    if host:
+        log(f"ollama already up at http://{host}:11434")
+        return True
+
+    log("ollama not responding — attempting Windows-side spawn via cmd.exe")
+    try:
+        # ``start /MIN`` returns immediately; ollama serve runs detached.
+        # Use Popen so we don't block on a never-exiting child.
+        subprocess.Popen(
+            ["cmd.exe", "/c", "start", "/MIN", "ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        log("  cmd.exe not found — are we outside WSL? abort")
+        return False
+    except Exception as e:
+        log(f"  spawn failed: {e}")
+
+    log(f"  waiting up to {timeout}s for port 11434…")
+    for _ in range(timeout):
+        host = _ollama_probe()
+        if host:
+            log(f"  ollama is up at http://{host}:11434")
+            return True
+        time.sleep(1)
+    log("  ABORT: ollama did not respond within timeout")
+    return False
+
+
+def jobs_json_meta(profile: str, job_id: str) -> dict | None:
+    """Read the live job entry from jobs.json — source of truth for last_run_at,
+    last_status, last_error, last_delivery_error.
+
+    The cron scheduler updates these fields on every run completion, so they
+    are more reliable than scanning sessions/ for a freshly-modified file.
+    """
+    p = HERMES_HOME / "profiles" / profile / "cron" / "jobs.json"
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    jobs = data.get("jobs") if isinstance(data, dict) else data
+    if not isinstance(jobs, list):
+        return None
+    for j in jobs:
+        if isinstance(j, dict) and j.get("id") == job_id:
+            return j
+    return None
+
+
 def newest_session(profile: str, job_id: str, since: float) -> dict | None:
-    """Find the newest session file produced after ``since`` (epoch)."""
+    """Find the newest session file for the job. ``since`` is used only as a
+    soft lower bound (with 10-minute grace) — the scheduler may backfill a
+    job onto its next tick, so a session whose mtime is slightly earlier
+    than the trigger is still legitimate.
+    """
     pattern = str(
         HERMES_HOME / "profiles" / profile / "sessions" / f"session_cron_{job_id}_*.json"
     )
-    files = [f for f in glob.glob(pattern) if os.path.getmtime(f) >= since]
+    grace = since - 600  # 10-minute backfill grace
+    files = [f for f in glob.glob(pattern) if os.path.getmtime(f) >= grace]
+    if not files:
+        # Fall back to the absolute newest file matching the pattern, regardless
+        # of mtime. The meta check (last_run_at) decides whether to trust it.
+        files = list(glob.glob(pattern))
     if not files:
         return None
     files.sort(key=os.path.getmtime, reverse=True)
-    return {"path": files[0], **json.loads(Path(files[0]).read_text())}
+    try:
+        return {"path": files[0], **json.loads(Path(files[0]).read_text())}
+    except Exception:
+        return None
 
 
-def assess(session: dict | None) -> tuple[str, str]:
-    """Return (status, detail) — status one of: ok | incomplete | failed | no_session."""
-    if session is None:
-        return "no_session", "세션 파일 미생성 (cron tick 안 함 또는 trigger 미반영)"
+def _session_webhook_ok(session: dict) -> bool:
+    """True if the session shows the prompt's own post_webhook.py call
+    succeeded (status=204 / "✅ 전송 완료" in last assistant text).
+
+    This is independent of hermes' built-in deliver=discord delivery, which
+    needs DISCORD_HOME_CHANNEL. Most jobs in this repo deliver via prompt-
+    embedded post_webhook.py, so the meta-level last_delivery_error is
+    expected to be set even on a fully successful run.
+    """
     msgs = session.get("messages", [])
-    model = session.get("model", "?")
-    if not msgs:
-        return "failed", "messages 0개"
-    # Look at the last 5 tool-role messages — webhook이 성공하면 200/204/OK 표식
-    tail_tools = [m for m in msgs if m.get("role") == "tool"][-6:]
-    has_webhook_success = False
-    has_error = False
-    for m in tail_tools:
-        c = str(m.get("content", ""))
-        if '"error"' in c and ("MCP error" in c or "exit_code" in c and '"exit_code": 0' not in c):
-            has_error = True
-        if "post_webhook" in c.lower() or "sheets_append" in c.lower():
-            if '"exit_code": 0' in c and '"error": null' in c:
-                has_webhook_success = True
-    # 마지막 assistant 응답에 "✅ 전송 완료" 같은 한국어 표시
     last_assistant = next(
-        (m for m in reversed(msgs) if m.get("role") == "assistant"),
-        None,
+        (m for m in reversed(msgs) if m.get("role") == "assistant"), None,
     )
-    final_text = ""
+    text = ""
     if last_assistant:
         c = last_assistant.get("content")
         if isinstance(c, str):
-            final_text = c
+            text = c
         elif isinstance(c, list):
-            final_text = " ".join(
-                str(x.get("text") or x.get("type") or x)[:200] for x in c if x
+            text = " ".join(
+                str(x.get("text") or "") for x in c
+                if isinstance(x, dict) and x.get("type") == "text"
             )
-    delivered = (
-        "✅ 전송 완료" in final_text
-        or "전송 성공" in final_text
-        or "204" in final_text
-        or "Successfully sent" in final_text
-        or has_webhook_success
-    )
-    if delivered:
-        return "ok", f"webhook 전송 성공, model={model}"
-    if has_error:
-        return "incomplete", f"tool error 있음, model={model}, msgs={len(msgs)}"
-    return "incomplete", f"webhook 호출 흔적 없음, model={model}, msgs={len(msgs)}"
+    if any(k in text for k in ("✅ 전송 완료", "전송 성공", "Successfully sent")):
+        return True
+    if "204" in text:
+        return True
+    # Tool-side: any post_webhook.py / sheets_append tool with exit_code 0.
+    tail_tools = [m for m in msgs if m.get("role") == "tool"][-8:]
+    for m in tail_tools:
+        c = str(m.get("content", ""))
+        cl = c.lower()
+        if ("post_webhook" in cl or "sheets_append" in cl) \
+                and '"exit_code": 0' in c and '"error": null' in c:
+            return True
+    return False
+
+
+def assess(profile: str, job_id: str, session: dict | None, trigger_at: float) -> tuple[str, str, str]:
+    """Return (status, detail, model). status one of:
+        ok | incomplete | delivery_failed | failed | no_session
+
+    Authoritative source: jobs.json (last_run_at, last_status, last_delivery_error).
+    Session file is consulted for model name AND for prompt-embedded webhook
+    success — when the prompt does its own post_webhook.py call, hermes-level
+    last_delivery_error is irrelevant if the in-prompt call succeeded.
+    """
+    meta = jobs_json_meta(profile, job_id)
+    sess_model = (session or {}).get("model", "?") if session else "?"
+    meta_model = (meta or {}).get("model", "?") if meta else "?"
+    model = sess_model if sess_model != "?" else meta_model
+
+    # 1) jobs.json meta first
+    if meta is None:
+        if session is None:
+            return "no_session", "jobs.json 미등록 + 세션 파일 없음", model
+        return "incomplete", "jobs.json 미등록 (세션은 있음)", model
+
+    last_run = meta.get("last_run_at")
+    last_status = meta.get("last_status")
+    last_error = meta.get("last_error") or ""
+    last_delivery_error = meta.get("last_delivery_error") or ""
+
+    ran_recently = False
+    if last_run:
+        try:
+            run_dt = datetime.datetime.fromisoformat(last_run)
+            ran_recently = run_dt.timestamp() >= trigger_at - 600
+        except Exception:
+            ran_recently = False
+
+    if not last_run:
+        return "no_session", "한 번도 실행 안 됨 (last_run_at=null)", model
+    if not ran_recently:
+        return (
+            "no_session",
+            f"이번 trigger 후 미실행 (last_run={last_run[:19]} < trigger {datetime.datetime.fromtimestamp(trigger_at):%H:%M:%S})",
+            model,
+        )
+
+    if last_status != "ok":
+        return "failed", f"last_status={last_status}, err={last_error[:100]}", model
+
+    # Prompt-embedded post_webhook.py path: if session shows the in-prompt
+    # webhook call succeeded, the run is OK regardless of hermes's own
+    # last_delivery_error (which is for deliver=discord auto-delivery — a
+    # separate path, requires DISCORD_HOME_CHANNEL we deliberately don't set).
+    webhook_ok_in_prompt = bool(session and _session_webhook_ok(session))
+    if webhook_ok_in_prompt:
+        return "ok", f"prompt 내 webhook 성공 (model={model})", model
+
+    if last_delivery_error:
+        return (
+            "delivery_failed",
+            f"hermes auto-delivery 실패 + prompt-내 webhook 흔적 없음: {last_delivery_error[:100]}",
+            model,
+        )
+
+    # No delivery error and no webhook success marker — check for tool errors.
+    if session is not None:
+        msgs = session.get("messages", [])
+        tail_tools = [m for m in msgs if m.get("role") == "tool"][-6:]
+        for m in tail_tools:
+            c = str(m.get("content", ""))
+            if '"error":' in c and '"error": null' not in c:
+                if "MCP error" in c or ("exit_code" in c and '"exit_code": 0' not in c):
+                    return "incomplete", f"tool error in session tail (model={model})", model
+
+        # Strict mode (2026-05-05): hermes status=ok + deliver=local 만으론
+        # ok 인지 모른다. 잡이 webhook 호출 단계에 못 가고 plain-text emit
+        # 으로 끝났을 수 있다. 마지막 assistant 텍스트에 webhook 성공 표시
+        # (✅/204/전송 완료) 도, 도구 측 post_webhook exit 0 도 없으면
+        # incomplete 로 잡는다 — 사용자가 디스코드 채널에서 안 보였는데
+        # validate 가 ✅로 잡으면 false-positive 감지 못 함.
+        last_assistant = next(
+            (m for m in reversed(msgs) if m.get("role") == "assistant"), None
+        )
+        text = ""
+        if last_assistant:
+            c = last_assistant.get("content")
+            if isinstance(c, str):
+                text = c
+            elif isinstance(c, list):
+                text = " ".join(
+                    str(x.get("text") or "") for x in c
+                    if isinstance(x, dict) and x.get("type") == "text"
+                )
+        # Suspicious markers that mean the model bailed:
+        bail_markers = (
+            "transmission failed", "전송 실패", "전송 중단", "잡 실행 중단",
+            "관리자에게 문의", "[SILENT]", "보고서 파일이 생성되지 않",
+            "errorCode:", "No such file or directory",
+        )
+        # Plain-text tool-call emit markers (model didn't actually call the tool):
+        plain_tool_emit = (
+            "terminal: python3", "terminal:python3", "write_file(path=",
+            'terminal(command="', "terminal(command='",
+        )
+        if any(m in text for m in bail_markers):
+            return "incomplete", f"잡이 bail/실패 메시지로 종료 (model={model})", model
+        if any(m in text for m in plain_tool_emit):
+            return (
+                "incomplete",
+                f"plain-text 로 도구 호출 emit (실제 호출 안 됨, model={model})",
+                model,
+            )
+
+    return "ok", f"hermes status=ok (model={model})", model
+
+
+def wait_until_run(profile: str, job_id: str, trigger_at: float, timeout_s: int) -> bool:
+    """Poll jobs.json every 30s for ``last_run_at > trigger_at``. Returns
+    True when the job has run after the trigger, False on timeout.
+
+    Replaces the fixed-sleep wait — hermes scheduler is sequential, so
+    actual completion time scales with how many other jobs are queued
+    ahead of this one. A short fixed sleep produced false negatives.
+    """
+    deadline = time.time() + timeout_s
+    poll = 30
+    while time.time() < deadline:
+        meta = jobs_json_meta(profile, job_id)
+        last_run = (meta or {}).get("last_run_at")
+        if last_run:
+            try:
+                run_ts = datetime.datetime.fromisoformat(last_run).timestamp()
+                if run_ts >= trigger_at - 5:  # tiny clock skew tolerance
+                    return True
+            except Exception:
+                pass
+        time.sleep(poll)
+    return False
 
 
 def write_report(results: list[dict]) -> None:
@@ -148,6 +383,7 @@ def write_report(results: list[dict]) -> None:
     md_lines.append(f"- 생성 시각: **{now:%Y-%m-%d %H:%M:%S}** (KST)")
     md_lines.append(f"- 총 잡 수: **{len(results)}**")
     md_lines.append(f"- 성공(ok): **{sum(1 for r in results if r['status']=='ok')}**")
+    md_lines.append(f"- delivery 실패(📵): **{sum(1 for r in results if r['status']=='delivery_failed')}**")
     md_lines.append(f"- 부분 동작(incomplete): **{sum(1 for r in results if r['status']=='incomplete')}**")
     md_lines.append(f"- 실패(failed/no_session): **{sum(1 for r in results if r['status'] in ('failed','no_session'))}**")
     md_lines.append("")
@@ -248,15 +484,190 @@ def shutdown_machine(delay_sec: int = 60) -> None:
         log(f"shutdown.exe 호출 실패: {e}")
 
 
+def parallel_run(only: list[tuple[str, str, str]] | None = None) -> list[dict]:
+    """Trigger every job (or just ``only``), then poll jobs.json until
+    each one's last_run_at advances past its trigger time. Hermes scheduler
+    processes one job at a time per profile, so simultaneous triggers just
+    queue — the wall-clock total ends up similar to sequential but we don't
+    pay the WAIT_SEC overhead per job.
+
+    Returns the same result dict list ``main`` produces.
+    """
+    jobs_to_run = only if only is not None else JOBS
+    trigger_times: dict[tuple[str, str], float] = {}
+    name_for: dict[tuple[str, str], str] = {}
+
+    log(f"=== parallel: trigger {len(jobs_to_run)} job(s) ===")
+    for profile, job_id, name in jobs_to_run:
+        before = time.time()
+        if trigger_job(profile, job_id):
+            trigger_times[(profile, job_id)] = before
+            name_for[(profile, job_id)] = name
+            log(f"  triggered {name}")
+        else:
+            log(f"  TRIGGER FAILED {name}")
+        time.sleep(2)  # tiny stagger so logs don't interleave at the daemon
+
+    # Poll up to 60 minutes total — empirically each job is 2-13 min, and
+    # hermes serializes per-profile. 60 min covers all 11 jobs.
+    deadline = time.time() + 3600
+    pending = dict(trigger_times)
+    last_logged = 0
+    while pending and time.time() < deadline:
+        time.sleep(30)
+        for k in list(pending.keys()):
+            prof, jid = k
+            meta = jobs_json_meta(prof, jid)
+            last_run = (meta or {}).get("last_run_at")
+            if last_run:
+                try:
+                    run_ts = datetime.datetime.fromisoformat(last_run).timestamp()
+                    if run_ts >= pending[k] - 5:
+                        log(f"  done: {name_for[k]} ({len(trigger_times)-len(pending)+1}/{len(trigger_times)})")
+                        del pending[k]
+                except Exception:
+                    pass
+        # Heartbeat every 5 min even if nothing finished
+        if int(time.time() // 300) != last_logged:
+            last_logged = int(time.time() // 300)
+            log(f"  [heartbeat] {len(pending)}/{len(trigger_times)} pending")
+
+    if pending:
+        log(f"  TIMEOUT: {len(pending)} job(s) never ran:")
+        for k in pending:
+            log(f"    - {name_for[k]} ({k[0]}/{k[1]})")
+
+    # Build results
+    results: list[dict] = []
+    for profile, job_id, name in jobs_to_run:
+        before = trigger_times.get((profile, job_id), time.time())
+        sess = newest_session(profile, job_id, before)
+        status, detail, model = assess(profile, job_id, sess, before)
+        emoji = {
+            "ok": "✅", "incomplete": "⚠️", "delivery_failed": "📵",
+            "failed": "❌", "no_session": "❌",
+        }[status]
+        rec = {
+            "name": name, "profile": profile, "job_id": job_id,
+            "model": model, "status": status, "status_emoji": emoji,
+            "detail": detail,
+            "msg_count": len((sess or {}).get("messages", [])),
+        }
+        if sess:
+            try:
+                s = datetime.datetime.fromisoformat(sess["session_start"])
+                e = datetime.datetime.fromisoformat(sess["last_updated"])
+                rec["duration"] = f"{(e - s).total_seconds():.0f}s"
+            except Exception:
+                rec["duration"] = "?"
+        else:
+            rec["duration"] = "-"
+        results.append(rec)
+        log(f"  result: {emoji} {name} — {detail}")
+    return results
+
+
 def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--from-meta",
+        action="store_true",
+        help="Skip the trigger+wait loop and read jobs.json meta directly. "
+             "Use this for fast post-mortem analysis when ollama/gateway "
+             "is down or you've already run the jobs once.",
+    )
+    ap.add_argument(
+        "--no-shutdown",
+        action="store_true",
+        help="Don't shutdown the machine at the end (overrides default).",
+    )
+    ap.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Trigger all jobs at once and poll until each completes (max 60 min total). "
+             "Much faster than the default sequential trigger+sleep loop because hermes "
+             "scheduler queues triggers and processes them serially per profile anyway.",
+    )
+    ap.add_argument(
+        "--only",
+        type=str,
+        help="Comma-separated job names to run (parallel only). e.g. --only weekly_advisor_scan,weather_briefing",
+    )
+    args = ap.parse_args()
+
     log("=== validate_all_crons.py 시작 ===")
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     overall_start = time.time()
     results: list[dict] = []
 
+    # Real trigger path needs ollama to answer the cron jobs' LLM calls.
+    # --from-meta only reads jobs.json so ollama state is irrelevant.
+    if not args.from_meta:
+        if not ensure_ollama_up(timeout=60):
+            log("ABORT: ollama 미응답 — 잡 trigger 의미 없음. --from-meta 로 메타만 평가하려면 다시 호출.")
+            return 2
+
+    # --parallel: trigger all jobs (or --only subset) at once and poll.
+    if args.parallel:
+        only_filter: list[tuple[str, str, str]] | None = None
+        if args.only:
+            wanted = {n.strip() for n in args.only.split(",") if n.strip()}
+            only_filter = [(p, jid, name) for p, jid, name in JOBS if name in wanted]
+            if not only_filter:
+                log(f"ABORT: --only matched no jobs (wanted={wanted})")
+                return 2
+        results = parallel_run(only_filter)
+        log(f"\n=== parallel 검증 완료 ({time.time()-overall_start:.0f}s) ===")
+        write_report(results)
+        commit_final_models(results)
+        if args.from_meta or args.no_shutdown:
+            log("--no-shutdown — shutdown 건너뜀")
+        else:
+            shutdown_machine(delay_sec=120)
+        log("=== 종료 ===")
+        return 0
+
     for profile, job_id, name in JOBS:
         log(f"\n--- {name} ({profile}) ---")
         before = time.time()
+
+        if args.from_meta:
+            # No trigger — assess against the existing jobs.json snapshot.
+            # Use the job's recorded last_run_at as the "trigger" reference
+            # so the recent-run check still passes for genuinely stale runs.
+            meta = jobs_json_meta(profile, job_id)
+            last_run = (meta or {}).get("last_run_at")
+            if last_run:
+                try:
+                    before = datetime.datetime.fromisoformat(last_run).timestamp()
+                except Exception:
+                    pass
+            sess = newest_session(profile, job_id, before)
+            status, detail, model = assess(profile, job_id, sess, before)
+            emoji = {
+                "ok": "✅", "incomplete": "⚠️", "delivery_failed": "📵",
+                "failed": "❌", "no_session": "❌",
+            }[status]
+            rec = {
+                "name": name, "profile": profile, "job_id": job_id,
+                "model": model, "status": status, "status_emoji": emoji,
+                "detail": detail,
+                "msg_count": len((sess or {}).get("messages", [])),
+            }
+            if sess:
+                try:
+                    s = datetime.datetime.fromisoformat(sess["session_start"])
+                    e = datetime.datetime.fromisoformat(sess["last_updated"])
+                    rec["duration"] = f"{(e - s).total_seconds():.0f}s"
+                except Exception:
+                    rec["duration"] = "?"
+            else:
+                rec["duration"] = "-"
+            results.append(rec)
+            log(f"  [meta] {emoji} {status} — {detail}")
+            continue
+
         # gateway 가 죽었으면 활성 시도 (재시작은 매번 안 함)
         ok = trigger_job(profile, job_id)
         if not ok:
@@ -270,16 +681,27 @@ def main() -> int:
             )
             continue
 
-        wait = WAIT_SEC.get(name, 360)
-        log(f"  triggered, waiting {wait}s for completion")
-        time.sleep(wait)
+        # Polling wait — hermes scheduler is sequential per profile and
+        # ollama serializes inference, so a fixed sleep gave false negatives
+        # (jobs took 9-13 min when WAIT_SEC was 6 min). Poll last_run_at
+        # until it advances past our trigger; max 20 min per job.
+        max_wait = max(WAIT_SEC.get(name, 360) * 3, 1200)
+        log(f"  triggered, polling for last_run > trigger (max {max_wait}s)")
+        ran = wait_until_run(profile, job_id, before, max_wait)
+        log(f"  poll {'done' if ran else 'TIMEOUT'} after {time.time()-before:.0f}s")
 
         sess = newest_session(profile, job_id, before)
-        status, detail = assess(sess)
-        emoji = {"ok": "✅", "incomplete": "⚠️", "failed": "❌", "no_session": "❌"}[status]
+        status, detail, model = assess(profile, job_id, sess, before)
+        emoji = {
+            "ok": "✅",
+            "incomplete": "⚠️",
+            "delivery_failed": "📵",
+            "failed": "❌",
+            "no_session": "❌",
+        }[status]
         rec = {
             "name": name, "profile": profile, "job_id": job_id,
-            "model": (sess or {}).get("model", "?"),
+            "model": model,
             "status": status, "status_emoji": emoji, "detail": detail,
             "msg_count": len((sess or {}).get("messages", [])),
         }
@@ -298,8 +720,11 @@ def main() -> int:
     log(f"\n=== 모든 잡 검증 완료 ({time.time()-overall_start:.0f}s) ===")
     write_report(results)
     commit_final_models(results)
-    log("shutdown 예약")
-    shutdown_machine(delay_sec=120)
+    if args.from_meta or args.no_shutdown:
+        log("--from-meta or --no-shutdown — shutdown 건너뜀")
+    else:
+        log("shutdown 예약")
+        shutdown_machine(delay_sec=120)
     log("=== 종료 ===")
     return 0
 

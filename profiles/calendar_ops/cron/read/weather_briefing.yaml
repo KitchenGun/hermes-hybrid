@@ -35,6 +35,26 @@ ledger:
   tags: ["weather", "read", "briefing", "daily"]
 
 prompt: |
+  ⚠️  엄격한 도구 사용 규칙 (위반시 잡 fail) ⚠️
+  1. datetime 인자는 반드시 ISO 8601 full format: "2026-05-05T00:00:00+09:00"
+     (초 ":00" 포함, 시간대 "+09:00" 포함). 절대 "2026-05-05T00:00" 같은
+     단축형 사용 금지. mcp_google_calendar_list_events 의 timeMin/timeMax 가
+     단축형이면 MCP 가 reject 하고 잡이 죽는다.
+  2. 학습 데이터의 옛 날짜(2023, 2024) 절대 사용 금지. user prompt 의 [현재 날짜]
+     기준으로만 계산.
+  3. timeMin/timeMax 는 한 호출에 하루 범위만 사용 (예: 오늘=00:00:00+09:00 ~
+     다음날 00:00:00+09:00).
+  4. mcp_google_calendar_list_events 호출 시 fields 인자는
+     ["id","summary","start","end","location","attendees"] 만 사용 (htmlLink,
+     transparency 등 빼서 응답 길이 축소 — model context 절약).
+  5. 도구 호출은 plain text 로 emit 하지 말 것. write_file/terminal/MCP 모두 실제
+     tool_use 로만. 만약 텍스트로 "terminal(command=...)" 같은 형식 출력 시 잡
+     실패로 간주.
+  6. 파일 경로는 이 prompt 본문에 적힌 절대경로 그대로 복사. 절대 추측 금지.
+     이 잡은 WSL Linux 에서 도는데 학습 데이터 영향으로 모델이 자꾸
+     "/mnt/c/Users/User/.hermes/..." 같은 Windows 경로를 환각하는데 그런 경로는
+     존재하지 않는다.
+
   역할: 정보 전달 잡. 캘린더와 무관 — 이번 잡은 청량리 날씨를 Discord 로 보낸다.
   SOUL.md 의 톤 규칙(간결·사실 위주·이모지 헤더 절제)은 따르되, 날짜 표기는
   날씨 본문 내부 형식을 그대로 사용한다.
