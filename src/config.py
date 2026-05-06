@@ -51,6 +51,18 @@ class Settings(BaseSettings):
     hermes_concurrency: int = 3  # R13: cap parallel subprocess calls
     gateway_service_name: str = "hermes-gateway"  # for R6 pre-check
 
+    # Hermes Master Orchestrator (Phase: diagram-aligned migration, 2026-05-06).
+    # All-via-master 설계: 모든 LLM 호출이 ``opencode`` CLI 의 master 모델
+    # (gpt-5.5) 를 통과한다. opencode 가 auth + quota 를 알아서 처리하므로
+    # API key 는 필요 없음 (Claude Max OAuth 와 같은 $0 marginal 패턴).
+    # ``master_enabled=False`` 가 default — opencode 미설치 환경 보호.
+    master_enabled: bool = False
+    master_model: str = "gpt-5.5"
+    master_timeout_ms: int = 120_000
+    master_concurrency: int = 1
+    opencode_cli_backend: Literal["wsl_subprocess", "local_subprocess"] = "wsl_subprocess"
+    opencode_cli_path: str = "/home/kang/.local/bin/opencode"
+
     # Claude Code CLI (heavy path — uses Max subscription OAuth, zero API cost)
     # 2026-05-04: OpenAI/Anthropic API legacy fully removed — Claude CLI is the
     # only cloud lane. ollama is the only local lane.
