@@ -52,6 +52,17 @@ class Settings(BaseSettings):
     master_parallel_agents: bool = False
     master_parallel_max_concurrency: int = 3
 
+    # Phase 15 (2026-05-07): SkillPromoter — auto SKILL.md draft + git PR.
+    # Hermes Agent (Nous) 의 "creates skills from experience, improves them
+    # during use" 흡수. CuratorJob 가 일요일 23:30 호출. ExperienceLog 의
+    # 자주 등장 (handled_by, agent_handles, pipeline_id) cluster 추출 →
+    # 기존 17 SKILL.md 어디에도 없는 새 패턴이면 SKILL.md draft + git PR.
+    skill_promoter_enabled: bool = True
+    skill_promoter_auto_pr: bool = True            # 사용자 결정: 자동 PR OK
+    skill_promoter_min_evidence: int = 5           # 최소 N회 반복 패턴만
+    skill_promoter_weak_score_threshold: float = 0.4
+    skill_promoter_draft_dir: Path = Path("./logs/curator/auto_skills")
+
     # Phase 14 (2026-05-07): memory curator — auto MEMORY.md + USER.md.
     # 매 N task 후 master 가 metadata 보고 1-2줄 메모 append. 1500자 초과 시
     # 자동 LLM compaction. master prompt 에 자동 prepend (USER + MEMORY tail).
