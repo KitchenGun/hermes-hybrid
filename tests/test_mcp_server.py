@@ -194,16 +194,21 @@ async def test_orchestrator_exception_returns_server_error():
 
 @pytest.mark.asyncio
 async def test_tools_call_with_real_orchestrator_rule_path(settings: Settings):
-    """A real Orchestrator + /status rule hit → MCP returns the rule output."""
+    """A real Orchestrator + static rule hit → MCP returns the rule output.
+
+    2026-05-06: ``/status`` etc. are dynamic RuleLayer handlers that
+    only resolve when the master path is wired in. ``/ping`` is the
+    static-response rule that short-circuits regardless, so it's the
+    safer regression target post-commit-4."""
     o = Orchestrator(settings)
     server = HybridMCPServer(o)
     resp = await server.handle_request({
         "jsonrpc": "2.0", "id": 10, "method": "tools/call",
         "params": {
             "name": "hybrid.handle",
-            "arguments": {"user_message": "/status nonexistent", "user_id": "u1"},
+            "arguments": {"user_message": "/ping", "user_id": "u1"},
         },
     })
     r = resp["result"]
     assert r["_meta"]["handled_by"] == "rule"
-    assert "not found" in r["content"][0]["text"]
+    assert "pong" in r["content"][0]["text"]

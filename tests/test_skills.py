@@ -91,9 +91,10 @@ async def test_hybrid_status_shows_flags(settings: Settings):
     assert "use_hermes_for_local  : True" in body
     assert "use_hermes_for_c1     : False" in body
     assert "ollama_enabled        : True" in body
-    # Orchestrator injected → skill count + heavy-session size are rendered
+    # Orchestrator injected → skill count is rendered. Heavy-session
+    # tracking moved into the master path (commit-4) so that line is
+    # gone from the status output.
     assert "skills registered     :" in body
-    assert "heavy sessions active :" in body
 
 
 # ---- hybrid-budget ----------------------------------------------------------
@@ -183,33 +184,28 @@ async def test_memo_oversize_rendered_not_crashed(settings: Settings):
 
 
 @pytest.mark.asyncio
-async def test_skill_short_circuits_router_and_llm(settings: Settings):
-    """Skill hit should return WITHOUT consulting the router or any LLM."""
+async def test_skill_short_circuits_master_dispatch(settings: Settings):
+    """Skill hit must return without consulting the master LLM. We
+    can't easily spy on the master adapter (it's lazy-built only when
+    needed); instead we rely on master_enabled=False (the fixture
+    default) so any downstream call would fail with master:disabled.
+    A skill hit producing a normal slash response proves the
+    short-circuit fired."""
     o = Orchestrator(settings)
-
-    router_calls: list[str] = []
-
-    async def _spy_decide(msg, *, history_window):
-        router_calls.append(msg)
-        raise AssertionError("router must not be called for a skill hit")
-
-    o.router.decide = _spy_decide  # type: ignore[assignment]
-    # 2026-05-04: OpenAI clients removed — there's nothing to null out.
-    # The router spy already proves no downstream LLM is consulted.
-
     r = await o.handle("/hybrid-status", user_id="u1")
     assert r.handled_by.startswith("skill:")
-    assert router_calls == []
+    assert "master:disabled" not in r.response
 
 
 @pytest.mark.asyncio
 async def test_rule_layer_wins_over_skill_when_both_match(settings: Settings):
     """RuleLayer runs before skills; its matches aren't stolen by a skill
-    with an overlapping prefix. (Regression guard for handled_by ordering.)"""
+    with an overlapping prefix. (Regression guard for handled_by ordering.)
+
+    Use ``/help`` (a static RuleLayer rule with a pre-baked response) so
+    the assertion doesn't depend on dynamic ``/status`` handler wiring."""
     o = Orchestrator(settings)
-    # `/status <task_id>` is a RuleLayer handler. /hybrid-status is a skill.
-    # They don't actually overlap, but we verify the rule matches as-is:
-    r = await o.handle("/status nonexistent-tid", user_id="u1")
+    r = await o.handle("/help", user_id="u1")
     assert r.handled_by == "rule"
 
 

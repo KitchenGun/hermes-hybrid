@@ -46,7 +46,4 @@ class HybridStatusSkill(Skill):
             reg = getattr(ctx.orchestrator, "skills", None)
             if reg is not None:
                 lines.append(f"- skills registered     : {len(reg)} ({', '.join(reg.names())})")
-            hs = getattr(ctx.orchestrator, "heavy_sessions", None)
-            if hs is not None:
-                lines.append(f"- heavy sessions active : {hs.size()}")
         return "\n".join(lines)

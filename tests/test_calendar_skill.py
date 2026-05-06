@@ -187,21 +187,18 @@ async def test_calendar_skill_empty_model_provider_passes_none(settings: Setting
 
 
 @pytest.mark.asyncio
-async def test_calendar_skill_short_circuits_router_and_llm(settings: Settings):
-    """A calendar match must NOT touch the router or any LLM — same contract
-    as other skills (see test_skills.py::test_skill_short_circuits_router_and_llm).
-    """
+async def test_calendar_skill_short_circuits_master_dispatch(settings: Settings):
+    """A calendar match must NOT touch the master LLM. We rely on
+    master_enabled=False (fixture default) so the only way the skill
+    reaches the slash-skill handler is via the IntentRouter short-circuit
+    — exactly the contract under test."""
     settings.calendar_skill_enabled = True
     o = Orchestrator(settings)
     o.hermes = _FakeHermes(_hermes_ok())  # type: ignore[assignment]
 
-    async def _spy_decide(msg, *, history_window):
-        raise AssertionError("router must not be called on calendar skill hit")
-
-    o.router.decide = _spy_decide  # type: ignore[assignment]
-
     r = await o.handle("what's on my calendar today?", user_id="u1")
     assert r.handled_by == "skill:calendar"
+    assert "master:disabled" not in r.response
 
 
 @pytest.mark.asyncio
