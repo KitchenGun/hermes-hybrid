@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     discord_allowed_user_ids: str = ""  # comma-separated
     require_allowlist: bool = True  # R12: fail-closed by default
 
+    # Telegram — Phase 5 MVP gateway (2026-05-06).
+    # Off by default. When token is set, scripts/run_telegram_bot.py spins
+    # up a long-polling client that hands messages to the same Orchestrator
+    # used by Discord. allowlist enforced same as Discord (R12 fail-closed).
+    telegram_bot_token: str = ""
+    telegram_allowed_user_ids: str = ""  # comma-separated
+
     # journal_ops: channel-pinned forced profile routing.
     # When a message arrives on the channel matching ``journal_channel_id``,
     # the bot bypasses the rule/skill/factory pipeline and forces the
@@ -307,6 +314,16 @@ class Settings(BaseSettings):
         if not self.discord_allowed_user_ids.strip():
             return set()
         return {int(x) for x in self.discord_allowed_user_ids.split(",") if x.strip()}
+
+    @property
+    def telegram_allowlist(self) -> set[int]:
+        if not self.telegram_allowed_user_ids.strip():
+            return set()
+        return {
+            int(x)
+            for x in self.telegram_allowed_user_ids.split(",")
+            if x.strip()
+        }
 
     @property
     def ollama_routable(self) -> bool:
