@@ -192,6 +192,55 @@ def test_record_includes_routing_and_retry_metadata(tmp_path: Path):
     assert record.cloud_models == ["claude-haiku"]
 
 
+def test_record_includes_phase_1_5_routing_fields(tmp_path: Path):
+    """Phase 1.5: ExperienceRecord must carry job_id / trigger_type /
+    v2 classification / skill_ids / model provenance / memory inject count."""
+    logger = ExperienceLogger(tmp_path, enabled=True)
+    task = _make_task()
+    task.job_id = "morning_briefing"
+    task.job_category = "read"
+    task.trigger_type = "cron"
+    task.trigger_source = "0 8 * * *"
+    task.v2_job_type = "summarize"
+    task.v2_classification_method = "keyword"
+    task.skill_ids = ["calendar_ops/messaging/discord_notify"]
+    task.slash_skill = None
+    task.model_provider = "ollama"
+    task.model_name = "qwen2.5:14b-instruct"
+    task.memory_inject_count = 2
+
+    rec = logger.append(task, handled_by="local", latency_ms=100)
+
+    assert rec.job_id == "morning_briefing"
+    assert rec.job_category == "read"
+    assert rec.trigger_type == "cron"
+    assert rec.trigger_source == "0 8 * * *"
+    assert rec.v2_job_type == "summarize"
+    assert rec.v2_classification_method == "keyword"
+    assert rec.skill_ids == ["calendar_ops/messaging/discord_notify"]
+    assert rec.slash_skill is None
+    assert rec.model_provider == "ollama"
+    assert rec.model_name == "qwen2.5:14b-instruct"
+    assert rec.memory_inject_count == 2
+
+
+def test_record_phase_1_5_defaults_when_unstamped(tmp_path: Path):
+    """Tasks that don't go through a stamping branch (e.g. legacy router)
+    keep defaults — None for nullable fields, ``discord_message`` for
+    trigger_type, empty list for skill_ids."""
+    logger = ExperienceLogger(tmp_path, enabled=True)
+    task = _make_task()
+    rec = logger.append(task, handled_by="local", latency_ms=10)
+
+    assert rec.job_id is None
+    assert rec.job_category is None
+    assert rec.trigger_type == "discord_message"
+    assert rec.v2_job_type is None
+    assert rec.skill_ids == []
+    assert rec.slash_skill is None
+    assert rec.memory_inject_count == 0
+
+
 def test_root_directory_is_created_on_first_write(tmp_path: Path):
     nested = tmp_path / "nested" / "dir" / "experience"
     assert not nested.exists()

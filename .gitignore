@@ -16,8 +16,10 @@ build/
 *.log.err
 logs/
 
-# Per-machine runtime state (state DB, runtime artifacts).
-state/
+# Per-machine runtime state (state DB, runtime artifacts) — repo-root only.
+# Anchored with leading ``/`` so it doesn't accidentally match ``src/state/``
+# (the TaskState package).
+/state/
 
 # Date-stamped backups never get committed (e.g. .env.bak.20260501,
 # config.yaml.bak.20260501). 의도적 수정 전 자동 백업이라 추적 가치 없음.

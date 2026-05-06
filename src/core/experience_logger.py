@@ -68,6 +68,22 @@ class ExperienceRecord(BaseModel):
     tier: str = "L2"                  # final tier reached
     handled_by: str = ""              # _log_task_end's handled_by token
 
+    # Phase 1.5 (2026-05-06): expanded routing context.
+    # Stamped on TaskState by Orchestrator's matching branch; logger just
+    # passes them through. None / empty defaults mean "this dispatch path
+    # didn't carry that signal".
+    job_id: str | None = None
+    job_category: str | None = None
+    trigger_type: str = "discord_message"
+    trigger_source: str | None = None
+    v2_job_type: str | None = None
+    v2_classification_method: str | None = None
+    skill_ids: list[str] = Field(default_factory=list)
+    slash_skill: str | None = None
+    model_provider: str | None = None
+    model_name: str | None = None
+    memory_inject_count: int = 0
+
     # Outcome
     status: str = "pending"           # TaskState.status at end
     outcome: str = "succeeded"        # succeeded | failed | degraded
@@ -171,6 +187,18 @@ def _record_from_task(
         hermes_turns=len(hermes_acts),
         hermes_reflection_count=len(task.hermes_trace.reflections),
         self_score=task.internal_confidence,
+        # Phase 1.5: expanded routing context — passed through verbatim.
+        job_id=task.job_id,
+        job_category=task.job_category,
+        trigger_type=task.trigger_type,
+        trigger_source=task.trigger_source,
+        v2_job_type=task.v2_job_type,
+        v2_classification_method=task.v2_classification_method,
+        skill_ids=list(task.skill_ids),
+        slash_skill=task.slash_skill,
+        model_provider=task.model_provider,
+        model_name=task.model_name,
+        memory_inject_count=task.memory_inject_count,
         input_text_hash=_sha16(task.user_message),
         input_text_length=len(task.user_message or ""),
         response_hash=_sha16(task.final_response),

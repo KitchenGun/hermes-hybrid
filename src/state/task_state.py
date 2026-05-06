@@ -138,6 +138,22 @@ class TaskState(BaseModel):
     # None = 팩토리 비활성화 또는 no_match/ambiguous 상태.
     job_profile_id: str | None = None
 
+    # Phase 1.5 (2026-05-06): routing context fields for ExperienceLog.
+    # Stamped by Orchestrator at the matching dispatch branch — left as
+    # default when that branch isn't taken. ExperienceLogger projects
+    # these directly onto ExperienceRecord without reinterpretation.
+    job_id: str | None = None              # cron/on_demand yaml name OR slash skill name
+    job_category: str | None = None        # read/write/analyze/monitor/watcher/chat
+    trigger_type: str = "discord_message"  # discord_message/cron/watcher_event/watcher_poll/forced_profile/manual
+    trigger_source: str | None = None      # cron expr / event name / poll URL / user_id
+    v2_job_type: str | None = None         # JobFactory v2 classification (10 types)
+    v2_classification_method: str | None = None  # keyword/llm/fallback
+    skill_ids: list[str] = Field(default_factory=list)  # SkillEntry ids touched
+    slash_skill: str | None = None         # slash skill matched (e.g. "hybrid-memo")
+    model_provider: str | None = None      # ollama/custom/claude_cli
+    model_name: str | None = None          # actual model name used (local OK)
+    memory_inject_count: int = 0           # P0-C inject hit count
+
     # Execution
     status: Status = "pending"
     current_tier: Tier = "L2"

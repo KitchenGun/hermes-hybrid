@@ -251,6 +251,7 @@ class Orchestrator:
     ) -> OrchestratorResult:
         session_id = session_id or str(uuid.uuid4())
         history_window = list(history or [])
+        memory_inject_count = 0
 
         # P0-C (2026-05-06): memory-inject — per-user retrieval before
         # dispatch. Off by default; flip ``memory_inject_enabled`` to true
@@ -275,11 +276,26 @@ class Orchestrator:
                     },
                     *history_window,
                 ]
+                memory_inject_count = len(hits)
                 log.info(
                     "memory.injected",
                     user_id=user_id,
-                    hits=len(hits),
+                    hits=memory_inject_count,
                 )
+
+        # Phase 1.5: trigger_type derives directly from how the gateway
+        # invoked us. heavy and forced_profile both qualify as "user
+        # explicitly requested this lane"; everything else is a generic
+        # discord_message that the dispatcher will further classify.
+        if forced_profile:
+            trigger_type = "forced_profile"
+            trigger_source = forced_profile
+        elif heavy:
+            trigger_type = "discord_message"
+            trigger_source = f"heavy:{user_id}"
+        else:
+            trigger_type = "discord_message"
+            trigger_source = f"user:{user_id}"
 
         task = TaskState(
             session_id=session_id,
@@ -290,6 +306,9 @@ class Orchestrator:
             token_budget_remaining=self.settings.cloud_token_budget_session,
             heavy=heavy,
             forced_profile=forced_profile,
+            trigger_type=trigger_type,
+            trigger_source=trigger_source,
+            memory_inject_count=memory_inject_count,
         )
         task.mark("created_at")
 
@@ -527,6 +546,13 @@ class Orchestrator:
             if skill_hit is not None:
                 skill, skill_match = skill_hit
                 handled = f"skill:{skill.name}"
+                # Phase 1.5: stamp slash skill identity onto the task so
+                # the experience log carries the right routing context
+                # (otherwise reflection / curator can't tell whether a
+                # `/memo` command went through a slash skill vs JobFactory).
+                task.slash_skill = skill.name
+                task.job_id = skill.name
+                task.job_category = "chat"
                 ctx = SkillContext(
                     settings=self.settings,
                     repo=self.repo,
@@ -1131,12 +1157,28 @@ class Orchestrator:
 
         # Tag the task with v2 metadata for the ledger.
         task.job_profile_id = result.job_type
+        # Phase 1.5: explicit v2_job_type field. Older `profile` field
+        # stays for backward compat — readers can query either.
+        task.v2_job_type = result.job_type
+        task.job_category = "chat"  # v2 always handles free-text chat
+        # Try to extract classification metadata if the dispatcher exposes it.
+        cls_method = getattr(result, "classification_method", None)
+        if cls_method is not None:
+            task.v2_classification_method = cls_method
         if result.steps:
             last = result.steps[-1]
             handled_by = (
                 f"v2:{result.outcome}:"
                 f"{last.matrix_key}:{last.selection_reason}"
             )
+            # matrix_key like "ollama/qwen2.5:14b-instruct" or
+            # "claude_cli/haiku" — split on first "/" so model_name keeps
+            # any internal colons (e.g. "qwen2.5:14b-instruct").
+            mk = str(last.matrix_key)
+            if "/" in mk:
+                provider, model = mk.split("/", 1)
+                task.model_provider = provider
+                task.model_name = model
         else:
             handled_by = f"v2:{result.outcome}"
 
