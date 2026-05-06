@@ -31,15 +31,11 @@ class HybridBudgetSkill(Skill):
 
     async def invoke(self, match: SkillMatch, ctx: SkillContext) -> str:
         cap_daily = ctx.settings.cloud_token_budget_daily
-        cap_session = ctx.settings.cloud_token_budget_session
-        cap_claude = ctx.settings.claude_call_budget_session
 
         if ctx.repo is None:
             return (
                 "**hybrid-budget**\n"
                 f"- daily cap          : {cap_daily:,} tokens\n"
-                f"- session cap        : {cap_session:,} tokens\n"
-                f"- claude session cap : {cap_claude} calls\n"
                 "_(repository not configured — live usage unavailable)_"
             )
 
@@ -53,7 +49,5 @@ class HybridBudgetSkill(Skill):
         return (
             "**hybrid-budget**\n"
             f"- daily used  : {used_today:,} / {cap_daily:,} tokens  ({pct:.1f}%)\n"
-            f"- remaining   : {remaining:,} tokens\n"
-            f"- session cap : {cap_session:,} tokens\n"
-            f"- claude cap  : {cap_claude} calls / session"
+            f"- remaining   : {remaining:,} tokens"
         )

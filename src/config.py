@@ -164,65 +164,26 @@ class Settings(BaseSettings):
     bench_judge_backend: Literal["claude_cli", "ollama"] = "claude_cli"
     ollama_judge_model: str = "qwen2.5:14b-instruct"  # used when bench_judge_backend="ollama"
 
-    # Local-first master flag. Historical: routed L0/L2/L3 to Ollama instead
-    # of the OpenAI surrogate. 2026-05-04: OpenAI surrogate removed entirely,
-    # so this flag now just signals "prefer local ollama over Hermes-routed
-    # paths" for the L2/L3 lane. Kept for backward compat with .env settings;
-    # may be folded into ``ollama_enabled`` in a future cleanup.
+    # Local-first lane signal. Kept for cron / Hermes profile sub-calls
+    # that still hit ollama directly (the master path doesn't read this).
     local_first_mode: bool = False
 
-    # Phase 1 rollout flag (off by default). When true, L2/L3 requests are
-    # executed through HermesAdapter v2 — the plan/act/reflect engine — with
-    # provider pinned via the RouterDecision.provider field (FIX#1). When
-    # false, the current direct-OpenAI/Ollama client path is used verbatim,
-    # so Phase 1 stays reversible. Flip to true only after the Phase 1 exit
-    # criteria are met (see ARCHITECTURE.md §"Phase 1").
-    use_hermes_for_local: bool = False
-
-    # Phase 2 rollout flag. When true, C1 (cloud-planning tier) runs through
-    # Hermes with provider='openai' pinned, same pattern as Phase 1. Off by
-    # default; flip only after Phase 1 is stable and the latency gate holds
-    # for C1 as well.
-    use_hermes_for_c1: bool = False
-
-    # Phase 2b rollout flag. When true, the heavy path (`!heavy`) is driven
-    # by HermesAdapter with provider='claude-code' pinned — Hermes owns
-    # plan/act/reflect and Claude is the reasoning step. When false, the
-    # existing direct ClaudeCodeAdapter path is used (unchanged). Off by
-    # default; flip only after verifying the Hermes CLI in the deployed
-    # build supports --provider claude-code end-to-end.
-    use_hermes_for_heavy: bool = False
-
-    # Phase 3 master switch. When true, implies every per-phase flag above
-    # (use_hermes_for_local / _for_c1 / _for_heavy) — the orchestrator is
-    # fully hermes-centric. Kept separate so operators can stage the
-    # transition with per-phase flags during rollout and flip this one
-    # once all exit gates are met. The per-phase flags still work as
-    # overrides when this is false.
-    use_hermes_everywhere: bool = False
-
-    # Phase 3 validator simplification. When true, Hermes-lane outputs that
-    # show evidence of multi-turn reflection (turns_used >= 2) are trusted
-    # by the Python validator — we skip the low-quality pattern checks and
-    # pass-through the text. Timeouts / tool errors / empty outputs still
-    # fail the validator. Off by default; flip only after the Hermes
-    # reflection quality has been measured in real traffic.
-    trust_hermes_reflection: bool = False
-
-    # Router thresholds
-    router_conf_accept: float = 0.75
-    router_conf_tier_up: float = 0.50
-
-    # Budgets
+    # Validator retry budget (PolicyGate.post_validate's retry policy).
+    # Master path is single-shot today (Phase 5b will iterate via
+    # tool_calls), so these only apply when callers use the Validator
+    # directly — kept as a default so existing PolicyGate tests stay green.
     retry_budget_default: int = 4
     same_tier_retry_max: int = 2
     tier_up_retry_max: int = 2
-    cloud_escalation_max: int = 1
+
+    # Daily cloud token cap. PolicyGate.pre_dispatch consults
+    # ``Repository.used_tokens_today`` against this number. The master
+    # path inherits the same gate.
+    cloud_token_budget_daily: int = 100_000
+
+    # Session-scoped token cap, kept for downstream rate-limit shims
+    # (e.g. an MCP-side guard) — orchestrator no longer enforces it.
     cloud_token_budget_session: int = 20_000
-    claude_call_budget_session: int = 1         # R2: enforced by Orchestrator
-    cloud_token_budget_daily: int = 100_000     # R4: enforced by BudgetTracker
-    surrogate_max_tokens_local: int = 512       # R3: hard cap for surrogate lane
-    surrogate_max_tokens_worker: int = 1024     # R3
 
     # Per-user
     per_user_in_flight_max: int = 1             # R13
@@ -356,23 +317,6 @@ class Settings(BaseSettings):
         manage their own ollama process state out-of-band if needed.
         """
         return self.ollama_enabled or self.local_first_mode
-
-    # Phase 3: the per-phase flags should answer "are we routing through
-    # Hermes for this lane?" after factoring in the master switch. Callers
-    # in the orchestrator read these via ``effective_*`` so the rollout
-    # story stays: "flip use_hermes_everywhere once all per-lane gates hold."
-    @property
-    def effective_use_hermes_for_local(self) -> bool:
-        return self.use_hermes_for_local or self.use_hermes_everywhere
-
-    @property
-    def effective_use_hermes_for_c1(self) -> bool:
-        return self.use_hermes_for_c1 or self.use_hermes_everywhere
-
-    @property
-    def effective_use_hermes_for_heavy(self) -> bool:
-        return self.use_hermes_for_heavy or self.use_hermes_everywhere
-
 
 _settings: Settings | None = None
 

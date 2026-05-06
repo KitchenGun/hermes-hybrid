@@ -80,20 +80,17 @@ def test_default_registry_contents():
 
 @pytest.mark.asyncio
 async def test_hybrid_status_shows_flags(settings: Settings):
-    settings.use_hermes_for_local = True
-    settings.use_hermes_for_c1 = False
     settings.ollama_enabled = True
 
     o = Orchestrator(settings)
     result = await o.handle("/hybrid-status", user_id="u1")
     assert result.handled_by == "skill:hybrid-status"
     body = result.response
-    assert "use_hermes_for_local  : True" in body
-    assert "use_hermes_for_c1     : False" in body
     assert "ollama_enabled        : True" in body
-    # Orchestrator injected → skill count is rendered. Heavy-session
-    # tracking moved into the master path (commit-4) so that line is
-    # gone from the status output.
+    assert "master_enabled        :" in body
+    assert "memory_inject_enabled :" in body
+    assert "require_allowlist     :" in body
+    # Orchestrator injected → skill count is rendered.
     assert "skills registered     :" in body
 
 
