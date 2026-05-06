@@ -1,5 +1,15 @@
 # Profile Inventory
 
+> ⚠️ **LEGACY: pre-Phase-8 reference (deprecated 2026-05-06)** ⚠️
+>
+> 이 문서는 폐기된 6 profile 구조를 설명하는 역사 자료다. Phase 8
+> (2026-05-06) 에서 profile 구조 자체가 폐기되고 17 sub-agent 단일 구조로
+> 전환됐다. 현행 자료는 [`AGENT_INVENTORY.md`](AGENT_INVENTORY.md) 와
+> [`MASTER_ARCHITECTURE.md`](MASTER_ARCHITECTURE.md) 참조.
+>
+> 아래 내용은 변경 없이 보존 — git history 와 별개로 사람이 읽기 쉬운
+> 형태의 사전 상태 스냅샷.
+
 > 6개 프로필을 실제 파일(`config.yaml` + `SOUL.md`) 기준으로 정리한 인벤토리.
 > Phase 1.5-A 산출물 — ExperienceRecord 스키마 확장(`profile_id` / `model_provider` / `memory_policy_id`)의 근거 문서.
 >

@@ -1,5 +1,12 @@
 # Architecture — Hermes Hybrid
 
+> ⚠️ **LEGACY: pre-Phase-8 design spec (deprecated 2026-05-06)** ⚠️
+>
+> 이 문서는 Phase 8 이전의 설계 스펙. JobFactory v1/v2 + Router + tier
+> ladder 시대의 다이어그램과 결정 근거를 담고 있다. Phase 8 (2026-05-06)
+> 에서 master (opencode/gpt-5.5) + 17 sub-agent 단일 구조로 전환된 후
+> 자료는 [`MASTER_ARCHITECTURE.md`](MASTER_ARCHITECTURE.md) 참조.
+
 Authoritative design spec. Code in `src/` implements this contract; keep them in sync.
 
 ```

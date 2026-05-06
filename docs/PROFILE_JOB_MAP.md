@@ -1,5 +1,14 @@
 # Profile ↔ Job ↔ Skill ↔ Memory 관계도
 
+> ⚠️ **LEGACY: pre-Phase-8 reference (deprecated 2026-05-06)** ⚠️
+>
+> 이 문서는 Profile/Job/Skill 4축 관계도의 사전 상태 스냅샷이다. Phase 8
+> 에서 Profile / Job 두 축이 폐기되고 Skill 은 17 sub-agent 의 SKILL.md
+> 로 통합됐다. 현행 자료는 [`AGENT_INVENTORY.md`](AGENT_INVENTORY.md) +
+> [`MASTER_ARCHITECTURE.md`](MASTER_ARCHITECTURE.md) 참조.
+>
+> 아래 내용은 변경 없이 보존.
+
 > 현재 vs 목표 구조 + ExperienceRecord 가 기록해야 할 표준 routing 필드 + Migration 순서.
 > Phase 1.5-C 산출물.
 >

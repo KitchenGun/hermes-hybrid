@@ -1,5 +1,14 @@
 # Job Inventory
 
+> ⚠️ **LEGACY: pre-Phase-8 reference (deprecated 2026-05-06)** ⚠️
+>
+> 이 문서는 폐기된 27 잡 구조를 설명하는 역사 자료다. Phase 8 에서 27 잡 +
+> 6 profile 모두 폐기되고 master 가 사용자 명시 요청을 받아 17 sub-agent
+> 에 위임하는 구조로 전환됐다. 현행 자료는
+> [`AGENT_INVENTORY.md`](AGENT_INVENTORY.md) 참조.
+>
+> 아래 내용은 변경 없이 보존.
+
 > `profiles/*/{cron,on_demand,watchers}/**.yaml` 26개 + `src/job_factory/` v2 분류 + `src/skills/` 슬래시 스킬을 실 파일 기준으로 정리한 인벤토리.
 > Phase 1.5-B 산출물 — ExperienceRecord 의 routing 필드 확장 근거.
 >

@@ -1,5 +1,14 @@
 # calendar_ops 프로파일 런북 (Hermes-native)
 
+> ⚠️ **LEGACY: pre-Phase-8 reference (deprecated 2026-05-06)** ⚠️
+>
+> 이 런북은 폐기된 calendar_ops profile + CalendarSkill 의 운영 방법을
+> 설명한다. Phase 8 에서 calendar_ops profile 과 CalendarSkill 모두 폐기.
+> 캘린더 read/CRUD 는 master 가 @researcher / @devops 에 위임하는 구조로
+> 전환됐다. 현행 환경변수는 [`AGENT_ENV.md`](AGENT_ENV.md) 의
+> `GOOGLE_OAUTH_CREDENTIALS` / `GOOGLE_CALENDAR_MCP_TOKEN_PATH` /
+> `GOOGLE_CALENDAR_ID` 항목 참조.
+
 **대상 독자**: hermes-hybrid를 새 머신에 배포하면서 CalendarSkill을 실제로 작동시키려는 사람.
 
 **전제**: 리포지토리 코드는 이미 `CALENDAR_SKILL_ENABLED=true` + `HermesAdapter`의 `-p <profile>` / `-s <skill>` 지원을 포함하고 있음 (커밋 `982fa2f`). 그걸 딛고 **프로파일 쪽**에서 추가로 필요한 4가지를 이 문서가 설명.
