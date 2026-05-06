@@ -416,17 +416,23 @@ hermes-hybrid/
 │  ├─ skills/                    # 슬래시 명령 (HybridMemo / Status / Budget / Kanban)
 │  ├─ mcp/                       # MCP server PoC
 │  │
+│  ├─ orchestrator/
+│  │   ├─ pipelines.py / pipeline_runner.py    # Phase 12 — sequential agent workflows
+│  │   └─ revision_loop.py                       # Phase 13 — plan/act/observe/reflect/retry
+│  │
 │  ├─ core/                      # 🌱 성장 루프 핵심
 │  │   ├─ experience_logger.py
 │  │   ├─ critic.py
 │  │   ├─ kanban.py
 │  │   ├─ session_importer.py
+│  │   ├─ memory_curator.py     # Phase 14 — auto MEMORY.md / USER.md
 │  │   └─ skill_library.py       # SKILL.md 인덱서 (legacy)
 │  │
 │  └─ jobs/                      # 🌱 cron 가능 자기개선 잡
 │      ├─ base.py
 │      ├─ reflection_job.py
-│      └─ curator_job.py
+│      ├─ curator_job.py
+│      └─ skill_promoter.py     # Phase 15 — auto SKILL.md draft + git PR
 │
 ├─ agents/                       # 🌟 17 sub-agent SKILL.md (Phase 7 산출 + Phase 8 흡수)
 │  ├─ research/{finder,analyst,researcher}/SKILL.md
@@ -436,7 +442,10 @@ hermes-hybrid/
 │  ├─ documentation/{documenter,commenter}/SKILL.md
 │  └─ infrastructure/{devops,optimizer}/SKILL.md
 │
-├─ tests/                        # pytest, 276 pass / 5 skip (Phase 10)
+├─ data/
+│  ├─ pipelines.yaml             # Phase 12 — pipeline 카탈로그 (4 workflows)
+│  └─ memory/                    # Phase 14 — MEMORY.md / USER.md (gitignored)
+├─ tests/                        # pytest, 310 pass / 5 skip (Phase 15)
 ├─ logs/
 │  ├─ experience/                # task append-only JSONL
 │  ├─ reflection/                # 주간 markdown
@@ -460,15 +469,16 @@ hermes-hybrid/
 ## 11. 테스트
 
 ```powershell
-pytest -q                                 # 전체 (276 pass / 5 skip, Phase 10)
-pytest tests/test_hermes_master.py        # 21 tests, master 분기 (Phase 9 inject + Phase 10 fan-out)
-pytest tests/test_delegation.py           # 12 tests, OpenCodeAgentDelegator 병렬 + aggregate
-pytest tests/test_integration_intent_router.py  # @handle 파싱
-pytest tests/test_integration_policy_gate.py    # allowlist + budget
-pytest tests/test_experience_logger.py    # JSONL contract + agent_handles
-pytest tests/test_critic.py               # self_score lookup
+pytest -q                                 # 전체 (310 pass / 5 skip, Phase 15)
+pytest tests/test_hermes_master.py        # 21 tests, master 분기
+pytest tests/test_delegation.py           # 12 tests, ClaudeAgentDelegator 병렬 + aggregate
+pytest tests/test_pipelines.py            # 18 tests, Phase 12 sequential workflows
+pytest tests/test_revision_loop.py        # 9 tests, Phase 13 retry + escalate
+pytest tests/test_memory_curator.py       # 10 tests, Phase 14 MEMORY/USER 자동 큐레이션
+pytest tests/test_skill_promoter.py       # 13 tests, Phase 15 cluster + draft + PR
+pytest tests/test_integration_intent_router.py  # @handle 파싱 + pipeline_id stamp
+pytest tests/test_experience_logger.py    # JSONL contract
 pytest tests/test_agent_registry.py       # 17-agent 인덱싱
-pytest tests/test_memory_search.py        # search + inject
 pytest tests/test_preflight.py            # allowlist + Ollama warn + R6
 ```
 
@@ -508,7 +518,11 @@ pytest tests/test_preflight.py            # allowlist + Ollama warn + R6
 - [x] **Phase 10 (2026-05-06)** — `ClaudeAgentDelegator` 진짜 병렬 실행. `master_parallel_agents=true` 옵트인 시 2+ handles → 각 agent 별 독립 claude 호출을 `asyncio.gather` + `Semaphore(max_concurrency)` 로 동시 실행 후 `aggregate_responses` 로 집계.
 - [x] **Phase 11 Stage A (2026-05-06)** — heavy / c1 / heavy_session / `!heavy` prefix / smoke_heavy.py 일괄 폐기. master = single lane 전환 직전 정리. `TaskState.heavy` / `IntentRouter.heavy` 분기 / `Orchestrator.handle(heavy=...)` / `DiscordBot._HEAVY_PREFIX` / `Settings.c1_*` 4 dead 필드 / `ExperienceRecord.heavy` 모두 제거.
 - [x] **Phase 11 Stage B (2026-05-06)** — opencode → Claude CLI (Max OAuth) master swap. Settings master_* 통합 (master_cli_path/backend/model/timeout). `OpenCodeAgentDelegator` → `ClaudeAgentDelegator`. src/opencode_adapter/ 통째 삭제.
-- [ ] **Phase 12** — Slack gateway, Discord 슬래시 명령 확장
+- [x] **Phase 12 (2026-05-07)** — pipeline workflows. `data/pipelines.yaml` 4개 (feature_dev / bug_fix / security_review / refactor). IntentRouter 가 trigger_keyword 매치 시 pipeline_id stamp. HermesMaster `_dispatch_pipeline` 가 sequential 실행 (단계 사이 결과 hand-off). `master:pipeline:<id>` handled_by.
+- [x] **Phase 13 (2026-05-07)** — revision loop (plan/act/observe/reflect/retry). Critic.compute_self_score < threshold 시 자동 retry + 모델 escalation (haiku → sonnet → opus). `revision_loop_enabled=False` default opt-in. cap = 3.
+- [x] **Phase 14 (2026-05-07)** — Memory Curator. `data/memory/MEMORY.md` (auto-curated agent notes) + `USER.md` (auto-learned profile). 매 5 task 후 LLM 자동 요약 + max_chars*2 초과 시 compaction. master prompt 에 자동 prepend. Privacy: ExperienceLog metadata 만 사용 (raw user_message X).
+- [x] **Phase 15 (2026-05-07)** — SkillPromoter. ExperienceLog cluster (handled_by/agent_handles/pipeline_id) → 새 SKILL.md draft 자동 생성. weak_agent_audit 으로 self_score 평균 < 0.4 인 agent 보강. gh CLI 로 자동 git PR (graceful: gh 없으면 draft 만 보존).
+- [ ] **Phase 16** — 능동 cron / SOUL.md / Slack gateway / Discord native slash 등 (사용자 결정으로 보류)
 
 ---
 
