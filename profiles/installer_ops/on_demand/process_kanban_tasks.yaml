@@ -1,0 +1,108 @@
+name: process_kanban_tasks
+category: analyze
+description: |
+  Kanban store 의 todo 상태 task 를 한 건 골라 install plan 을 작성하고
+  comment 로 첨부한 뒤 status 를 review 로 옮긴다. 자동 등록 절대 금지 —
+  계획만 첨부하고 사용자가 직접 install 명령 실행 후 done 처리.
+
+trigger:
+  type: on_demand
+  patterns:
+    - "킨반"
+    - "kanban"
+    - "추천 처리"
+    - "설치 계획"
+    - "install plan"
+
+tier:
+  max: C1
+  prefer: L3
+
+budget:
+  usd_per_run_cap: 0.10
+
+skills:
+  - install/auto_install
+
+delivery:
+  channel: kanban     # comment 로 첨부 — webhook 따로 보내지 않음
+  on_failure: log
+
+safety:
+  requires_confirmation: false   # 계획 작성만 — destructive 아님
+  idempotent: true               # 같은 task 두 번 처리해도 comment 만 추가
+  max_retries: 1
+
+ledger:
+  tags: ["installer_ops", "kanban", "install_plan"]
+
+prompt: |
+  역할: Kanban worker. SOUL.md 의 install plan 작성 정책 준수.
+
+  ## 중요 제약
+  - **자동 등록 절대 금지**. 계획만 작성, 사용자 명시 승인 후 본인이 실행.
+  - **다른 프로필 파일 write 금지**. read-only 분석 + Kanban comment 만.
+  - 계획은 `install_plan_<short_id>.md` 로 `runtime/install_plans/` 디렉터리
+    아래 저장 + Kanban comment 에 요약.
+
+  ## 작업 단계 (terminal 도구로 모두 실행)
+
+  ### Step 1. 처리 대상 task 1건 가져오기
+  사용자가 메시지에 task_id (8자리 prefix 또는 full UUID) 를 포함했다면 그 task.
+  없으면 todo (사용자가 promote 한 것) 우선, 없으면 triage (advisor_ops 갓 발행):
+
+      python3 /mnt/e/hermes-hybrid/scripts/kanban_cli.py list --status todo
+      # 빈 배열이면:
+      python3 /mnt/e/hermes-hybrid/scripts/kanban_cli.py list --status triage
+
+  triage 단계는 사용자 검토 전이므로 처리하기 전에 "이 task 처리해도 되는지"
+  사용자에게 한 번 더 확인. todo 는 이미 사용자가 promote 한 것이라 바로 진행.
+
+  결과 JSON 첫 항목의 `id` 사용. 둘 다 빈 배열이면 "처리할 task 없음" 응답 후 종료.
+
+  ### Step 2. task 본문 읽기
+      python3 /mnt/e/hermes-hybrid/scripts/kanban_cli.py get <task_id>
+
+  body / tags / comments 검토. body 는 advisor_ops 의 추천 근거 + 출처 + 영향도.
+
+  ### Step 3. install plan 작성
+  install/auto_install 스킬 사용. 산출물 형식:
+
+  ```markdown
+  # Install plan: <task title>
+
+  ## Why
+  <근거 요약 — body 그대로 인용 X, 본인의 표현으로 압축>
+
+  ## Steps (사용자가 직접 실행)
+  1. <명시 명령>
+  2. <검증 명령>
+  3. <롤백 절차>
+
+  ## Risk
+  <영향 범위 + 롤백 가능 여부>
+
+  ## References
+  <body 의 출처 링크>
+  ```
+
+  파일로 저장:
+      mkdir -p /mnt/e/hermes-hybrid/profiles/installer_ops/runtime/install_plans
+      cat > /mnt/e/hermes-hybrid/profiles/installer_ops/runtime/install_plans/install_plan_<short_id>.md <<'EOF'
+      <위 markdown>
+      EOF
+
+  ### Step 4. Kanban comment 첨부
+  본인이 작성한 markdown 의 처음 1500자를 그대로 comment 로:
+
+      python3 /mnt/e/hermes-hybrid/scripts/kanban_cli.py comment <task_id> \
+        --author installer_ops \
+        --text "<plan markdown 처음 1500자>"
+
+  ### Step 5. status 를 review 로 전환
+      python3 /mnt/e/hermes-hybrid/scripts/kanban_cli.py status <task_id> --to review
+
+  ### Step 6. 사용자에게 응답
+  - task title
+  - install plan 의 Steps 섹션 그대로
+  - "사용자가 명시 승인 후 직접 실행하세요. 완료 후 `/kanban done <id>` 부탁드려요."

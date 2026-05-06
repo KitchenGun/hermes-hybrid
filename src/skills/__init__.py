@@ -5,6 +5,7 @@ from .calendar import CalendarSkill
 from .hybrid_budget import HybridBudgetSkill
 from .hybrid_memo import HybridMemoSkill
 from .hybrid_status import HybridStatusSkill
+from .kanban_skill import KanbanSkill
 from .registry import SkillRegistry
 
 
@@ -30,6 +31,7 @@ def default_registry(settings: Any | None = None) -> SkillRegistry:
         HybridStatusSkill(),
         HybridBudgetSkill(),
         HybridMemoSkill(),
+        KanbanSkill(),
     ]
     return SkillRegistry(skills)
 
@@ -43,5 +45,6 @@ __all__ = [
     "HybridStatusSkill",
     "HybridBudgetSkill",
     "HybridMemoSkill",
+    "KanbanSkill",
     "default_registry",
 ]

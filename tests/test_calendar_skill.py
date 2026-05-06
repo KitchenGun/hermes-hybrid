@@ -81,7 +81,7 @@ def test_default_registry_omits_calendar_when_flag_off(settings: Settings):
     assert settings.calendar_skill_enabled is False
     reg = default_registry(settings)
     assert "calendar" not in reg.names()
-    assert reg.names() == ["hybrid-status", "hybrid-budget", "hybrid-memo"]
+    assert reg.names() == ["hybrid-status", "hybrid-budget", "hybrid-memo", "kanban"]
 
 
 def test_default_registry_includes_calendar_when_flag_on(settings: Settings):
@@ -206,8 +206,14 @@ async def test_calendar_skill_short_circuits_router_and_llm(settings: Settings):
 
 @pytest.mark.asyncio
 async def test_calendar_skill_renders_hermes_error_as_warning(settings: Settings):
-    """If hermes.run raises, the user sees a friendly warning with the
-    exception type — not a traceback, not the raw stderr."""
+    """If hermes.run raises a generic ``HermesAdapterError`` (NOT a known-cause
+    subclass like Timeout/Auth), the skill renders a friendly warning with
+    the exception type — not a traceback, not the raw stderr.
+
+    2026-05-04: only the bare ``HermesAdapterError`` takes this in-skill path;
+    ``HermesTimeout`` / ``HermesAuthError`` trigger the claude_cli fallback
+    instead (covered in the tests below).
+    """
     settings.calendar_skill_enabled = True
     o = Orchestrator(settings)
     o.hermes = _FakeHermes(  # type: ignore[assignment]
@@ -222,48 +228,59 @@ async def test_calendar_skill_renders_hermes_error_as_warning(settings: Settings
     assert r.task.status == "succeeded"
     assert "Calendar lookup failed" in r.response
     assert "HermesAdapterError" in r.response
-    # Also includes the setup hint pointing at the OAuth check.
-    assert "setup.py --check" in r.response
+    # Hint points at manual hermes invocation and the OAuth check.
+    assert "hermes -p calendar_ops chat" in r.response
+    assert "Google OAuth" in r.response
 
 
 @pytest.mark.asyncio
-async def test_calendar_skill_propagates_hermes_timeout(settings: Settings):
-    """A HermesTimeout MUST propagate so the orchestrator records
-    task.status="failed" — otherwise the silent-success bug returns:
-    user sees an error but metrics show succeeded.
+async def test_calendar_skill_falls_back_to_claude_cli_on_hermes_timeout(settings: Settings):
+    """2026-05-04: ``HermesTimeout`` → Claude CLI fallback (Max OAuth, $0).
+    The skill must NOT propagate the exception; instead it should produce a
+    user-readable response from the Claude lane.
     """
+    from tests.test_orchestrator import _FakeClaudeCode, _claude_result
+
     settings.calendar_skill_enabled = True
     o = Orchestrator(settings)
     o.hermes = _FakeHermes(  # type: ignore[assignment]
         HermesTimeout("Hermes timed out after 180000ms")
     )
+    fake_c1 = _FakeClaudeCode([_claude_result("fallback ok", model="claude-haiku-4-5")])
+    o.claude_code_c1 = fake_c1  # type: ignore[assignment]
 
     r = await o.handle("오늘 일정 알려줘", user_id="u1")
 
     assert r.handled_by == "skill:calendar"
-    assert r.task.status == "failed"
-    assert r.task.degraded is True
-    # Orchestrator's catch produces the failure message with body included.
-    assert "HermesTimeout" in r.response
-    assert "Hermes timed out after 180000ms" in r.response
+    assert r.task.status == "succeeded"
+    assert r.response == "fallback ok"
+    # Both lanes exercised exactly once.
+    assert len(fake_c1.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_calendar_skill_propagates_hermes_auth_error(settings: Settings):
-    """OAuth refresh failures should also surface as failed, not as a hint
-    string — the metrics path needs to register them as failures."""
+async def test_calendar_skill_falls_back_to_claude_cli_on_hermes_auth_error(settings: Settings):
+    """2026-05-04: ``HermesAuthError`` (a ``HermesAdapterError`` subclass) is
+    raised out of ``_invoke_via_hermes`` and caught by the outer ``invoke``
+    handler, which falls back to the claude_cli lane. This way an OAuth-only
+    failure on the Ollama side doesn't kill the calendar skill.
+    """
+    from tests.test_orchestrator import _FakeClaudeCode, _claude_result
+
     settings.calendar_skill_enabled = True
     o = Orchestrator(settings)
     o.hermes = _FakeHermes(  # type: ignore[assignment]
         HermesAuthError("Hermes auth failed (model=qwen2.5, provider=ollama)")
     )
+    fake_c1 = _FakeClaudeCode([_claude_result("auth fallback ok", model="claude-haiku-4-5")])
+    o.claude_code_c1 = fake_c1  # type: ignore[assignment]
 
     r = await o.handle("내일 미팅 있나?", user_id="u1")
 
     assert r.handled_by == "skill:calendar"
-    assert r.task.status == "failed"
-    assert r.task.degraded is True
-    assert "HermesAuthError" in r.response
+    assert r.task.status == "succeeded"
+    assert r.response == "auth fallback ok"
+    assert len(fake_c1.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -273,14 +290,15 @@ async def test_calendar_skill_disabled_falls_through_to_normal_pipeline(
     """With the flag off, calendar queries flow through the normal pipeline
     (Router → L2/L3/C1). The skill must not be registered, period."""
     assert settings.calendar_skill_enabled is False
+    settings.ollama_enabled = True
 
     from tests.test_orchestrator import _build_orch, _resp  # reuse fakes
 
     o = _build_orch(
         settings,
-        local_scripts=[_resp("generic non-calendar reply", "gpt-4o-mini")],
+        ollama_local_scripts=[_resp("generic non-calendar reply", settings.ollama_work_model)],
     )
     r = await o.handle("오늘 일정 알려줘", user_id="u1")
     # Falls through to the local tier, not the calendar skill.
-    assert r.handled_by == "local-surrogate"
+    assert r.handled_by == "local"
     assert "calendar" not in r.handled_by

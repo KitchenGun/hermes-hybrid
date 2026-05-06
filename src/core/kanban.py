@@ -43,7 +43,14 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-KanbanStatus = Literal["todo", "in_progress", "review", "done", "cancelled"]
+KanbanStatus = Literal[
+    "triage",       # advisor_ops 가 갓 발행한 task — 사용자 검토 대기
+    "todo",         # 사용자가 promote — 작업 큐
+    "in_progress",  # 처리 중
+    "review",       # installer 가 plan 첨부 — 사용자 승인 대기
+    "done",
+    "cancelled",
+]
 
 
 class KanbanComment(BaseModel):
@@ -116,6 +123,7 @@ class KanbanStore:
         created_by: str = "",
         tags: list[str] | None = None,
         assigned_to: str | None = None,
+        status: KanbanStatus = "todo",
     ) -> KanbanTask:
         data = self._read()
         now = _now_iso()
@@ -124,7 +132,7 @@ class KanbanStore:
             tenant=tenant,
             title=title,
             body=body,
-            status="todo",
+            status=status,
             created_at=now,
             updated_at=now,
             created_by=created_by,

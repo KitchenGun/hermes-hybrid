@@ -72,7 +72,7 @@ def test_registry_empty_and_no_match():
 
 def test_default_registry_contents():
     reg = default_registry()
-    assert reg.names() == ["hybrid-status", "hybrid-budget", "hybrid-memo"]
+    assert reg.names() == ["hybrid-status", "hybrid-budget", "hybrid-memo", "kanban"]
 
 
 # ---- hybrid-status ----------------------------------------------------------
@@ -194,7 +194,8 @@ async def test_skill_short_circuits_router_and_llm(settings: Settings):
         raise AssertionError("router must not be called for a skill hit")
 
     o.router.decide = _spy_decide  # type: ignore[assignment]
-    o._openai_main = None  # make sure no LLM is available
+    # 2026-05-04: OpenAI clients removed — there's nothing to null out.
+    # The router spy already proves no downstream LLM is consulted.
 
     r = await o.handle("/hybrid-status", user_id="u1")
     assert r.handled_by.startswith("skill:")
