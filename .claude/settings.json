@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Write(/mnt/e/hermes-hybrid/**)",
+      "Read(/mnt/e/hermes-hybrid/**)",
+      "Edit(/mnt/e/hermes-hybrid/**)",
+      "Write(E:\\hermes-hybrid\\**)",
+      "Bash(wsl -d Ubuntu -- bash -lc \"curl*9119*\")",
+      "Bash(curl -fsS http://127.0.0.1:9119/*)",
+      "Bash(curl http://127.0.0.1:9119/*)",
+      "Bash(curl -fsS http://127.0.0.1:*)",
+      "mcp__unityMCP__*",
+      "mcp__Unreal_Engine_MCP__*",
+      "Bash(journalctl --user:*)",
+      "Bash(wsl --list:*)",
+      "Bash(wsl --status)",
+      "Bash(ss -tlnp:*)",
+      "Bash(lsof -i:*)",
+      "Bash(ps -ef:*)",
+      "Bash(ps aux:*)"
+    ]
+  }
+}
