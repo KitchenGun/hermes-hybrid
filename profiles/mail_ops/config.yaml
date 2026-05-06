@@ -8,10 +8,13 @@ agent:
   tool_use_enforcement: "auto"
 
 model:
-  provider: "custom"
-  model: "gpt-4o-mini"             # 메일 요약은 가벼운 모델로 충분
-  base_url: "https://api.openai.com/v1"
-  api_mode: "chat_completions"
+  # 2026-05-06: gpt-4o-mini 직호출 폐기. 모든 LLM 호출은 Hermes Master
+  # (opencode/gpt-5.5) 가 처리한다. profile 의 model 블록은 cron / hermes
+  # CLI sub-call 이 여전히 ollama 를 호출할 수 있는 fallback 으로만 의미.
+  # mail_ops 는 watcher 1잡 (new_mail_alert) 만 가지므로 사실상 사용 X —
+  # legacy 호환을 위해 ollama 로 redirect.
+  provider: "ollama"
+  model: "qwen2.5:14b-instruct"
 
 terminal:
   backend: local
