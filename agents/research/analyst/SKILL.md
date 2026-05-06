@@ -37,6 +37,15 @@ master → @analyst("ExperienceLogger 가 어떤 stream 으로 쓰는가? 본문
 analyst → "src/core/experience_logger.py:184  open(path, 'a')..."
 ```
 
+## Absorbed tools (Phase 8 흡수)
+
+### Job inventory scan (`job_inventory` 흡수, advisor_ops 출신)
+- 입력: profile/agents 디렉터리 root (이전 `/home/kang/.hermes/profiles`,
+  Phase 8 후 `agents/` + repo `src/`)
+- 출력: 단일 JSON 인벤토리 — 각 yaml/SKILL.md 의 frontmatter 평탄화
+- 사용 시점: 도구·스킬 추천 분석 시 master 가 첫 단계로 호출
+- 환경변수: 없음 (read-only 파일 시스템 스캔)
+
 ## 제약
 - 추측 금지. 발견한 것만.
 - 한 번에 한 질문. 명확한 scope.
