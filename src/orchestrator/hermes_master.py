@@ -42,6 +42,7 @@ from src.claude_adapter import (
 )
 from src.config import Settings
 from src.core import Critic, ExperienceLogger
+from src.core.experiment_runner import ExperimentRunner
 from src.integration import IntentRouter, JobInventory, PolicyGate
 from src.memory import InMemoryMemory, MemoryBackend
 from src.obs import bind_task_id, get_logger
@@ -138,6 +139,16 @@ class HermesMasterOrchestrator:
             )
         )
 
+        # Phase 21 (2026-05-07) — A/B experiment runner.
+        # Stateless deterministic arm assigner used in handle() before
+        # _maybe_inject_memory(). disabled 일 때도 항상 control 반환이라
+        # 분기 로직은 단순화됨.
+        self.experiment_runner = ExperimentRunner(
+            name=settings.ab_experiment_name,
+            treatment_ratio=settings.ab_treatment_ratio,
+            enabled=settings.ab_experiment_enabled,
+        )
+
     # ---- public entry ------------------------------------------------
 
     async def handle(
@@ -154,9 +165,27 @@ class HermesMasterOrchestrator:
         t0 = time.perf_counter()
 
         history_window = list(history or [])
-        memory_inject_count = await self._maybe_inject_memory(
-            user_id, user_message, history_window
-        )
+
+        # Phase 21 (2026-05-07) — A/B arm decision needs task_id, so pre-gen
+        # it here and pass through to TaskState below. UUID4 is privacy-safe
+        # (no user signal). control arm skips memory inject; treatment runs
+        # it and falls back to the no-hits sub-label when search is empty.
+        task_id = str(uuid.uuid4())
+        if self.settings.ab_experiment_enabled:
+            arm: str | None = self.experiment_runner.assign(task_id)
+            experiment_name: str | None = self.settings.ab_experiment_name
+        else:
+            arm = None
+            experiment_name = None
+
+        if arm == "control":
+            memory_inject_count = 0
+        else:
+            memory_inject_count = await self._maybe_inject_memory(
+                user_id, user_message, history_window
+            )
+            if arm == "treatment" and memory_inject_count == 0:
+                arm = "treatment_no_hits"
 
         intent = await self.intent_router.route(
             user_message=user_message,
@@ -172,6 +201,7 @@ class HermesMasterOrchestrator:
         # _log_task_end so the ExperienceLog gets a single row per
         # request regardless of which short-circuit fired.
         task = TaskState(
+            task_id=task_id,
             session_id=session_id,
             user_id=user_id,
             user_message=user_message,
@@ -186,6 +216,8 @@ class HermesMasterOrchestrator:
             skill_ids=list(intent.skill_ids),
             agent_handles=list(getattr(intent, "agent_handles", []) or []),
             pipeline_id=getattr(intent, "pipeline_id", None),
+            experiment_arm=arm,
+            experiment_name=experiment_name,
         )
         task.mark("created_at")
 

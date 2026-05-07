@@ -42,6 +42,10 @@ def _settings(tmp_path, **overrides) -> Settings:
         "experience_log_root": tmp_path / "experience",
         "master_enabled": True,
         "memory_inject_enabled": False,
+        # Phase 21 — keep A/B disabled by default in legacy tests so the
+        # arm assignment doesn't randomly skip memory inject. Tests that
+        # exercise A/B explicitly opt in via overrides.
+        "ab_experiment_enabled": False,
         "state_db_path": tmp_path / "test.db",
     }
     base.update(overrides)
@@ -537,3 +541,134 @@ def test_permission_denied_regex_matches_known_phrases():
         assert not _looks_like_permission_denied(phrase), (
             f"false positive on: {phrase!r}"
         )
+
+
+# ---- Phase 21 (2026-05-07): A/B experiment arm stamping ---------------
+
+
+@pytest.mark.asyncio
+async def test_ab_disabled_yields_no_arm_stamp(tmp_path):
+    """ab_experiment_enabled=False → ExperienceLog 의 experiment_arm 은 None."""
+    log_dir = tmp_path / "exp_log"
+    settings = _settings(
+        tmp_path,
+        experience_log_root=log_dir,
+        ab_experiment_enabled=False,
+    )
+    logger = ExperienceLogger(log_dir, enabled=True)
+    master = HermesMasterOrchestrator(settings, experience_logger=logger)
+    master.adapter.run = AsyncMock(return_value=_ok_result("done"))
+
+    result = await master.handle("자유 텍스트", user_id="u1")
+    assert result.task.experiment_arm is None
+    assert result.task.experiment_name is None
+
+
+@pytest.mark.asyncio
+async def test_ab_treatment_arm_runs_memory_inject(tmp_path):
+    """ratio=1.0 + memory_inject_enabled → arm='treatment' + memory inject 호출."""
+    settings = _settings(
+        tmp_path,
+        memory_inject_enabled=True,
+        memory_inject_top_k=2,
+        ab_experiment_enabled=True,
+        ab_treatment_ratio=1.0,            # all-treatment
+    )
+    memory = InMemoryMemory()
+    await memory.save("u1", "내일 회의 9시")
+
+    master = HermesMasterOrchestrator(settings, memory=memory)
+
+    captured: dict = {}
+
+    async def _capture_run(*, prompt, history, model=None, timeout_ms=None):
+        captured["history"] = history
+        return _ok_result("응답")
+
+    master.adapter.run = _capture_run  # type: ignore[assignment]
+
+    result = await master.handle("회의 일정", user_id="u1")
+    # treatment arm — inject ran, arm stamped
+    assert result.task.experiment_arm == "treatment"
+    assert result.task.experiment_name == "memory_inject"
+    history = captured["history"]
+    assert history and history[0]["role"] == "system"
+    assert "내일 회의 9시" in history[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_ab_control_arm_skips_memory_inject(tmp_path):
+    """ratio=0.0 → arm='control' + history_window 비어 있어야."""
+    settings = _settings(
+        tmp_path,
+        memory_inject_enabled=True,
+        ab_experiment_enabled=True,
+        ab_treatment_ratio=0.0,            # all-control
+    )
+    memory = InMemoryMemory()
+    await memory.save("u1", "내일 회의 9시")
+
+    master = HermesMasterOrchestrator(settings, memory=memory)
+
+    captured: dict = {}
+
+    async def _capture_run(*, prompt, history, model=None, timeout_ms=None):
+        captured["history"] = history
+        return _ok_result("응답")
+
+    master.adapter.run = _capture_run  # type: ignore[assignment]
+
+    result = await master.handle("회의 일정", user_id="u1")
+    assert result.task.experiment_arm == "control"
+    # history must NOT contain the system memo prefix
+    assert not captured["history"], (
+        "control arm must skip memory_inject — history should be empty"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ab_treatment_no_hits_sub_label(tmp_path):
+    """treatment arm 인데 search miss 면 arm='treatment_no_hits' sub-label."""
+    settings = _settings(
+        tmp_path,
+        memory_inject_enabled=True,
+        ab_experiment_enabled=True,
+        ab_treatment_ratio=1.0,            # all-treatment
+    )
+    memory = InMemoryMemory()  # empty memory → search returns []
+
+    master = HermesMasterOrchestrator(settings, memory=memory)
+    master.adapter.run = AsyncMock(return_value=_ok_result("응답"))
+
+    result = await master.handle("아무거나", user_id="u1")
+    assert result.task.experiment_arm == "treatment_no_hits"
+
+
+@pytest.mark.asyncio
+async def test_ab_arm_logged_to_experience_record(tmp_path):
+    """ExperienceLog JSONL 에 experiment_arm / experiment_name 이 기록돼야."""
+    log_dir = tmp_path / "exp_log"
+    settings = _settings(
+        tmp_path,
+        experience_log_root=log_dir,
+        memory_inject_enabled=True,
+        ab_experiment_enabled=True,
+        ab_treatment_ratio=1.0,
+    )
+    memory = InMemoryMemory()
+    await memory.save("u1", "회의 일정 메모")
+
+    logger = ExperienceLogger(log_dir, enabled=True)
+    master = HermesMasterOrchestrator(
+        settings, memory=memory, experience_logger=logger,
+    )
+    master.adapter.run = AsyncMock(return_value=_ok_result("응답"))
+
+    await master.handle("회의 알려줘", user_id="u1")
+
+    files = list(log_dir.glob("*.jsonl"))
+    assert len(files) == 1
+    import json
+    rec = json.loads(files[0].read_text(encoding="utf-8").strip())
+    assert rec["experiment_arm"] == "treatment"
+    assert rec["experiment_name"] == "memory_inject"

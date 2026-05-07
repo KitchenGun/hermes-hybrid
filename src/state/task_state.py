@@ -161,6 +161,13 @@ class TaskState(BaseModel):
     pipeline_stage: int = 0                  # 마지막 완료 단계 (0-based)
     pipeline_results: list[dict[str, Any]] = Field(default_factory=list)
 
+    # Phase 21 (2026-05-07): A/B experiment arm.
+    # ExperimentRunner.assign(task_id) 결과 + sub-label "treatment_no_hits"
+    # (treatment arm 인데 search miss 로 inject 가 0 건일 때). None 은 A/B
+    # disabled. ExperienceLogger 가 그대로 record 에 stamp.
+    experiment_arm: Literal["control", "treatment", "treatment_no_hits"] | None = None
+    experiment_name: str | None = None
+
     # Execution
     status: Status = "pending"
     current_tier: Tier = "L2"

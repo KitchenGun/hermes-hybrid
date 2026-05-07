@@ -248,3 +248,42 @@ def test_root_directory_is_created_on_first_write(tmp_path: Path):
     logger.append(_make_task(), handled_by="local", latency_ms=1)
     assert nested.exists()
     assert len(list(nested.glob("*.jsonl"))) == 1
+
+
+# ---- Phase 21 (2026-05-07): A/B experiment_arm round-trip -----------------
+
+
+def test_experiment_arm_defaults_to_none(tmp_path: Path):
+    """A/B 토글 OFF 환경 backwards-compat: 기존 row 가 깨지지 않음."""
+    logger = ExperienceLogger(tmp_path, enabled=True)
+    rec = logger.append(_make_task(), handled_by="local", latency_ms=1)
+    assert rec.experiment_arm is None
+    assert rec.experiment_name is None
+
+
+def test_experiment_arm_passthrough_to_record(tmp_path: Path):
+    """TaskState.experiment_arm/name 이 _record_from_task 를 통해 그대로 stamp."""
+    logger = ExperienceLogger(tmp_path, enabled=True)
+    task = _make_task()
+    task.experiment_arm = "treatment"
+    task.experiment_name = "memory_inject"
+    rec = logger.append(task, handled_by="master:claude", latency_ms=10)
+
+    assert rec.experiment_arm == "treatment"
+    assert rec.experiment_name == "memory_inject"
+
+    # Round-trip: re-read JSONL line and parse back.
+    raw = list(tmp_path.glob("*.jsonl"))[0].read_text(encoding="utf-8").strip()
+    parsed = json.loads(raw)
+    assert parsed["experiment_arm"] == "treatment"
+    assert parsed["experiment_name"] == "memory_inject"
+
+
+def test_experiment_arm_treatment_no_hits_subloabel_persisted(tmp_path: Path):
+    """sub-label 'treatment_no_hits' 가 그대로 직렬화/역직렬화 가능."""
+    logger = ExperienceLogger(tmp_path, enabled=True)
+    task = _make_task()
+    task.experiment_arm = "treatment_no_hits"
+    task.experiment_name = "memory_inject"
+    rec = logger.append(task, handled_by="master:claude", latency_ms=1)
+    assert rec.experiment_arm == "treatment_no_hits"

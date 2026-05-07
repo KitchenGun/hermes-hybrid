@@ -118,6 +118,13 @@ class ExperienceRecord(BaseModel):
     # Diagnostic only; never used for retry/tier policy. Range [0, 1].
     self_score: float = 0.0
 
+    # Phase 21 (2026-05-07): A/B experiment arm. Stamped by HermesMaster
+    # right after task_id pre-generation. ``None`` = experiment disabled.
+    # ``treatment_no_hits`` = treatment arm but search miss produced zero
+    # injects (sub-label so analysis can isolate the no-effect case).
+    experiment_arm: str | None = None
+    experiment_name: str | None = None
+
     # Privacy-preserved input/output
     input_text_hash: str = ""
     input_text_length: int = 0
@@ -205,6 +212,8 @@ def _record_from_task(
         agent_handles=list(task.agent_handles),
         pipeline_id=task.pipeline_id,
         pipeline_stage_count=len(task.pipeline_results),
+        experiment_arm=task.experiment_arm,
+        experiment_name=task.experiment_name,
         input_text_hash=_sha16(task.user_message),
         input_text_length=len(task.user_message or ""),
         response_hash=_sha16(task.final_response),

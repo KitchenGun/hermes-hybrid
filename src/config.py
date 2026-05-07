@@ -137,8 +137,12 @@ class Settings(BaseSettings):
     experience_log_enabled: bool = True
     experience_log_root: Path = Path("./logs/experience")
 
-    # Memory inject — P0-C (2026-05-06).
-    memory_inject_enabled: bool = False
+    # Memory inject — P0-C (2026-05-06). Phase 17 (2026-05-07): default ON.
+    # _maybe_inject_memory() 검색 기반 top-k inject 가 master prompt 의 system
+    # role 앞에 추가. memory_curator.read_prompt_prepend() 와는 별도 경로 —
+    # 후자는 MEMORY.md tail 자동 prepend, 전자는 user_message 와 의미 유사한
+    # 과거 메모리 검색.
+    memory_inject_enabled: bool = True
     memory_inject_top_k: int = 3
 
     # Memory search backend — Phase 4 (2026-05-06).
@@ -146,6 +150,16 @@ class Settings(BaseSettings):
     memory_embedding_model: str = "bge-m3"
     memory_embedding_base_url: str = "http://localhost:11434"
     memory_embedding_timeout_s: int = 10
+
+    # Phase 21 (2026-05-07): A/B experiment runner.
+    # task_id hash 기반 결정론적 분기. control = inject skip, treatment = inject ON.
+    # Phase 17 의 행동 변화 효과를 측정하기 위해 1주차 동시 도입. ratio 0.5
+    # 면 50/50. ExperienceLog 의 experiment_arm / experiment_name 컬럼에 stamp.
+    # 주간 ABReportJob (일요일 22:30) 가 self_score 평균 비교 + Welch's t.
+    ab_experiment_enabled: bool = True
+    ab_treatment_ratio: float = 0.5
+    ab_experiment_name: str = "memory_inject"
+    ab_report_root: Path = Path("./logs/ab")
 
     @property
     def allowed_user_ids(self) -> set[int]:
