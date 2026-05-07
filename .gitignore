@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-linux/
 .env
 data/
 # Bench config (prompts YAML + execution unit tests) is part of the codebase.

@@ -23,11 +23,17 @@ previous implementation maintained.
 """
 from __future__ import annotations
 
+import html as _html
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 from src.skills.mail.base import MailMessage, MailProviderError
+
+_SNIPPET_MAX = 240
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
 
 log = logging.getLogger(__name__)
 
@@ -105,7 +111,7 @@ class NaverProvider:
                         criteria=criteria,
                         limit=limit,
                         reverse=True,           # newest first
-                        headers_only=True,      # avoid downloading bodies
+                        headers_only=False,     # need body for snippet
                         mark_seen=False,        # read-only — never STORE \\Seen
                         bulk=False,
                         charset="UTF-8",
@@ -141,7 +147,8 @@ class NaverProvider:
                     message_id=uid,
                     subject=(m.subject or "(no subject)").strip(),
                     sender=_format_sender(m.from_, m.from_values),
-                    snippet="",  # headers_only=True → body not fetched
+                    snippet=_extract_snippet(getattr(m, "text", "") or "",
+                                             getattr(m, "html", "") or ""),
                     received_at=received,
                 )
             )
@@ -157,6 +164,21 @@ class NaverProvider:
         if last_message_id and last_message_id.isdigit():
             return f"UID {int(last_message_id) + 1}:*"
         return "ALL"
+
+
+def _extract_snippet(text: str, html_body: str) -> str:
+    """Best-effort short body excerpt for Discord notifications.
+
+    Prefers the plain-text part. Falls back to HTML with tags stripped
+    and entities unescaped. Whitespace is collapsed and the result is
+    truncated to ~240 chars so Naver alerts match the Gmail snippet
+    surface.
+    """
+    src = text.strip() if text and text.strip() else _html.unescape(_HTML_TAG_RE.sub(" ", html_body or ""))
+    cleaned = _WS_RE.sub(" ", src).strip()
+    if len(cleaned) > _SNIPPET_MAX:
+        cleaned = cleaned[: _SNIPPET_MAX - 3] + "..."
+    return cleaned
 
 
 def _format_sender(from_str: str | None, from_values) -> str:

@@ -121,3 +121,17 @@
 | `model_provider` | str \| None | "ollama" / "custom" / "claude_cli" |
 | `model_name` | str \| None | 실제 호출 모델 (local 도 포함) |
 | `memory_inject_count` | int | P0-C inject 에서 들어간 메모 수 |
+
+---
+
+## 5. Post-Phase-8 successor mapping
+
+Phase 8 에서 위 표의 27 잡 모두 폐기됐고, 이후 일부만 systemd-user timer 형태로
+부활했다. 위 표의 항목과 현행 timer 의 대응:
+
+| legacy job_id | replacement | install script |
+|---|---|---|
+| weather_briefing (`30 7 * * *`) | `hermes-hybrid-weather-alert.timer` (07:10 KST, scripts/weather_alert.py → KMA apihub → Discord) | `scripts/install_weather_alert_timer.sh` |
+
+그 외 26 잡은 후속 잡 없음 — master 가 사용자 명시 요청을 받아 17 sub-agent
+에 위임하는 흐름(AGENT_INVENTORY.md)으로 대체됐다.
