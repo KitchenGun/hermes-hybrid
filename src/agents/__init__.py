@@ -67,7 +67,16 @@ class AgentEntry(BaseModel):
 
 
 class AgentRegistry:
-    """Read-only loader for ``agents/{category}/{name}/SKILL.md``."""
+    """Read-only loader for ``agents/{category}/{name}/SKILL.md``.
+
+    Phase 18 (2026-05-07): hot-reload support. ``invalidate()`` drops the
+    cache so the next ``all()`` / ``by_handle()`` call re-scans. The
+    SKILL.md mtime map (``_mtimes``) lets ``reload_if_changed()`` decide
+    whether a rescan is needed without reading every file again.
+    Atomic swap: ``_scan`` builds new dicts, then assigns to ``self`` —
+    Python dict assignment is GIL-atomic so concurrent ``all()`` callers
+    see either the old or new state, never a partial mix.
+    """
 
     def __init__(
         self,
@@ -83,6 +92,8 @@ class AgentRegistry:
         )
         self._entries: list[AgentEntry] | None = None
         self._by_handle: dict[str, AgentEntry] | None = None
+        # Phase 18 — SKILL.md path → mtime. Used by reload_if_changed.
+        self._mtimes: dict[Path, float] = {}
 
     # ---- public lookups ---------------------------------------------
 
@@ -111,12 +122,72 @@ class AgentRegistry:
     def summary(self) -> dict[str, int]:
         return {cat: len(self.by_category(cat)) for cat in _CATEGORIES}
 
+    # ---- Phase 18 — hot reload helpers ------------------------------
+
+    def invalidate(self) -> None:
+        """Drop the cache. Next lookup re-scans agents_root.
+
+        Cheap — just resets pointers. The actual scan work happens lazily
+        on the next ``all()`` / ``by_handle()`` / ``reload_if_changed()``.
+        """
+        self._entries = None
+        self._by_handle = None
+        # Keep _mtimes — reload_if_changed compares against it to detect
+        # touched files since the last scan. Setting it empty forces a
+        # rescan on the next reload_if_changed call regardless of mtime.
+        self._mtimes = {}
+
+    def reload_if_changed(self) -> bool:
+        """Polling check. Returns ``True`` iff SKILL.md set or any mtime
+        changed since the last scan, in which case a rescan was performed.
+
+        Polling-only by design: watchdog adds an OS-level dependency that
+        bites on Windows + WSL bind-mounts. mtime polling at 30 s
+        intervals (default) is enough for SkillPromoter's once-per-week
+        cadence and is testable without a filesystem watcher.
+        """
+        if self._entries is None or self._by_handle is None:
+            self._scan()
+            return True
+
+        current = self._collect_mtimes()
+        if current != self._mtimes:
+            self._scan()
+            return True
+        return False
+
+    def _collect_mtimes(self) -> dict[Path, float]:
+        """Walk agents_root and record mtime for every SKILL.md found."""
+        out: dict[Path, float] = {}
+        if not self.agents_root.exists():
+            return out
+        for cat_dir in self.agents_root.iterdir():
+            if not cat_dir.is_dir():
+                continue
+            for agent_dir in cat_dir.iterdir():
+                if not agent_dir.is_dir():
+                    continue
+                md = agent_dir / "SKILL.md"
+                if md.exists():
+                    try:
+                        out[md] = md.stat().st_mtime
+                    except OSError:
+                        continue
+        return out
+
     # ---- scan ------------------------------------------------------
 
     def _scan(self) -> None:
-        self._entries = []
-        self._by_handle = {}
+        # Build into local dicts first; assign at the end so concurrent
+        # readers either see the old state in full or the new state in
+        # full, never a partial swap.
+        new_entries: list[AgentEntry] = []
+        new_by_handle: dict[str, AgentEntry] = {}
+        new_mtimes: dict[Path, float] = {}
         if not self.agents_root.exists():
+            self._entries = new_entries
+            self._by_handle = new_by_handle
+            self._mtimes = new_mtimes
             return
 
         for cat_dir in sorted(p for p in self.agents_root.iterdir() if p.is_dir()):
@@ -127,11 +198,23 @@ class AgentRegistry:
                 md = agent_dir / "SKILL.md"
                 if not md.exists():
                     continue
+                # Phase 18 — track mtime even for files whose frontmatter
+                # parse fails. Otherwise reload_if_changed disagrees with
+                # _collect_mtimes about which files exist.
+                try:
+                    new_mtimes[md] = md.stat().st_mtime
+                except OSError:
+                    pass
                 entry = self._build_entry(md, category=category)
                 if entry is None:
                     continue
-                self._entries.append(entry)
-                self._by_handle[entry.handle.lower()] = entry
+                new_entries.append(entry)
+                new_by_handle[entry.handle.lower()] = entry
+
+        # Atomic swap (GIL-atomic single-attribute assignment).
+        self._entries = new_entries
+        self._by_handle = new_by_handle
+        self._mtimes = new_mtimes
 
     def _build_entry(
         self, md_path: Path, *, category: str

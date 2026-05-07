@@ -67,6 +67,21 @@ class Settings(BaseSettings):
     skill_promoter_weak_score_threshold: float = 0.4
     skill_promoter_draft_dir: Path = Path("./logs/curator/auto_skills")
 
+    # Phase 18 (2026-05-07): SKILL hot-reload + auto-promotion.
+    # Hermes Agent 의 "skills self-improvement during use" 흡수.
+    # critic 통과 draft 를 PR 안 거치고 agents/auto/<name>/SKILL.md 로 직접
+    # 활성화. AgentRegistry 가 mtime 폴링으로 새 skill 자동 인식 — master 재시작 X.
+    # 5회 사용 후 평균 self_score < threshold 면 다음 주 SkillPromoter 가
+    # archived/ 로 이동 (자동 revert).
+    # default OFF — 사용자 1주 관찰 후 명시 ON.
+    skill_promoter_auto_install: bool = False
+    skill_hot_reload_enabled: bool = False
+    skill_hot_reload_poll_seconds: int = 30
+    skill_promoter_critic_rerun: bool = True       # auto_install 시 형식 검증
+    skill_auto_promotion_threshold: float = 0.85   # critic_rerun score ≥
+    skill_auto_revert_min_uses: int = 5            # N회 사용 후 점수 평가
+    skill_auto_revert_score_threshold: float = 0.3
+
     # Phase 14 (2026-05-07): memory curator — auto MEMORY.md + USER.md.
     # 매 N task 후 master 가 metadata 보고 1-2줄 메모 append. 1500자 초과 시
     # 자동 LLM compaction. master prompt 에 자동 prepend (USER + MEMORY tail).

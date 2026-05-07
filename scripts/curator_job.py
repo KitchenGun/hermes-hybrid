@@ -52,6 +52,12 @@ async def _run_skill_promoter(settings: Settings, *, auto_pr: bool) -> int:
         auto_pr=auto_pr,
         weak_score_threshold=settings.skill_promoter_weak_score_threshold,
         repo_root=_REPO,
+        # Phase 18 (2026-05-07) — auto-install / auto-revert toggles.
+        auto_install=settings.skill_promoter_auto_install,
+        critic_rerun=settings.skill_promoter_critic_rerun,
+        promotion_threshold=settings.skill_auto_promotion_threshold,
+        revert_min_uses=settings.skill_auto_revert_min_uses,
+        revert_score_threshold=settings.skill_auto_revert_score_threshold,
     )
     result = await promoter.run_weekly()
     print(

@@ -344,3 +344,272 @@ def test_open_pr_returns_none_when_gh_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", _fake_run)
     url = p._open_pr(new_drafts=[], weak_drafts=[])
     assert url is None
+
+
+# ---- Phase 18 (2026-05-07): auto-install + auto-revert ----------------
+
+
+_AUTO_INSTALL_GOOD = """\
+---
+name: my_auto_skill
+agent_handle: "@my_auto_skill"
+category: implementation
+role: helper
+description: 자동 설치 후보 SKILL.md. 충분히 길어 description 보너스 받음.
+when_to_use:
+  - 사용 사례 1
+  - 사용 사례 2
+  - 사용 사례 3
+not_for:
+  - 비대상 1
+inputs:
+  - 입력 1
+outputs:
+  - 출력 1
+---
+# body
+"""
+
+
+_AUTO_INSTALL_BAD = """\
+---
+name: incomplete
+agent_handle: "@incomplete"
+category: implementation
+---
+# body
+"""
+
+
+def test_auto_install_promotes_high_score_draft(tmp_path):
+    agents_root = tmp_path / "agents"
+    agents_root.mkdir(parents=True)
+    p = _make_promoter(
+        tmp_path,
+        agents=AgentRegistry(agents_root=agents_root, repo_root=tmp_path),
+        agents_root=agents_root,
+        repo_root=tmp_path,
+        auto_install=True,
+    )
+
+    draft_dir = tmp_path / "drafts"
+    draft_dir.mkdir(parents=True)
+    draft_path = draft_dir / "20260507_my_auto_skill.md"
+    draft_path.write_text(_AUTO_INSTALL_GOOD, encoding="utf-8")
+
+    installed = p._maybe_auto_install(draft_path)
+    assert installed is not None
+    assert installed.name == "SKILL.md"
+    assert installed.parent.parent.name == "auto"
+    assert installed.read_text(encoding="utf-8") == _AUTO_INSTALL_GOOD
+
+
+def test_auto_install_rejects_low_score_draft(tmp_path):
+    agents_root = tmp_path / "agents"
+    agents_root.mkdir(parents=True)
+    p = _make_promoter(
+        tmp_path,
+        agents=AgentRegistry(agents_root=agents_root, repo_root=tmp_path),
+        agents_root=agents_root,
+        repo_root=tmp_path,
+        auto_install=True,
+    )
+
+    draft_dir = tmp_path / "drafts"
+    draft_dir.mkdir(parents=True)
+    draft_path = draft_dir / "20260507_incomplete.md"
+    draft_path.write_text(_AUTO_INSTALL_BAD, encoding="utf-8")
+
+    installed = p._maybe_auto_install(draft_path)
+    assert installed is None
+    # original .md gone, .rejected sibling exists
+    assert not draft_path.exists()
+    rejected = draft_dir / "20260507_incomplete.md.rejected"
+    assert rejected.exists()
+
+
+def test_auto_install_invalidates_registry(tmp_path):
+    agents_root = tmp_path / "agents"
+    agents_root.mkdir(parents=True)
+    reg = AgentRegistry(agents_root=agents_root, repo_root=tmp_path)
+    reg.all()                                    # prime cache (empty)
+
+    p = _make_promoter(
+        tmp_path,
+        agents=reg,
+        agents_root=agents_root,
+        repo_root=tmp_path,
+        auto_install=True,
+    )
+    draft_dir = tmp_path / "drafts"
+    draft_dir.mkdir(parents=True)
+    draft_path = draft_dir / "x.md"
+    draft_path.write_text(_AUTO_INSTALL_GOOD, encoding="utf-8")
+
+    p._maybe_auto_install(draft_path)
+    # Registry now picks up the new agent without an explicit reload.
+    assert reg.by_handle("@my_auto_skill") is not None
+
+
+def test_auto_revert_archives_low_score_auto_skill(tmp_path):
+    agents_root = tmp_path / "agents"
+    auto_dir = agents_root / "auto" / "rusty"
+    auto_dir.mkdir(parents=True)
+    md = auto_dir / "SKILL.md"
+    md.write_text(
+        _AUTO_INSTALL_GOOD.replace("@my_auto_skill", "@rusty"),
+        encoding="utf-8",
+    )
+
+    exp_root = tmp_path / "exp"
+    # 5 rows for @rusty with low self_score.
+    rows = [
+        {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "task_id": f"t{i}",
+            "session_id": "s",
+            "user_id": "u",
+            "agent_handles": ["@rusty"],
+            "self_score": 0.1,
+        }
+        for i in range(5)
+    ]
+    _seed_log(exp_root, rows)
+
+    p = _make_promoter(
+        tmp_path,
+        agents=AgentRegistry(agents_root=agents_root, repo_root=tmp_path),
+        agents_root=agents_root,
+        experience_log_root=exp_root,
+        repo_root=tmp_path,
+        auto_install=True,
+        revert_min_uses=5,
+        revert_score_threshold=0.3,
+    )
+
+    reverted = p._auto_revert_underperforming(
+        datetime.now(timezone.utc) - timedelta(days=1),
+        datetime.now(timezone.utc) + timedelta(days=1),
+    )
+    assert "@rusty" in reverted
+    assert not auto_dir.exists()                 # moved
+    archived = agents_root / "_archived" / "rusty"
+    assert archived.exists()
+
+
+def test_auto_revert_keeps_high_score_skill(tmp_path):
+    agents_root = tmp_path / "agents"
+    auto_dir = agents_root / "auto" / "good"
+    auto_dir.mkdir(parents=True)
+    md = auto_dir / "SKILL.md"
+    md.write_text(
+        _AUTO_INSTALL_GOOD.replace("@my_auto_skill", "@good"),
+        encoding="utf-8",
+    )
+
+    exp_root = tmp_path / "exp"
+    rows = [
+        {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "task_id": f"t{i}",
+            "session_id": "s",
+            "user_id": "u",
+            "agent_handles": ["@good"],
+            "self_score": 0.9,                   # well above threshold
+        }
+        for i in range(5)
+    ]
+    _seed_log(exp_root, rows)
+
+    p = _make_promoter(
+        tmp_path,
+        agents=AgentRegistry(agents_root=agents_root, repo_root=tmp_path),
+        agents_root=agents_root,
+        experience_log_root=exp_root,
+        repo_root=tmp_path,
+        auto_install=True,
+        revert_min_uses=5,
+        revert_score_threshold=0.3,
+    )
+
+    reverted = p._auto_revert_underperforming(
+        datetime.now(timezone.utc) - timedelta(days=1),
+        datetime.now(timezone.utc) + timedelta(days=1),
+    )
+    assert reverted == []
+    assert auto_dir.exists()
+
+
+def test_auto_revert_skips_when_not_enough_uses(tmp_path):
+    """N < revert_min_uses 면 평가 안 — 데이터 부족."""
+    agents_root = tmp_path / "agents"
+    auto_dir = agents_root / "auto" / "new"
+    auto_dir.mkdir(parents=True)
+    md = auto_dir / "SKILL.md"
+    md.write_text(
+        _AUTO_INSTALL_GOOD.replace("@my_auto_skill", "@new"),
+        encoding="utf-8",
+    )
+
+    exp_root = tmp_path / "exp"
+    rows = [
+        {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "task_id": "t1",
+            "session_id": "s",
+            "user_id": "u",
+            "agent_handles": ["@new"],
+            "self_score": 0.0,                   # very low
+        }
+    ]
+    _seed_log(exp_root, rows)
+
+    p = _make_promoter(
+        tmp_path,
+        agents=AgentRegistry(agents_root=agents_root, repo_root=tmp_path),
+        agents_root=agents_root,
+        experience_log_root=exp_root,
+        repo_root=tmp_path,
+        auto_install=True,
+        revert_min_uses=5,
+    )
+
+    reverted = p._auto_revert_underperforming(
+        datetime.now(timezone.utc) - timedelta(days=1),
+        datetime.now(timezone.utc) + timedelta(days=1),
+    )
+    assert reverted == []                        # only 1 use, < min 5
+
+
+def test_pr_command_includes_auto_skill_label(tmp_path, monkeypatch):
+    """Phase 18 — gh pr create 가 --label auto-skill 인자를 포함해야."""
+    p = _make_promoter(tmp_path, auto_pr=True, repo_root=tmp_path)
+
+    captured: list[list[str]] = []
+
+    import subprocess
+
+    class _OK:
+        returncode = 0
+        stdout = "https://github.com/example/pr/1\n"
+        stderr = ""
+
+    def _fake_run(cmd, **kw):
+        captured.append(list(cmd))
+        return _OK()
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    # one synthetic draft path so the PR has something to push
+    draft = tmp_path / "drafts" / "x.md"
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.write_text("placeholder", encoding="utf-8")
+
+    p._open_pr(new_drafts=[draft], weak_drafts=[])
+
+    pr_cmd = next(
+        (c for c in captured if len(c) >= 2 and c[0] == "gh" and c[1] == "pr"),
+        None,
+    )
+    assert pr_cmd is not None
+    assert "--label" in pr_cmd
+    assert "auto-skill" in pr_cmd

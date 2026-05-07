@@ -61,6 +61,10 @@ class SkillPromoterResult:
     prs_opened: list[str] = field(default_factory=list)   # PR URLs
     skipped_existing: list[str] = field(default_factory=list)  # cluster signature
     errors: list[str] = field(default_factory=list)
+    # Phase 18 (2026-05-07) — auto-install / revert outcomes.
+    auto_installed: list[Path] = field(default_factory=list)        # active SKILL.md
+    rejected_low_score: list[Path] = field(default_factory=list)    # *.rejected
+    auto_reverted: list[str] = field(default_factory=list)          # handle list
 
 
 class SkillPromoter:
@@ -78,6 +82,12 @@ class SkillPromoter:
         auto_pr: bool = True,
         weak_score_threshold: float = 0.4,
         repo_root: Path | None = None,
+        # Phase 18 (2026-05-07) — auto-install / auto-revert.
+        auto_install: bool = False,
+        critic_rerun: bool = True,
+        promotion_threshold: float = 0.85,
+        revert_min_uses: int = 5,
+        revert_score_threshold: float = 0.3,
     ):
         self.adapter = adapter
         self.agents = agents
@@ -90,6 +100,12 @@ class SkillPromoter:
         self.repo_root = (
             Path(repo_root) if repo_root is not None else self.agents_root.parent
         )
+        # Phase 18 — opt-in auto-install. Default OFF for safety.
+        self.auto_install = auto_install
+        self.critic_rerun = critic_rerun
+        self.promotion_threshold = max(0.0, min(1.0, promotion_threshold))
+        self.revert_min_uses = max(1, revert_min_uses)
+        self.revert_score_threshold = max(0.0, min(1.0, revert_score_threshold))
 
     async def run_weekly(self) -> SkillPromoterResult:
         """일요일 23:30 KST. 7일치 ExperienceLog 으로 cluster + draft + PR."""
@@ -111,8 +127,18 @@ class SkillPromoter:
                     result.skipped_existing.append(sig)
                     continue
                 draft_path = await self._produce_skill_draft(cluster)
-                if draft_path is not None:
-                    result.new_skill_drafts.append(draft_path)
+                if draft_path is None:
+                    continue
+                result.new_skill_drafts.append(draft_path)
+
+                # Phase 18 — auto-install path. critic_rerun 통과 시
+                # agents/auto/<name>/SKILL.md 로 활성화.
+                if self.auto_install:
+                    installed = self._maybe_auto_install(draft_path)
+                    if installed is not None:
+                        result.auto_installed.append(installed)
+                    else:
+                        result.rejected_low_score.append(draft_path)
             except Exception as e:  # noqa: BLE001
                 log.warning("skill_promoter.draft_failed", err=str(e))
                 result.errors.append(f"draft: {e}")
@@ -132,12 +158,32 @@ class SkillPromoter:
             except Exception as e:  # noqa: BLE001
                 result.errors.append(f"weak {handle}: {e}")
 
-        # Open PRs (single PR for the batch — easier to review)
-        if self.auto_pr and (result.new_skill_drafts or result.weak_agent_drafts):
+        # Phase 18 — auto-revert pass for previously installed agents
+        # whose self_score under-performs.
+        if self.auto_install:
+            try:
+                reverted = self._auto_revert_underperforming(since, until)
+                result.auto_reverted.extend(reverted)
+            except Exception as e:  # noqa: BLE001
+                log.warning("skill_promoter.auto_revert_failed", err=str(e))
+                result.errors.append(f"revert: {e}")
+
+        # Open PRs (single PR for the batch — easier to review).
+        # Phase 18 — auto_install 활성화 시 PR 은 weak_agent_drafts 만 (active
+        # 코드는 이미 install 됨).
+        pr_drafts = (
+            result.weak_agent_drafts
+            if self.auto_install
+            else [*result.new_skill_drafts, *result.weak_agent_drafts]
+        )
+        # Match the PR open path's old expectation (split kwargs).
+        pr_new = [] if self.auto_install else result.new_skill_drafts
+        pr_weak = result.weak_agent_drafts
+        if self.auto_pr and (pr_new or pr_weak):
             try:
                 pr_url = self._open_pr(
-                    new_drafts=result.new_skill_drafts,
-                    weak_drafts=result.weak_agent_drafts,
+                    new_drafts=pr_new,
+                    weak_drafts=pr_weak,
                 )
                 if pr_url:
                     result.prs_opened.append(pr_url)
@@ -151,6 +197,9 @@ class SkillPromoter:
             weak_drafts=len(result.weak_agent_drafts),
             skipped=len(result.skipped_existing),
             prs=len(result.prs_opened),
+            installed=len(result.auto_installed),
+            rejected=len(result.rejected_low_score),
+            reverted=len(result.auto_reverted),
             errors=len(result.errors),
         )
         return result
@@ -334,6 +383,150 @@ class SkillPromoter:
             f"top_handler_tokens: {','.join(cluster.sample_handler_token_keywords)}\n"
         )
 
+    # ---- Phase 18 — auto-install / auto-revert -----------------------
+
+    def _maybe_auto_install(self, draft_path: Path) -> Path | None:
+        """Score the draft. If ≥ promotion_threshold, copy to
+        ``agents/auto/<name>/SKILL.md`` and invalidate the registry so
+        the loader picks it up.
+
+        Returns the active path on success, ``None`` if rejected. Rejected
+        drafts get a ``.rejected`` suffix on disk so future runs skip them.
+        """
+        try:
+            text = draft_path.read_text(encoding="utf-8")
+        except OSError as e:
+            log.warning(
+                "skill_promoter.draft_read_failed",
+                path=str(draft_path), err=str(e),
+            )
+            return None
+
+        if self.critic_rerun:
+            from src.jobs.skill_critic_rerun import score_draft
+            score = score_draft(text)
+        else:
+            score = 1.0  # critic disabled → always-pass (still gated by threshold)
+
+        if score < self.promotion_threshold:
+            try:
+                rejected = draft_path.with_suffix(draft_path.suffix + ".rejected")
+                draft_path.rename(rejected)
+                log.info(
+                    "skill_promoter.draft_rejected",
+                    path=str(rejected), score=score,
+                )
+            except OSError:
+                pass
+            return None
+
+        # Extract name from frontmatter (or path fallback).
+        name_match = re.search(r"^name:\s*(\S+)", text, re.MULTILINE)
+        name = (
+            re.sub(r"[^a-z0-9_]", "_", name_match.group(1).lower())
+            if name_match
+            else draft_path.stem.split("_", 1)[-1]
+        ) or "auto_skill"
+
+        target_dir = self.agents_root / "auto" / name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / "SKILL.md"
+        try:
+            target.write_text(text, encoding="utf-8")
+        except OSError as e:
+            log.warning(
+                "skill_promoter.install_failed",
+                path=str(target), err=str(e),
+            )
+            return None
+
+        # Hand the registry a fresh look; SkillLoader's polling will pick
+        # this up on its next tick if it's running. Calling invalidate
+        # here makes the change visible in-process even without polling.
+        try:
+            self.agents.invalidate()
+        except AttributeError:
+            pass
+
+        log.info(
+            "skill_promoter.auto_installed",
+            path=str(target), score=score,
+        )
+        return target
+
+    def _auto_revert_underperforming(
+        self, since: datetime, until: datetime,
+    ) -> list[str]:
+        """Walk ``agents/auto/<name>/`` and archive any whose recent
+        self_score average under-performs.
+
+        Returns the list of reverted handles.
+        """
+        auto_dir = self.agents_root / "auto"
+        if not auto_dir.exists():
+            return []
+
+        # Aggregate self_score by agent_handle from recent rows.
+        rows = list(self._read_log(since, until))
+        scores: dict[str, list[float]] = {}
+        for r in rows:
+            for h in r.get("agent_handles") or []:
+                scores.setdefault(h.lower(), []).append(
+                    float(r.get("self_score") or 0.0)
+                )
+
+        archive = self.agents_root / "_archived"
+        archive.mkdir(parents=True, exist_ok=True)
+
+        reverted: list[str] = []
+        for agent_dir in sorted(p for p in auto_dir.iterdir() if p.is_dir()):
+            md = agent_dir / "SKILL.md"
+            if not md.exists():
+                continue
+            try:
+                text = md.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            handle_match = re.search(
+                r'^agent_handle:\s*"?(@?[\w-]+)"?', text, re.MULTILINE,
+            )
+            if not handle_match:
+                continue
+            handle = handle_match.group(1)
+            if not handle.startswith("@"):
+                handle = "@" + handle
+            uses = scores.get(handle.lower(), [])
+            if len(uses) < self.revert_min_uses:
+                continue
+            avg = sum(uses) / len(uses)
+            if avg >= self.revert_score_threshold:
+                continue
+
+            target = archive / agent_dir.name
+            try:
+                if target.exists():
+                    # disambiguate with timestamp
+                    target = archive / f"{agent_dir.name}_{int(datetime.now(timezone.utc).timestamp())}"
+                agent_dir.rename(target)
+                reverted.append(handle)
+                log.info(
+                    "skill_promoter.auto_reverted",
+                    handle=handle, avg_score=avg, uses=len(uses),
+                )
+            except OSError as e:
+                log.warning(
+                    "skill_promoter.revert_failed",
+                    handle=handle, err=str(e),
+                )
+
+        if reverted:
+            try:
+                self.agents.invalidate()
+            except AttributeError:
+                pass
+
+        return reverted
+
     # ---- ExperienceLog read ------------------------------------------
 
     def _read_log(
@@ -422,6 +615,10 @@ class SkillPromoter:
                     "--title", f"chore(auto-skill): {len(new_drafts)+len(weak_drafts)} drafts",
                     "--body", msg,
                     "--head", branch,
+                    # Phase 18 — label so PR queue filters can pick this
+                    # batch up automatically. ``gh`` will silently ignore
+                    # the flag if the label doesn't exist on the repo.
+                    "--label", "auto-skill",
                 ],
                 cwd=self.repo_root,
                 capture_output=True, text=True, timeout=30,

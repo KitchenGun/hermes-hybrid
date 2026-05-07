@@ -172,3 +172,73 @@ def test_missing_agents_root_returns_empty(tmp_path):
     assert reg.all() == []
     assert reg.by_handle("@coder") is None
     assert reg.summary() == {cat: 0 for cat in _CATEGORIES}
+
+
+# ---- Phase 18 (2026-05-07): hot-reload helpers ------------------------
+
+
+def test_invalidate_drops_cache_and_rescans(tmp_path):
+    _build_synth(tmp_path)
+    reg = AgentRegistry(tmp_path)
+    assert reg.by_handle("@tmp") is not None
+
+    # Add a new agent post-scan; without invalidate it would be invisible.
+    (tmp_path / "research" / "newcomer").mkdir(parents=True)
+    (tmp_path / "research" / "newcomer" / "SKILL.md").write_text(
+        _GOOD_FM.replace("name: tmp", "name: newcomer").replace(
+            "agent_handle: \"@tmp\"", "agent_handle: \"@newcomer\""
+        ),
+        encoding="utf-8",
+    )
+    # Cache stale
+    assert reg.by_handle("@newcomer") is None
+
+    reg.invalidate()
+    assert reg.by_handle("@newcomer") is not None
+
+
+def test_reload_if_changed_returns_false_when_no_changes(tmp_path):
+    _build_synth(tmp_path)
+    reg = AgentRegistry(tmp_path)
+    reg.all()                                    # prime cache
+    # No fs change → reload reports False, registry contents unchanged.
+    assert reg.reload_if_changed() is False
+
+
+def test_reload_if_changed_picks_up_new_skill(tmp_path):
+    _build_synth(tmp_path)
+    reg = AgentRegistry(tmp_path)
+    reg.all()                                    # prime cache
+
+    (tmp_path / "research" / "added").mkdir(parents=True)
+    (tmp_path / "research" / "added" / "SKILL.md").write_text(
+        _GOOD_FM.replace("name: tmp", "name: added").replace(
+            "agent_handle: \"@tmp\"", "agent_handle: \"@added\""
+        ),
+        encoding="utf-8",
+    )
+
+    assert reg.reload_if_changed() is True
+    assert reg.by_handle("@added") is not None
+
+
+def test_reload_if_changed_picks_up_modified_skill(tmp_path):
+    import os
+    _build_synth(tmp_path)
+    reg = AgentRegistry(tmp_path)
+    reg.all()
+    md = tmp_path / "implementation" / "tmp_agent" / "SKILL.md"
+
+    # Touch mtime forward — Windows FS resolution is ~1 s, give it 2 s.
+    new_mtime = md.stat().st_mtime + 2
+    os.utime(md, (new_mtime, new_mtime))
+
+    assert reg.reload_if_changed() is True
+
+
+def test_reload_if_changed_first_call_loads_then_idempotent(tmp_path):
+    """첫 호출은 cache 없으니 True; 두 번째는 변경 없으니 False."""
+    _build_synth(tmp_path)
+    reg = AgentRegistry(tmp_path)
+    assert reg.reload_if_changed() is True
+    assert reg.reload_if_changed() is False
