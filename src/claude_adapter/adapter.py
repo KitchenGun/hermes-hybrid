@@ -179,16 +179,22 @@ class ClaudeCodeAdapter:
         # ``-p`` (print) mode disables interactive permission prompts. Without
         # ``--permission-mode``, edits to paths that aren't pre-allowed in
         # ``.claude/settings.json`` are auto-denied — Claude responds with a
-        # "권한 프롬프트를 한번 더 승인해주세요" text. ``acceptEdits`` lets the
-        # master auto-approve Edit/Write/MultiEdit only; Bash/외부 호출은 여전히
-        # allow 패턴에 의존 → R12 fail-closed 정책 보존.
+        # "권한 프롬프트를 한번 더 승인해주세요" text.
+        #
+        # Phase 17 (2026-05-07) — 사용자가 chat 으로 ``bypassPermissions`` 명시
+        # 채택. 이전 ``acceptEdits`` (Edit/Write 만 자동) 는 새 도구 (MCP /
+        # WebFetch / Bash 의 새 카테고리) 등장 시마다 거부 → 사용자 chat
+        # confirm 흐름이 발생해 원격(Discord/Telegram) 작업 흐름을 끊어 놨음.
+        # ``bypassPermissions`` 는 모든 도구 호출을 자동 통과시켜 사용자가
+        # 본인 봇/본인 데이터 trust boundary 안에서 운용. R12 fail-closed
+        # 정책은 명시적으로 폐기됨.
         args = [
             self.settings.master_cli_path,
             "-p",
             "--model", model,
             "--output-format", "json",
             "--no-session-persistence",
-            "--permission-mode", "acceptEdits",
+            "--permission-mode", "bypassPermissions",
         ]
         if self.settings.master_cli_backend == "wsl_subprocess":
             inner = " ".join(shlex.quote(a) for a in args)

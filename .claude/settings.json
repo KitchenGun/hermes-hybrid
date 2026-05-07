@@ -13,13 +13,21 @@
       "Bash(curl -fsS http://127.0.0.1:*)",
       "mcp__unityMCP__*",
       "mcp__Unreal_Engine_MCP__*",
+      "mcp__claude_ai_Google_Calendar__*",
       "Bash(journalctl --user:*)",
       "Bash(wsl --list:*)",
       "Bash(wsl --status)",
       "Bash(ss -tlnp:*)",
       "Bash(lsof -i:*)",
       "Bash(ps -ef:*)",
-      "Bash(ps aux:*)"
+      "Bash(ps aux:*)",
+      "Bash(python3 *)",
+      "Bash(python *)",
+      "Bash(bash *)",
+      "Bash(systemctl --user *)",
+      "Bash(ls ~/.hermes/*)",
+      "WebFetch",
+      "WebSearch"
     ]
   }
 }
