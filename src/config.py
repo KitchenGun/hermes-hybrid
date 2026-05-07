@@ -82,6 +82,16 @@ class Settings(BaseSettings):
     skill_auto_revert_min_uses: int = 5            # N회 사용 후 점수 평가
     skill_auto_revert_score_threshold: float = 0.3
 
+    # Phase 19 (2026-05-07): cross-platform timer auto-registration.
+    # `hermes-setup` 진입점 (pyproject.toml [project.scripts]) 가 호출되면
+    # OS 별로 ReflectionJob / CuratorJob / SkillPromoter 의 weekly schedule
+    # 을 등록. Windows = schtasks, Linux/WSL = systemd-user, macOS = launchd.
+    # 사용자 동의 prompt 없이 silent 등록 금지 — auto_timer_ack 가 명시 True
+    # 면 자동 진행, 아니면 first-run 시 [y/N] prompt.
+    auto_timer_enabled: bool = True
+    auto_timer_ack: bool = False
+    # CI / Docker 회피용. HERMES_NO_AUTO_TIMER=1 시 setup 이 silent skip.
+
     # Phase 14 (2026-05-07): memory curator — auto MEMORY.md + USER.md.
     # 매 N task 후 master 가 metadata 보고 1-2줄 메모 append. 1500자 초과 시
     # 자동 LLM compaction. master prompt 에 자동 prepend (USER + MEMORY tail).

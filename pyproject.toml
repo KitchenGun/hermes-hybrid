@@ -36,6 +36,8 @@ dev = [
 
 [project.scripts]
 hermes-hybrid = "orchestrator.cli:main"
+# Phase 19 (2026-05-07) — cross-platform timer auto-registration.
+hermes-setup = "src.cli.setup:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
