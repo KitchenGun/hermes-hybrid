@@ -92,6 +92,18 @@ class Settings(BaseSettings):
     auto_timer_ack: bool = False
     # CI / Docker 회피용. HERMES_NO_AUTO_TIMER=1 시 setup 이 silent skip.
 
+    # Phase 20 (2026-05-07): Discord 피드백 → 정책 자동 갱신.
+    # 👍/👎 reaction + 텍스트 키워드 매칭으로 ExperienceLog 의 feedback 필드
+    # patch. SkillPromoter.weak_agent_audit 가 negative_count ≥ threshold 인
+    # 패턴을 보강 draft 트리거에 사용.
+    # reaction listener 는 default ON, 키워드 매칭은 false-positive 우려로
+    # default OFF (명시 opt-in).
+    feedback_listener_enabled: bool = True
+    feedback_keyword_match_enabled: bool = False
+    feedback_negative_threshold: int = 3       # weak_agent_audit 보강 임계값
+    feedback_lru_max: int = 1000               # in-memory message_id ↔ task_id
+    feedback_lru_ttl_seconds: int = 86_400     # 24h
+
     # Phase 14 (2026-05-07): memory curator — auto MEMORY.md + USER.md.
     # 매 N task 후 master 가 metadata 보고 1-2줄 메모 append. 1500자 초과 시
     # 자동 LLM compaction. master prompt 에 자동 prepend (USER + MEMORY tail).

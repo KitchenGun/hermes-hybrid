@@ -42,6 +42,11 @@ async def _run_skill_promoter(settings: Settings, *, auto_pr: bool) -> int:
     if not Path(log_root).is_absolute():
         log_root = _REPO / log_root
 
+    # Phase 20 — wire ExperienceLogger so weak_agent_audit can join
+    # Discord feedback negative_count to the score-based weak signal.
+    from src.core import ExperienceLogger
+    experience_logger = ExperienceLogger(log_root, enabled=True)
+
     promoter = SkillPromoter(
         adapter=adapter,
         agents=agents,
@@ -58,6 +63,9 @@ async def _run_skill_promoter(settings: Settings, *, auto_pr: bool) -> int:
         promotion_threshold=settings.skill_auto_promotion_threshold,
         revert_min_uses=settings.skill_auto_revert_min_uses,
         revert_score_threshold=settings.skill_auto_revert_score_threshold,
+        # Phase 20 (2026-05-07) — Discord feedback signal.
+        experience_logger=experience_logger,
+        negative_threshold=settings.feedback_negative_threshold,
     )
     result = await promoter.run_weekly()
     print(

@@ -88,6 +88,9 @@ class SkillPromoter:
         promotion_threshold: float = 0.85,
         revert_min_uses: int = 5,
         revert_score_threshold: float = 0.3,
+        # Phase 20 (2026-05-07) — Discord feedback signal.
+        experience_logger: Any = None,         # ExperienceLogger w/ feedback_counts_by_handle
+        negative_threshold: int = 3,
     ):
         self.adapter = adapter
         self.agents = agents
@@ -106,6 +109,9 @@ class SkillPromoter:
         self.promotion_threshold = max(0.0, min(1.0, promotion_threshold))
         self.revert_min_uses = max(1, revert_min_uses)
         self.revert_score_threshold = max(0.0, min(1.0, revert_score_threshold))
+        # Phase 20 — feedback-aware audit.
+        self.experience_logger = experience_logger
+        self.negative_threshold = max(1, negative_threshold)
 
     async def run_weekly(self) -> SkillPromoterResult:
         """일요일 23:30 KST. 7일치 ExperienceLog 으로 cluster + draft + PR."""
@@ -266,7 +272,12 @@ class SkillPromoter:
     def weak_agent_audit(
         self, since: datetime, until: datetime
     ) -> Iterable[tuple[str, float, int]]:
-        """Agent 별 self_score 평균 — threshold 미만 + 호출 N회 이상."""
+        """Agent 별 self_score 평균 — threshold 미만 + 호출 N회 이상.
+
+        Phase 20 (2026-05-07): feedback negative_count ≥ negative_threshold
+        도 weak 신호로 인정. self_score 가 OK 여도 사용자 명시 부정 피드백
+        이 누적되면 SKILL.md 보강 draft 가 필요.
+        """
         rows = list(self._read_log(since, until))
         if not rows:
             return
@@ -276,11 +287,28 @@ class SkillPromoter:
             for h in r.get("agent_handles") or []:
                 scores.setdefault(h, []).append(float(r.get("self_score") or 0.0))
 
+        # Phase 20 — Discord feedback aggregation. None when ExperienceLogger
+        # missing (legacy callers).
+        feedback_counts: dict[str, dict[str, int]] = {}
+        if self.experience_logger is not None and hasattr(
+            self.experience_logger, "feedback_counts_by_handle",
+        ):
+            try:
+                feedback_counts = self.experience_logger.feedback_counts_by_handle(
+                    since, until,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("skill_promoter.feedback_join_failed", err=str(e))
+                feedback_counts = {}
+
         for handle, vals in scores.items():
             if len(vals) < self.min_evidence:
                 continue
             avg = sum(vals) / len(vals)
-            if avg < self.weak_score_threshold:
+            negative = feedback_counts.get(handle, {}).get("negative", 0)
+            score_weak = avg < self.weak_score_threshold
+            feedback_weak = negative >= self.negative_threshold
+            if score_weak or feedback_weak:
                 yield handle, avg, len(vals)
 
     # ---- drafts ------------------------------------------------------

@@ -168,6 +168,11 @@ class TaskState(BaseModel):
     experiment_arm: Literal["control", "treatment", "treatment_no_hits"] | None = None
     experiment_name: str | None = None
 
+    # Phase 20 (2026-05-07): Discord bot message ID. Discord 어댑터가
+    # 봇 응답을 보낸 후 stamp. 사용자 reaction 시 feedback_router 가 이걸로
+    # task_id 를 조회. None = 비-Discord lane 또는 stamp 미지원.
+    bot_message_id: int | None = None
+
     # Execution
     status: Status = "pending"
     current_tier: Tier = "L2"

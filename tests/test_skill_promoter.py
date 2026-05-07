@@ -581,6 +581,114 @@ def test_auto_revert_skips_when_not_enough_uses(tmp_path):
     assert reverted == []                        # only 1 use, < min 5
 
 
+def test_weak_audit_flags_handle_with_high_negative_feedback(tmp_path):
+    """Phase 20 — score 평균 OK 여도 negative feedback ≥ threshold 면 weak."""
+    from src.core import ExperienceLogger
+    exp_root = tmp_path / "exp"
+
+    rows = [
+        {
+            "ts": "2026-05-07T01:00:00+00:00",
+            "task_id": f"t{i}",
+            "session_id": "s",
+            "user_id": "u",
+            "agent_handles": ["@coder"],
+            "self_score": 0.95,                  # well above weak threshold
+        }
+        for i in range(5)
+    ]
+    _seed_log(exp_root, rows)
+
+    logger = ExperienceLogger(exp_root, enabled=True)
+    # 3 negative reactions — at threshold default 3.
+    for tid in ("t0", "t1", "t2"):
+        logger.append_feedback(tid, feedback="negative")
+
+    p = _make_promoter(
+        tmp_path,
+        agents=AgentRegistry(repo_root=_REPO_ROOT),
+        experience_log_root=exp_root,
+        repo_root=_REPO_ROOT,
+        experience_logger=logger,
+        negative_threshold=3,
+    )
+
+    weak = list(p.weak_agent_audit(
+        datetime(2026, 5, 6, tzinfo=timezone.utc),
+        datetime(2026, 5, 8, tzinfo=timezone.utc),
+    ))
+    handles = [w[0] for w in weak]
+    assert "@coder" in handles
+
+
+def test_weak_audit_skips_handle_with_low_negative_count(tmp_path):
+    """Phase 20 — negative_count < threshold + score OK → not flagged."""
+    from src.core import ExperienceLogger
+    exp_root = tmp_path / "exp"
+
+    rows = [
+        {
+            "ts": "2026-05-07T01:00:00+00:00",
+            "task_id": f"t{i}",
+            "session_id": "s",
+            "user_id": "u",
+            "agent_handles": ["@coder"],
+            "self_score": 0.95,
+        }
+        for i in range(5)
+    ]
+    _seed_log(exp_root, rows)
+
+    logger = ExperienceLogger(exp_root, enabled=True)
+    logger.append_feedback("t0", feedback="negative")     # only 1, < 3
+
+    p = _make_promoter(
+        tmp_path,
+        agents=AgentRegistry(repo_root=_REPO_ROOT),
+        experience_log_root=exp_root,
+        repo_root=_REPO_ROOT,
+        experience_logger=logger,
+        negative_threshold=3,
+    )
+
+    weak = list(p.weak_agent_audit(
+        datetime(2026, 5, 6, tzinfo=timezone.utc),
+        datetime(2026, 5, 8, tzinfo=timezone.utc),
+    ))
+    assert weak == []                            # neither score nor feedback weak
+
+
+def test_weak_audit_without_logger_falls_back_to_score_only(tmp_path):
+    """experience_logger=None → 기존 score 기반 동작 유지."""
+    exp_root = tmp_path / "exp"
+    rows = [
+        {
+            "ts": "2026-05-07T01:00:00+00:00",
+            "task_id": f"t{i}",
+            "session_id": "s",
+            "user_id": "u",
+            "agent_handles": ["@coder"],
+            "self_score": 0.1,                   # low → score-weak
+        }
+        for i in range(5)
+    ]
+    _seed_log(exp_root, rows)
+
+    p = _make_promoter(
+        tmp_path,
+        agents=AgentRegistry(repo_root=_REPO_ROOT),
+        experience_log_root=exp_root,
+        repo_root=_REPO_ROOT,
+        experience_logger=None,
+    )
+    weak = list(p.weak_agent_audit(
+        datetime(2026, 5, 6, tzinfo=timezone.utc),
+        datetime(2026, 5, 8, tzinfo=timezone.utc),
+    ))
+    handles = [w[0] for w in weak]
+    assert "@coder" in handles
+
+
 def test_pr_command_includes_auto_skill_label(tmp_path, monkeypatch):
     """Phase 18 — gh pr create 가 --label auto-skill 인자를 포함해야."""
     p = _make_promoter(tmp_path, auto_pr=True, repo_root=tmp_path)

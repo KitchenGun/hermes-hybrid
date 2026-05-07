@@ -19,9 +19,12 @@ import discord
 from discord.ext import commands
 
 from src.config import Settings
+from src.core import ExperienceLogger
+from src.core.feedback_keywords import match_text as _feedback_match_text
 from src.core.kanban import KanbanDB
 from src.core.kanban.dispatcher import KanbanDispatcher
 from src.core.kanban.worker_runner import spawn_master_worker
+from src.gateway.feedback_router import FeedbackRouter
 from src.memory import SqliteMemory
 from src.obs import bind_task_id, get_logger
 from src.orchestrator import Orchestrator
@@ -32,10 +35,24 @@ DISCORD_MAX = 2000
 SLOW_THRESHOLD_S = 3.0
 
 
+_POSITIVE_EMOJIS = {"👍", "❤️", "🎉", "✅", "💯"}
+_NEGATIVE_EMOJIS = {"👎", "❌", "🛑"}
+
+
+def _emoji_polarity(emoji: str) -> str | None:
+    if emoji in _NEGATIVE_EMOJIS:
+        return "negative"
+    if emoji in _POSITIVE_EMOJIS:
+        return "positive"
+    return None
+
+
 class DiscordBot(commands.Bot):
     def __init__(self, settings: Settings, repo: Repository):
         intents = discord.Intents.default()
         intents.message_content = True
+        # Phase 20 — reaction add/remove events.
+        intents.reactions = True
         super().__init__(command_prefix="!", intents=intents)
         self.settings = settings
         self.repo = repo
@@ -49,6 +66,16 @@ class DiscordBot(commands.Bot):
         self.kanban_db: KanbanDB | None = None
         self.kanban_dispatcher: KanbanDispatcher | None = None
         self._kanban_task: asyncio.Task | None = None
+
+        # Phase 20 — feedback wiring. ExperienceLogger reused from
+        # orchestrator so reaction patches land in the same root.
+        self.feedback_router = FeedbackRouter(
+            max_entries=settings.feedback_lru_max,
+            ttl_seconds=settings.feedback_lru_ttl_seconds,
+        )
+        self._feedback_logger: ExperienceLogger | None = (
+            getattr(self.orchestrator, "experience_logger", None)
+        )
 
     async def setup_hook(self) -> None:  # pragma: no cover
         """Discord.py 2.0+ async init hook — start KanbanDispatcher loop here."""
@@ -145,17 +172,47 @@ class DiscordBot(commands.Bot):
                     elapsed_ms=int(elapsed * 1000),
                 )
 
+            sent_message_ids: list[int] = []
             if elapsed < SLOW_THRESHOLD_S:
                 try:
                     await placeholder.delete()
                 except discord.HTTPException:
                     pass
-                await self._send_chunks(message.channel, result.response)
+                sent_message_ids = await self._send_chunks(
+                    message.channel, result.response,
+                )
             else:
                 first, rest = self._split(result.response)
-                await placeholder.edit(content=first or "(empty)")
+                edited = await placeholder.edit(content=first or "(empty)")
+                if edited is not None:
+                    sent_message_ids.append(edited.id)
                 for chunk in rest:
-                    await message.channel.send(chunk)
+                    sent = await message.channel.send(chunk)
+                    sent_message_ids.append(sent.id)
+
+            # Phase 20 — register every bot message id → task_id so reactions
+            # on any chunk land back on the same task.
+            if self.settings.feedback_listener_enabled:
+                for mid in sent_message_ids:
+                    self.feedback_router.register(mid, result.task.task_id)
+
+            # Phase 20 — text-keyword fallback (default OFF).
+            if (
+                self.settings.feedback_keyword_match_enabled
+                and self._feedback_logger is not None
+            ):
+                polarity = _feedback_match_text(content)
+                last_task = self._sessions.get(user_id)
+                # Apply to the *previous* task — current input itself becomes
+                # this turn's user_message and isn't yet "feedback on prior".
+                # We approximate by tagging the just-finished task only when
+                # the user wrote a follow-up containing a keyword.
+                if polarity and last_task and last_task != result.task.session_id:
+                    self._feedback_logger.append_feedback(
+                        last_task,
+                        feedback=polarity,
+                        feedback_text=content[:160],
+                    )
 
         except Exception as e:  # noqa: BLE001
             log.exception("discord.unhandled")
@@ -164,11 +221,57 @@ class DiscordBot(commands.Bot):
             except discord.HTTPException:
                 pass
 
-    async def _send_chunks(self, channel: discord.abc.Messageable, text: str) -> None:
+    async def _send_chunks(
+        self, channel: discord.abc.Messageable, text: str,
+    ) -> list[int]:
+        """Send chunks, return the discord message IDs of every chunk."""
         first, rest = self._split(text or "(empty)")
-        await channel.send(first)
+        ids: list[int] = []
+        sent = await channel.send(first)
+        ids.append(sent.id)
         for c in rest:
-            await channel.send(c)
+            sent = await channel.send(c)
+            ids.append(sent.id)
+        return ids
+
+    # Phase 20 (2026-05-07) — reaction listener -----------------------
+
+    async def on_reaction_add(  # pragma: no cover
+        self, reaction: discord.Reaction, user: discord.abc.User,
+    ) -> None:
+        """Map 👍 / 👎 reactions to ExperienceLog feedback patches."""
+        if user.bot:
+            return
+        if not self.settings.feedback_listener_enabled:
+            return
+        # R12 — only allowlisted users' reactions count if allowlist set.
+        allow = self.settings.allowed_user_ids
+        if allow and getattr(user, "id", None) not in allow:
+            return
+
+        polarity = _emoji_polarity(str(reaction.emoji))
+        if polarity is None:
+            return
+
+        message_id = getattr(reaction.message, "id", None)
+        if message_id is None:
+            return
+        task_id = self.feedback_router.lookup(int(message_id))
+        if task_id is None:
+            return
+
+        if self._feedback_logger is None:
+            return
+        ok = self._feedback_logger.append_feedback(
+            task_id,
+            feedback=polarity,
+            bot_message_id=int(message_id),
+        )
+        if ok:
+            log.info(
+                "discord.feedback_recorded",
+                task_id=task_id, polarity=polarity,
+            )
 
     @staticmethod
     def _split(text: str) -> tuple[str, list[str]]:

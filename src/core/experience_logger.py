@@ -125,6 +125,16 @@ class ExperienceRecord(BaseModel):
     experiment_arm: str | None = None
     experiment_name: str | None = None
 
+    # Phase 20 (2026-05-07): Discord 피드백.
+    # ``feedback`` 은 reaction (👍/👎) 또는 텍스트 키워드 매칭으로 patch.
+    # ``feedback_text`` 는 텍스트 매칭 시 원문 일부 (160자 cap, no PII risk
+    # 가 큰 raw 본문은 저장 X — 이미 user_message 도 sha 만 보관). 이건
+    # 단순 짧은 reaction 알림용. ``bot_message_id`` 는 reaction → task_id
+    # lookup 의 영구 매핑 후보 (in-memory LRU 가 휘발하면 이걸로 fallback).
+    feedback: str | None = None
+    feedback_text: str = ""
+    bot_message_id: int | None = None
+
     # Privacy-preserved input/output
     input_text_hash: str = ""
     input_text_length: int = 0
@@ -214,6 +224,7 @@ def _record_from_task(
         pipeline_stage_count=len(task.pipeline_results),
         experiment_arm=task.experiment_arm,
         experiment_name=task.experiment_name,
+        bot_message_id=task.bot_message_id,
         input_text_hash=_sha16(task.user_message),
         input_text_length=len(task.user_message or ""),
         response_hash=_sha16(task.final_response),
@@ -266,6 +277,103 @@ class ExperienceLogger:
 
     def _path_for(self, day: date) -> Path:
         return self.root / f"{day.isoformat()}.jsonl"
+
+    # ---- Phase 20 (2026-05-07): feedback sidecar ----------------------
+
+    def append_feedback(
+        self,
+        task_id: str,
+        *,
+        feedback: str,
+        feedback_text: str = "",
+        bot_message_id: int | None = None,
+    ) -> bool:
+        """Append one feedback row to ``feedback.jsonl``.
+
+        Sidecar pattern (separate from date-sharded task rows) so reaction
+        events that arrive long after the task can still be recorded
+        without rewriting old files. Trims feedback_text to 160 chars to
+        keep PII surface minimal.
+        Returns ``True`` iff the write succeeded.
+        """
+        if not self.enabled:
+            return False
+        path = self.root / "feedback.jsonl"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "task_id": task_id,
+                "feedback": feedback,
+                "feedback_text": (feedback_text or "")[:160],
+                "bot_message_id": bot_message_id,
+            }
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            return True
+        except OSError:
+            return False
+
+    def feedback_counts_by_handle(
+        self, since: datetime, until: datetime,
+    ) -> dict[str, dict[str, int]]:
+        """Aggregate feedback rows + main rows to return per-handle counts.
+
+        Output: ``{"@coder": {"positive": 2, "negative": 5}, ...}``.
+
+        Joins feedback.jsonl rows to the main JSONL by task_id so we can
+        attribute reactions to the agent_handles list of that task. Used
+        by SkillPromoter.weak_agent_audit to flag patterns that draw
+        consistent thumbs-down.
+        """
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+
+        # Collect task_id → handles map from main jsonl files in window.
+        handles_by_task: dict[str, list[str]] = {}
+        for rec in self.query(since=since, until=until):
+            if rec.agent_handles:
+                handles_by_task[rec.task_id] = list(rec.agent_handles)
+
+        feedback_path = self.root / "feedback.jsonl"
+        if not feedback_path.exists():
+            return {}
+
+        out: dict[str, dict[str, int]] = {}
+        try:
+            with feedback_path.open("r", encoding="utf-8") as f:
+                for raw in f:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except (ValueError, TypeError):
+                        continue
+                    ts = row.get("ts", "")
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                    except (ValueError, TypeError):
+                        continue
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if dt < since or dt >= until:
+                        continue
+                    fb = row.get("feedback")
+                    tid = row.get("task_id")
+                    if not (fb and tid):
+                        continue
+                    for h in handles_by_task.get(tid, []):
+                        bucket = out.setdefault(h, {"positive": 0, "negative": 0})
+                        if fb == "positive":
+                            bucket["positive"] += 1
+                        elif fb == "negative":
+                            bucket["negative"] += 1
+        except OSError:
+            return out
+        return out
 
     # ---- read (used by reflection_job, curator_job) ----
 
