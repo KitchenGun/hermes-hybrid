@@ -4,11 +4,12 @@ R12: If REQUIRE_ALLOWLIST=true and ALLOWED_USER_IDS is empty, the bot
 refuses to start. If the allowlist is present, only listed users' messages
 are processed.
 
-Phase 8 (2026-05-06): forced_profile / journal_channel_id / HITL / watcher
-모두 폐기.
+Phase 8 (2026-05-06): forced_profile / HITL / watcher 폐기.
 Phase 11 (2026-05-06): !heavy prefix 폐기 — master = single lane.
 Phase 2-A Kanban (2026-05-07): setup_hook 에서 KanbanDispatcher 백그라운드
 loop 시작. close 시 graceful 종료.
+Phase 22 (2026-05-07): journal pipeline 재도입 — ``JOURNAL_CHANNEL_ID`` 채널
+메시지는 Orchestrator 우회하고 ``JournalPipeline.handle()`` 직행.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from collections import defaultdict
 import discord
 from discord.ext import commands
 
+from src.claude_adapter import ClaudeCodeAdapter
 from src.config import Settings
 from src.core import ExperienceLogger
 from src.core.feedback_keywords import match_text as _feedback_match_text
@@ -28,6 +30,7 @@ from src.gateway.feedback_router import FeedbackRouter
 from src.memory import SqliteMemory
 from src.obs import bind_task_id, get_logger
 from src.orchestrator import Orchestrator
+from src.skills.journal.pipeline import JournalPipeline
 from src.state import Repository
 
 log = get_logger(__name__)
@@ -76,6 +79,21 @@ class DiscordBot(commands.Bot):
         self._feedback_logger: ExperienceLogger | None = (
             getattr(self.orchestrator, "experience_logger", None)
         )
+
+        # Phase 22 — journal pipeline. 채널 ID + webhook 둘 다 채워졌을 때만
+        # 활성화. Orchestrator 의 lazy adapter 와 분리된 ClaudeCodeAdapter 를
+        # 사용 (master_concurrency semaphore 는 인스턴스 단위라 일기 lane 의
+        # 단발 호출과 master lane 은 사실상 독립).
+        self.journal_pipeline: JournalPipeline | None = None
+        if (
+            settings.journal_enabled
+            and settings.journal_channel_id > 0
+            and settings.google_sheets_webhook_url
+        ):
+            self.journal_pipeline = JournalPipeline(
+                settings=settings,
+                adapter=ClaudeCodeAdapter(settings),
+            )
 
     async def setup_hook(self) -> None:  # pragma: no cover
         """Discord.py 2.0+ async init hook — start KanbanDispatcher loop here."""
@@ -141,6 +159,16 @@ class DiscordBot(commands.Bot):
 
         content = message.content.strip()
         if not content:
+            return
+
+        # Phase 22 — journal lane: 지정 채널 메시지는 Orchestrator 우회하고
+        # 24-필드 추출 → Apps Script append → 한국어 응답으로 직행. 시트
+        # append 실패 시 ``JOURNAL_ALERT_WEBHOOK_URL`` (있다면) 로 빨간 embed.
+        if (
+            self.journal_pipeline is not None
+            and message.channel.id == self.settings.journal_channel_id
+        ):
+            await self._handle_journal(message, content)
             return
 
         user_id = message.author.id
@@ -220,6 +248,38 @@ class DiscordBot(commands.Bot):
                 await placeholder.edit(content=f"❌ internal error: `{type(e).__name__}`")
             except discord.HTTPException:
                 pass
+
+    async def _handle_journal(  # pragma: no cover
+        self, message: discord.Message, content: str,
+    ) -> None:
+        """Journal lane — extract → append → reply. 실패 메시지도 항상 회신."""
+        assert self.journal_pipeline is not None
+        placeholder = await message.channel.send("⏳ 기록 중…")
+        try:
+            result = await self.journal_pipeline.handle(content)
+        except Exception as e:  # noqa: BLE001
+            log.exception("discord.journal_unhandled")
+            try:
+                await placeholder.edit(
+                    content=f"❌ journal internal error: `{type(e).__name__}`",
+                )
+            except discord.HTTPException:
+                pass
+            return
+
+        try:
+            await placeholder.delete()
+        except discord.HTTPException:
+            pass
+        await self._send_chunks(message.channel, result.response)
+        log.info(
+            "discord.journal_replied",
+            ok=result.ok,
+            rows_written=result.rows_written,
+            rows_extracted=result.rows_extracted,
+            extraction_ms=result.extraction_ms,
+            error=result.error,
+        )
 
     async def _send_chunks(
         self, channel: discord.abc.Messageable, text: str,

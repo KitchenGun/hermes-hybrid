@@ -188,6 +188,18 @@ class Settings(BaseSettings):
     memory_embedding_base_url: str = "http://localhost:11434"
     memory_embedding_timeout_s: int = 10
 
+    # Phase 22 (2026-05-07): journal pipeline reborn.
+    # Phase 8 에서 폐기되었던 ``profiles/journal_ops`` 의 일기 흐름 (Discord
+    # 자연어 → 24-필드 JSON → Apps Script append → 한국어 응답) 을 모듈로
+    # 환생. ``JOURNAL_CHANNEL_ID`` 채널의 메시지만 ``JournalPipeline`` 으로
+    # 라우팅 — 그 외 채널은 기존 ``Orchestrator.handle()`` 그대로.
+    # default OFF (channel_id=0). 켜려면 ``JOURNAL_ENABLED=true`` +
+    # ``JOURNAL_CHANNEL_ID``/``GOOGLE_SHEETS_WEBHOOK_URL`` 모두 채워야 함.
+    journal_enabled: bool = False
+    journal_channel_id: int = 0
+    google_sheets_webhook_url: str = ""
+    journal_alert_webhook_url: str = ""  # 시트 append 실패 시 빨간 embed (선택)
+
     # Phase 21 (2026-05-07): A/B experiment runner.
     # task_id hash 기반 결정론적 분기. control = inject skip, treatment = inject ON.
     # Phase 17 의 행동 변화 효과를 측정하기 위해 1주차 동시 도입. ratio 0.5
