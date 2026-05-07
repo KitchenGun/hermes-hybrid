@@ -18,6 +18,9 @@ from pathlib import Path
 # (TaskName, ScheduleTime "HH:MM", relative script path, extra args)
 _TASKS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("HermesReflection", "22:00", "scripts/reflection_job.py", ()),
+    # Phase 21 (2026-05-07): A/B report between Reflection and Curator
+    # so all three share the same 7-day data window.
+    ("HermesABReport",   "22:30", "scripts/ab_report_job.py",  ()),
     ("HermesCurator",    "23:00", "scripts/curator_job.py",    ()),
     ("HermesPromoter",   "23:30", "scripts/curator_job.py",    ("--skill-promote",)),
 )

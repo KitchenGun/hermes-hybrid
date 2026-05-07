@@ -14,6 +14,9 @@ from pathlib import Path
 
 _INSTALLERS: tuple[tuple[str, str], ...] = (
     ("hermes-reflection.timer", "scripts/install_reflection_timer.sh"),
+    # Phase 21 (2026-05-07): weekly A/B report between Reflection and
+    # Curator. Sunday 22:30 KST.
+    ("hermes-ab-report.timer",  "scripts/install_ab_report_timer.sh"),
     ("hermes-curator.timer",    "scripts/install_curator_timer.sh"),
 )
 

@@ -16,6 +16,9 @@ from pathlib import Path
 
 _TASKS: tuple[tuple[str, int, int, str, tuple[str, ...]], ...] = (
     ("dev.hermes.reflection", 22, 0,  "scripts/reflection_job.py", ()),
+    # Phase 21 (2026-05-07): weekly A/B report between Reflection and
+    # Curator so the three share a coherent 7-day data window.
+    ("dev.hermes.ab_report",  22, 30, "scripts/ab_report_job.py",  ()),
     ("dev.hermes.curator",    23, 0,  "scripts/curator_job.py",    ()),
     ("dev.hermes.promoter",   23, 30, "scripts/curator_job.py",    ("--skill-promote",)),
 )
