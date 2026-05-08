@@ -49,7 +49,8 @@ def test_real_repo_inventory_exposes_seventeen_agents():
         pytest.skip("running outside repo")
     inv = JobInventory(repo_root=repo)
     agents = inv.agents()
-    assert len(agents) == 17
+    # Phase 22 P0c.4 promoted 10 generated skills (17 baseline → 27).
+    assert len(agents) == 27
     handles = sorted(a.handle for a in agents)
     assert "@coder" in handles
     assert "@reviewer" in handles
@@ -74,8 +75,11 @@ def test_summary_includes_agent_counts():
         pytest.skip("running outside repo")
     inv = JobInventory(repo_root=repo)
     summary = inv.summary()
-    assert summary["agent_count"] == 17
+    # Phase 22 P0c.4 promoted 10 generated skills (17 baseline → 27).
+    assert summary["agent_count"] == 27
     abc = summary["agents_by_category"]
     assert abc["implementation"] == 4
     assert abc["quality"] == 4
-    assert abc["research"] == 3
+    # research grew from 3 → 6 (added github_repo_analysis,
+    # research_summary, unity_game_analysis).
+    assert abc["research"] == 6
