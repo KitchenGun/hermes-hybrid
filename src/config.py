@@ -210,6 +210,69 @@ class Settings(BaseSettings):
     ab_experiment_name: str = "memory_inject"
     ab_report_root: Path = Path("./logs/ab")
 
+    # ========================================================================
+    # Growing Agent Memory Architecture — P0-A (2026-05-09).
+    # 26 new settings (plan v4.2). The existing ``memory_inject_enabled`` and
+    # ``memory_root`` above are preserved verbatim; ``compiled_memory_root``
+    # below is the architecture-level alias for ``memory_root`` and points at
+    # the same directory. Future refactor may collapse the two.
+    # All retrieval / extraction / auto-ingest / auto-learning toggles ship
+    # OFF by default — Phase 21 A/B for memory_inject must not be perturbed.
+    # ------------------------------------------------------------------------
+
+    # Retrieval gate (P2). default OFF; isolated under its own A/B key so the
+    # legacy memory_inject experiment keeps a clean control arm.
+    memory_retrieval_enabled: bool = False
+    memory_retrieval_ab_key: str = "memory_retrieval_v1"
+
+    # LLM-based extraction is a self-biasing risk; v1 is rule-based only.
+    memory_llm_extraction_enabled: bool = False
+
+    # Injection budget — keeps prompt cache hot by capping compiled context.
+    memory_inject_token_budget: int = 2000
+    memory_retriever_k: int = 5
+
+    # Filesystem roots — see plan v4.2 § "디렉터리 구조 (v4.2)".
+    processed_memory_root: Path = Path("./data/processed_memory")
+    compiled_memory_root: Path = Path("./data/memory")
+    ingest_staging_root: Path = Path("./data/ingest_staging")
+    source_manifest_root: Path = Path("./data/source_manifests")
+    external_memory_root: Path = Path("./data/external_memory")
+
+    # Safety scanners.
+    pii_detection_enabled: bool = True
+    security_scan_enabled: bool = True
+    security_scan_exclude_low_risk: bool = False
+    security_scan_severity_threshold: str = "medium"   # low|medium|high
+
+    # Ingest hygiene.
+    ingest_auto_delete_staging: bool = True
+
+    # Auto growth loops — both default OFF. Explicit user opt-in required.
+    discord_auto_ingest_enabled: bool = False
+    cron_auto_learning_enabled: bool = False
+
+    # Profile isolation — P0-A ships the policy validator only. Setting
+    # ``memory_profile_scoped=True`` triggers an experimental no-op warning
+    # via :class:`src.memory.ingestion.profile_paths.ProfileScopedExperimentalWarning`.
+    memory_profile_name: str = "default"
+    memory_profile_scoped: bool = False
+
+    # Skill storage — default ``hermes_profile`` matches the official
+    # Hermes Skills source of truth (~/.hermes/skills/...). ``project_local``
+    # is dev/test override; ``project_compat`` keeps the legacy agents/ layout.
+    skill_storage_mode: str = "hermes_profile"          # hermes_profile|project_local|project_compat
+    skill_registry_root: Path = Path("./data/profiles/default/skills")
+    skill_shared_registry_root: Path = Path("./data/shared_skills")
+
+    # Cron skill attach — default pinned for reproducibility.
+    cron_skill_pin_mode: str = "pinned"                 # pinned|latest
+
+    # Memory schema / audit.
+    memory_schema_version: int = 1
+    memory_hard_delete_enabled: bool = False
+    memory_audit_root: Path = Path("./data/memory_audit")
+
     @property
     def allowed_user_ids(self) -> set[int]:
         if not self.discord_allowed_user_ids.strip():

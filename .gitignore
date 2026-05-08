@@ -32,8 +32,66 @@ logs/
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 
-# Phase 14 (2026-05-07): auto-curated memory — user-private, gitignored.
-data/memory/
+# =====================================================================
+# Growing Agent Memory Architecture — P0-A (2026-05-09).
+# Replaces the Phase 14 ``data/memory/`` blanket ignore.
+# Plan v4.2 makes ``data/processed_memory/`` and ``data/memory/`` part
+# of the canonical / compiled memory layer. They MUST be tracked, but
+# the previous ``data/`` ignore (line above) blocks them — git negation
+# rules require parent unignores before child re-tracking works.
+#
+# WARNING: data/processed_memory/ and data/memory/ contain user
+# preferences, project facts, and long-term agent memory. Track ONLY
+# in private repos. For public repos, switch to skeleton-only mode in
+# a follow-up PR.
+# =====================================================================
+
+# Imported raw conversations are temporary and never tracked.
+data/ingest_staging/
+
+# External memory may contain sensitive working state copied from
+# Claude Code. Sanitized output can still leak context, so keep it
+# untracked. Synthetic example fixtures under examples/ are OK.
+data/external_memory/**
+!data/external_memory/examples/
+!data/external_memory/examples/**
+
+# Parent unignores — required because line 7 ``data/`` ignored every
+# child. Tracked subdirectories must be re-enabled here BEFORE any
+# per-file rules below them apply.
+!data/
+!data/source_manifests/
+!data/source_manifests/**
+!data/processed_memory/
+!data/processed_memory/**
+
+# data/memory/ — option B: directory traversal allowed, but the contents
+# stay ignored by default. Only the four compiled artifacts (and a
+# .gitkeep placeholder for directory preservation) are explicitly
+# tracked. Phase 14 user-private ``data/memory/memos.db``, CuratorJob
+# ingest logs, and any auto-curated MEMORY.md backup files remain
+# untracked under this rule. Order matters: ``!data/memory/`` first so
+# git can traverse, then ``data/memory/**`` re-ignore, then per-file
+# negations.
+!data/memory/
+data/memory/**
+!data/memory/.gitkeep
+!data/memory/USER.md
+!data/memory/MEMORY.md
+!data/memory/USER.manifest.json
+!data/memory/MEMORY.manifest.json
+
+# Profile-aware mode (plan-only in P0). Same gitignore policy per
+# profile root; the directories themselves are not created in P0-A.
+data/profiles/*/ingest_staging/
+data/profiles/*/external_memory/**
+!data/profiles/*/external_memory/examples/
+!data/profiles/*/external_memory/examples/**
+
+# Memory audit (rollback/export logs) — manifest-only, no raw text.
+# Created by P-x scripts. Track when present.
+!data/memory_audit/
+!data/memory_audit/**
 
 # Hermes profiles — secrets and runtime state
 profiles/*/.env
