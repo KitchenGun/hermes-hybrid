@@ -1,0 +1,20 @@
+# config/skill_category_map.generated.yaml
+#
+# W2 — skills/generated/*.md 의 category 매핑.
+# `_CATEGORIES` (src/agents/__init__.py:42) 의 6개 중 하나여야 함:
+#   research, planning, implementation, quality, documentation, infrastructure
+
+mappings:
+  prompt_engineering: planning
+  research_summary: research
+  github_repo_analysis: research
+  job_factory_improvement: infrastructure
+  discord_schedule_logging: documentation
+  unity_game_analysis: research
+  interview_preparation: documentation
+  document_cleanup: documentation
+  weather_daily_briefing: infrastructure
+  local_model_benchmark: infrastructure
+
+# fallback when name 매칭 실패
+default_category: documentation
