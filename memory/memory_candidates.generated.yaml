@@ -1,0 +1,300 @@
+# memory_candidates.generated.yaml
+#
+# P0a Step 3 — bootstrap memory candidates for Loop 1 Memory ingestion (W1).
+# Schema: id, type, content, evidence, confidence, should_store, mem_curator_link.
+# Categories: preference, workflow, project_context, tool_choice, service_catalog,
+#             prompt_pattern, sensitive_or_secret.
+#
+# `should_store: true` rows are pushed into data/memory/memos.db via
+# scripts/ingest_memory_candidates.py with `source='generated_candidates'`.
+
+candidates:
+  # ---- preference ----
+  - id: pref_korean_terse
+    type: preference
+    content: "사용자는 한국어 + 짧은 응답(1-2문장 요약)을 선호한다. 긴 docstring/주석은 피한다."
+    evidence:
+      - "CLAUDE.md `Tone and style`"
+      - "C:\\Users\\kang9\\.claude\\projects\\E--hermes-hybrid\\memory\\MEMORY.md"
+    confidence: 0.95
+    should_store: true
+
+  - id: pref_path_line_citation
+    type: preference
+    content: "코드 인용 시 `file_path:line_number` 패턴을 사용한다. bare PR #N / commit XYZ 형태는 피한다."
+    evidence:
+      - "CLAUDE.md `When referencing specific functions or pieces of code`"
+    confidence: 0.95
+    should_store: true
+
+  - id: pref_no_speculative_features
+    type: preference
+    content: "사용자는 추측성 추상화/feature flag/backwards-compat shim을 싫어한다. 세 줄 반복이 premature 헬퍼보다 낫다."
+    evidence:
+      - "CLAUDE.md `Doing tasks` 섹션"
+    confidence: 0.9
+    should_store: true
+
+  - id: pref_needs_review_marker
+    type: preference
+    content: "확인 못 한 사실은 추측 대신 NEEDS_REVIEW 로 표기. evidence 없는 주장은 금지."
+    evidence:
+      - "plan refactored-inventing-pony.md Constraint #3"
+    confidence: 0.95
+    should_store: true
+
+  - id: pref_bypass_permission_no_ask
+    type: preference
+    content: "bypassPermissions 모드에서 사용자에게 권한/승인을 묻지 말 것. 도구를 그냥 호출하고 결과를 보고."
+    evidence:
+      - "src/orchestrator/hermes_master.py:80"
+      - "Phase 17 commit f2ca1ce"
+    confidence: 0.95
+    should_store: true
+
+  # ---- workflow ----
+  - id: wf_marker_block_migration
+    type: workflow
+    content: "큰 마이그레이션은 plan 99 KB 단위 작성 → marker block (`# --- W{N} <desc> ---` … `# --- end ---`) 단위 삽입 → migration script 일괄 실행."
+    evidence:
+      - "C:\\Users\\kang9\\.claude\\plans\\refactored-inventing-pony.md"
+    confidence: 0.95
+    should_store: true
+
+  - id: wf_HERMES_DISABLE_GROWTH_BLOCKS
+    type: workflow
+    content: "모든 W-marker block은 `HERMES_DISABLE_GROWTH_BLOCKS=true` env flag 시 short-circuit. behavior diff에 사용."
+    evidence:
+      - "plan refactored-inventing-pony.md Constraint #1"
+    confidence: 0.95
+    should_store: true
+
+  - id: wf_p0_a_b_c
+    type: workflow
+    content: "P0 = generation(P0a) → wiring artifacts(P0b) → auto-apply(P0c.1-c.5) → smoke(P0d) → behavior(P0e). 각 P0c phase는 명시 gate."
+    evidence:
+      - "plan refactored-inventing-pony.md `P0 / P1 / P2`"
+    confidence: 0.95
+    should_store: true
+
+  - id: wf_5_loop_growth
+    type: workflow
+    content: "성장형 에이전트는 5-loop (Memory / Skill / User-Model / Cron-Reflection / Delegation) closed-loop. Day-0 활성: 1,2(creation),3,4(bootstrap),5(observation)."
+    evidence:
+      - "plan refactored-inventing-pony.md `Five Closed Loops`"
+      - "https://hermes-agent.nousresearch.com/docs/"
+    confidence: 0.9
+    should_store: true
+
+  - id: wf_sunday_chain
+    type: workflow
+    content: "일요일 cron 체인: 21:00 SelfReview → 22:00 Reflection → 22:30 ABReport → 23:00 Curator → 23:30 SkillPromoter."
+    evidence:
+      - "plan refactored-inventing-pony.md W7"
+      - "src/cli/timer_handlers/windows.py:19"
+    confidence: 0.9
+    should_store: true
+
+  # ---- project_context ----
+  - id: ctx_phase_22_status
+    type: project_context
+    content: "hermes-hybrid 현재 Phase 22 (commit 7c0dc40). journal pipeline + cross-platform mail/weather/calendar timer 완료. 다음은 Growth-Agent Migration P0c."
+    evidence:
+      - "git log -1"
+      - "README.md"
+    confidence: 0.95
+    should_store: true
+
+  - id: ctx_phase_11_single_lane
+    type: project_context
+    content: "Phase 11 (commit cf98c65) 에서 multi-lane provider routing 폐기, Claude CLI Max OAuth 단일 lane으로 전환. 비용 $0 marginal. P2 가서 multi-lane 재검토 가능."
+    evidence:
+      - "src/orchestrator/hermes_master.py:25"
+      - "commit cf98c65"
+    confidence: 0.95
+    should_store: true
+
+  - id: ctx_kanban_phase_2a
+    type: project_context
+    content: "Kanban 시스템 Phase 2-a (commit b3eceba)에서 Nous Hermes Agent 모델로 정렬. dev/playtest/gaming 3-mode는 폐기됨 (memory project_mode_system_deprecation.md)."
+    evidence:
+      - "C:\\Users\\kang9\\.claude\\projects\\E--hermes-hybrid\\memory\\project_mode_system_deprecation.md"
+      - "commit b3eceba"
+    confidence: 0.95
+    should_store: true
+
+  - id: ctx_growth_agent_audit
+    type: project_context
+    content: "사용자가 작성한 성장형 에이전트 평가 (2026-05-07): Phase 12-15는 Partial. 핵심 약점 3개 — memory_inject default OFF, 수동 timer, 사람 merge."
+    evidence:
+      - "C:\\Users\\kang9\\.claude\\projects\\E--hermes-hybrid\\memory\\project_growth_agent_audit.md"
+    confidence: 0.9
+    should_store: true
+
+  # ---- tool_choice ----
+  - id: tool_master_claude_cli
+    type: tool_choice
+    content: "Master LLM은 Claude CLI (`claude -p --output-format json --no-session-persistence --permission-mode bypassPermissions`). default 모델 opus, Max OAuth 인증."
+    evidence:
+      - "src/claude_adapter/adapter.py:104"
+      - "src/orchestrator/hermes_master.py:25"
+    confidence: 0.95
+    should_store: true
+
+  - id: tool_memory_sqlite_like
+    type: tool_choice
+    content: "Memory backend는 SqliteMemory (LIKE substring search), default ON, top-k=3. FTS5는 10k notes 이전엔 미사용."
+    evidence:
+      - "src/memory/sqlite.py:38"
+      - "src/memory/sqlite.py:108"
+    confidence: 0.95
+    should_store: true
+
+  - id: tool_mcp_handrolled
+    type: tool_choice
+    content: "MCP server는 hand-rolled JSON-RPC 2.0 (~120줄). Phase 4에서 official SDK 도입 검토."
+    evidence:
+      - "src/mcp/server.py:1"
+    confidence: 0.95
+    should_store: true
+
+  - id: tool_no_slack
+    type: tool_choice
+    content: "Slack gateway 없음. Discord + Telegram만. Slack 통합은 P2."
+    evidence:
+      - "plan refactored-inventing-pony.md `Current-State Snapshot`"
+    confidence: 0.95
+    should_store: true
+
+  # ---- service_catalog (metadata only, never tokens) ----
+  - id: svc_discord_bot
+    type: service_catalog
+    content: "Discord Bot — env DISCORD_BOT_TOKEN + DISCORD_ALLOWED_USER_IDS, 통합 src/gateway/discord_bot.py, allowlist fail-closed."
+    evidence:
+      - "src/gateway/discord_bot.py"
+      - ".env.example"
+    confidence: 0.95
+    should_store: true
+
+  - id: svc_telegram_bot
+    type: service_catalog
+    content: "Telegram Bot — env TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USER_IDS, 통합 src/gateway/telegram_bot.py, long-polling text-only."
+    evidence:
+      - "src/gateway/telegram_bot.py"
+    confidence: 0.95
+    should_store: true
+
+  - id: svc_naver_mail
+    type: service_catalog
+    content: "Naver Mail IMAP — env NAVER_MAIL_USER + NAVER_MAIL_APP_PASSWORD, 통합 src/skills/mail/naver.py 및 scripts/mail_alert_job.py."
+    evidence:
+      - "src/skills/mail/naver.py"
+    confidence: 0.9
+    should_store: true
+
+  - id: svc_google_calendar
+    type: service_catalog
+    content: "Google Calendar MCP — env GOOGLE_OAUTH_CREDENTIALS + GOOGLE_CALENDAR_MCP_TOKEN_PATH + GOOGLE_CALENDAR_ID, 통합 agents/research/researcher (read), scripts/calendar_briefing_job.py."
+    evidence:
+      - "agents/research/researcher/SKILL.md"
+      - "scripts/calendar_briefing_job.py"
+    confidence: 0.95
+    should_store: true
+
+  - id: svc_google_sheets
+    type: service_catalog
+    content: "Google Sheets — env GOOGLE_SERVICE_ACCOUNT_JSON + JOURNAL_SHEET_ID, 통합 src/skills/storage/sheets_append.py (24-필드 일기 적재)."
+    evidence:
+      - "src/skills/storage/sheets_append.py"
+    confidence: 0.9
+    should_store: true
+
+  - id: svc_brave_search
+    type: service_catalog
+    content: "Brave Search — env BRAVE_SEARCH_API_KEY, 통합 agents/research/researcher (web_search 흡수)."
+    evidence:
+      - "agents/research/researcher/SKILL.md:62"
+    confidence: 0.9
+    should_store: true
+
+  - id: svc_gh_cli
+    type: service_catalog
+    content: "GitHub `gh` CLI — env GITHUB_TOKEN (선택), 통합 src/jobs/skill_promoter.py auto-PR. gh 없으면 graceful skip."
+    evidence:
+      - "src/jobs/skill_promoter.py:600"
+    confidence: 0.95
+    should_store: true
+
+  # ---- prompt_pattern ----
+  - id: pp_korean_step_by_step
+    type: prompt_pattern
+    content: "사용자는 한국어 + 매우 상세한 단계별 마이그레이션 프롬프트를 선호. `목표:`/`검증 대상:`/`최종 보고서 형식` 헤더 + 번호 리스트."
+    evidence:
+      - "transcript clusters (paraphrased)"
+    confidence: 0.85
+    should_store: true
+
+  - id: pp_imperative_korean
+    type: prompt_pattern
+    content: "한국어 명령형 ('…해라', '진행해라') + '중요한 규칙:' 가드 명시 + 옵션 선택 ('1번', '2번')."
+    evidence:
+      - "transcript clusters (paraphrased)"
+    confidence: 0.85
+    should_store: true
+
+  - id: pp_validation_request
+    type: prompt_pattern
+    content: "큰 작업 직후 '검증해라 / 확인해라 / 평가해라' 형 read-only audit 요청 빈도 높음."
+    evidence:
+      - "transcript clusters (paraphrased)"
+    confidence: 0.85
+    should_store: true
+
+  # ---- sensitive_or_secret (paths only, should_store=false) ----
+  - id: sec_env_files
+    type: sensitive_or_secret
+    content: "비밀 보관 파일들: .env, .env.bak, .env.bak.20260501. 변수명/구조만 참고, 본문 절대 인용 금지."
+    evidence:
+      - ".gitignore"
+      - ".env.example"
+    confidence: 1.0
+    should_store: false
+
+  - id: sec_secrets_dir
+    type: sensitive_or_secret
+    content: "secrets/ 디렉토리 (있을 경우) — OAuth refresh token / JSON key 보관. enumerate만 OK, body 인용 금지."
+    evidence:
+      - ".gitignore"
+    confidence: 1.0
+    should_store: false
+
+  - id: sec_data_dbs
+    type: sensitive_or_secret
+    content: "data/state.db, data/kanban.db — 사용자 task / 메시지 본문 저장. 봇 외부에 노출 금지."
+    evidence:
+      - "src/state/repository.py"
+    confidence: 0.95
+    should_store: false
+
+  - id: sec_memory_db
+    type: sensitive_or_secret
+    content: "data/memory/memos.db — 메모 본문 (개인 노트). 외부 export 금지."
+    evidence:
+      - "src/memory/sqlite.py:47"
+    confidence: 0.95
+    should_store: false
+
+  - id: sec_experience_log
+    type: sensitive_or_secret
+    content: "logs/experience/*.jsonl — `input_text_hash`만 저장 (본문 없음)이지만 `tool_calls`에 우발적 토큰 가능. 외부 공유 전 grep 검사."
+    evidence:
+      - "src/core/experience_logger.py:139"
+    confidence: 0.9
+    should_store: false
+
+# Cross-references
+mem_curator_link_notes: |
+  data/memory/MEMORY.md 의 자동 큐레이트 entry 11개는 본 yaml 의 candidates 와
+  중복 가능. CuratorJob (Sun 23:00) 가 ExperienceLog 기반 으로 별도 갱신 — 본
+  yaml은 P0c.2 ingest 이후 Loop 4 self-review 가 추가 candidate를 또 만들어
+  CuratorJob 이 재 ingest 하는 self-feeding 흐름의 시드 데이터다.
