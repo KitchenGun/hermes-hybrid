@@ -21,6 +21,13 @@ _TASKS: tuple[tuple[str, int, int, str, tuple[str, ...]], ...] = (
     ("dev.hermes.ab_report",  22, 30, "scripts/ab_report_job.py",  ()),
     ("dev.hermes.curator",    23, 0,  "scripts/curator_job.py",    ()),
     ("dev.hermes.promoter",   23, 30, "scripts/curator_job.py",    ("--skill-promote",)),
+    # --- W3 growth-loop timer extensions ---
+    ("dev.hermes.self_review",        21, 0,  "scripts/migration_self_review.py",       ()),
+    ("dev.hermes.dialectic",           6, 0,  "scripts/dialectic_user_modeling.py",     ("--apply",)),
+    ("dev.hermes.skill_self_modify",  23, 0,  "scripts/skill_self_modify.py",           ()),
+    ("dev.hermes.delegation_pattern", 12, 0,  "scripts/delegation_pattern_extractor.py",("--apply",)),
+    ("dev.hermes.skill_draft_queue_drainer", 0, 0, "scripts/process_skill_draft_queue.py", ("--apply",)),
+    # --- end ---
 )
 
 

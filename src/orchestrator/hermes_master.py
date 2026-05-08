@@ -334,6 +334,38 @@ class HermesMasterOrchestrator:
     ) -> "MasterResult":
         prompt = self._compose_prompt(task, intent)
 
+        # --- W10 recurring-request detector ---
+        if not __import__("os").environ.get("HERMES_DISABLE_GROWTH_BLOCKS"):
+            try:
+                from src.orchestrator.recurring_request_detector_generated import (
+                    maybe_enqueue_skill_draft,
+                )
+                await maybe_enqueue_skill_draft(
+                    user_text=task.user_message, user_id=task.user_id,
+                )
+            except Exception as _w10_err:  # noqa: BLE001
+                log.warning("w10.detector_failed", err=str(_w10_err))
+        # --- end ---
+        # --- W12 delegation bias ---
+        if not __import__("os").environ.get("HERMES_DISABLE_GROWTH_BLOCKS"):
+            try:
+                from src.orchestrator.delegation_bias_loader_generated import (
+                    classify_intent_cluster, suggest_agents,
+                )
+                _w12_cluster = classify_intent_cluster(task.user_message)
+                _w12_suggested = suggest_agents(_w12_cluster)
+                if _w12_suggested:
+                    log.info(
+                        "w12.delegation_suggestion",
+                        user_id=task.user_id,
+                        task_id=task.task_id,
+                        intent_cluster=_w12_cluster,
+                        suggested=_w12_suggested,
+                        resolved_handles=task.agent_handles,
+                    )
+            except Exception as _w12_err:  # noqa: BLE001
+                log.warning("w12.suggestion_failed", err=str(_w12_err))
+        # --- end ---
         # Phase 13: revision loop opt-in. Critic self_score 가 threshold 보다
         # 낮으면 자동 retry + 모델 escalation. default off (single-shot).
         if self.settings.revision_loop_enabled:
@@ -795,6 +827,16 @@ class HermesMasterOrchestrator:
         """
         parts: list[str] = [_SYSTEM_PROMPT]
 
+        # --- W4 SOUL injection ---
+        if not __import__("os").environ.get("HERMES_DISABLE_GROWTH_BLOCKS"):
+            try:
+                from src.orchestrator.soul_loader_generated import compose_soul_block
+                soul = compose_soul_block()
+                if soul:
+                    parts.append(soul)
+            except Exception as _w4_err:  # noqa: BLE001
+                log.warning("w4.soul_inject_failed", err=str(_w4_err))
+        # --- end ---
         # Phase 14 — auto-curated MEMORY.md + USER.md prepend
         memory_block = self.memory_curator.read_prompt_prepend()
         if memory_block:

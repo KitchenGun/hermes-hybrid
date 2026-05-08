@@ -23,6 +23,14 @@ _TASKS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("HermesABReport",   "22:30", "scripts/ab_report_job.py",  ()),
     ("HermesCurator",    "23:00", "scripts/curator_job.py",    ()),
     ("HermesPromoter",   "23:30", "scripts/curator_job.py",    ("--skill-promote",)),
+    # --- W3 growth-loop timer extensions ---
+    # HERMES_DISABLE_GROWTH_BLOCKS short-circuit handled by hermes-setup runtime
+    ("HermesSelfReview",       "21:00", "scripts/migration_self_review.py",       ()),
+    ("HermesDialectic",        "06:00", "scripts/dialectic_user_modeling.py",     ("--apply",)),
+    ("HermesSkillSelfModify",  "23:00", "scripts/skill_self_modify.py",           ()),
+    ("HermesDelegationPattern","12:00", "scripts/delegation_pattern_extractor.py",("--apply",)),
+    ("HermesSkillDraftQueueDrainer","00:00", "scripts/process_skill_draft_queue.py", ("--apply",)),
+    # --- end ---
 )
 
 

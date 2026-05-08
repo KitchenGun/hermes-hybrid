@@ -116,6 +116,24 @@ class SkillPromoter:
     async def run_weekly(self) -> SkillPromoterResult:
         """일요일 23:30 KST. 7일치 ExperienceLog 으로 cluster + draft + PR."""
         result = SkillPromoterResult()
+        # --- W11 self-review drafts scan ---
+        if not __import__("os").environ.get("HERMES_DISABLE_GROWTH_BLOCKS"):
+            try:
+                from pathlib import Path as _W11_Path
+                _w11_root = _W11_Path(__file__).resolve().parent.parent.parent
+                _w11_src = _w11_root / "skills" / "generated_from_self_review"
+                if _w11_src.exists():
+                    self.draft_dir.mkdir(parents=True, exist_ok=True)
+                    for _w11_md in _w11_src.glob("**/*.md"):
+                        _w11_target = self.draft_dir / f"sr_{_w11_md.parent.name}_{_w11_md.name}"
+                        if not _w11_target.exists():
+                            try:
+                                _w11_target.write_text(_w11_md.read_text(encoding="utf-8"), encoding="utf-8")
+                            except OSError:
+                                pass
+            except Exception as _w11p_err:  # noqa: BLE001
+                log.warning("w11.promoter_scan_failed", err=str(_w11p_err))
+        # --- end ---
         until = datetime.now(timezone.utc)
         since = until - timedelta(days=7)
 
