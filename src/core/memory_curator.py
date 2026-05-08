@@ -37,6 +37,7 @@ prompt 도 raw user_message 를 직접 보지 못함. 대신 handled_by / agent_
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -312,6 +313,286 @@ class MemoryCurator:
             path.write_text(text, encoding="utf-8")
         except OSError as e:
             log.warning("memory.write_failed", path=str(path), err=str(e))
+
+    # ------------------------------------------------------------------
+    # Growing Agent Memory Architecture P0-B (2026-05-09).
+    # Split compile from data/processed_memory/*.md into USER.md +
+    # MEMORY.md, lazy regenerate on source-hash change. Coexists with
+    # the legacy LLM-based maybe_curate_after_task / update_user_profile
+    # path above — those still work for ExperienceLog-driven curation
+    # and write to the same files. Whoever runs last wins, which is
+    # acceptable because the AUTO-GENERATED header in the split output
+    # signals reviewers that manual edits will be overwritten.
+    # ------------------------------------------------------------------
+
+    def compile_split_memory(
+        self,
+        *,
+        processed_memory_root: Path,
+        token_budget: int = 2000,
+        force: bool = False,
+        profile: str = "default",
+    ) -> dict[str, Any]:
+        """Compile USER.md and MEMORY.md from processed_memory/*.md.
+
+        Returns a dict::
+
+            {
+                "user_changed": bool,
+                "memory_changed": bool,
+                "user_manifest": <dict>,
+                "memory_manifest": <dict>,
+            }
+
+        Lazy regeneration: each output's manifest stores ``source_hashes``
+        for its inputs. If the live source hashes match, we skip
+        rewriting unless ``force=True``. The two outputs are independent
+        — a change to ``response_style.md`` does NOT regenerate
+        ``MEMORY.md``.
+        """
+        proc_root = Path(processed_memory_root)
+        user_inputs = ("user_profile.md", "response_style.md")
+        memory_inputs = (
+            "project_context.md",
+            "decision_log.md",
+            "prompt_library.md",
+            "failure_patterns.md",
+            "skills_index.md",
+        )
+
+        user_changed, user_manifest = self._compile_one(
+            label="USER",
+            output_path=self.memory_root / "USER.md",
+            manifest_path=self.memory_root / "USER.manifest.json",
+            source_root=proc_root,
+            source_files=user_inputs,
+            priority_keys=_USER_PRIORITY,
+            token_budget=token_budget,
+            profile=profile,
+            force=force,
+        )
+        memory_changed, memory_manifest = self._compile_one(
+            label="MEMORY",
+            output_path=self.memory_root / "MEMORY.md",
+            manifest_path=self.memory_root / "MEMORY.manifest.json",
+            source_root=proc_root,
+            source_files=memory_inputs,
+            priority_keys=_MEMORY_PRIORITY,
+            token_budget=token_budget,
+            profile=profile,
+            force=force,
+        )
+        return {
+            "user_changed": user_changed,
+            "memory_changed": memory_changed,
+            "user_manifest": user_manifest,
+            "memory_manifest": memory_manifest,
+        }
+
+    def _compile_one(
+        self,
+        *,
+        label: str,
+        output_path: Path,
+        manifest_path: Path,
+        source_root: Path,
+        source_files: tuple[str, ...],
+        priority_keys: tuple[tuple[str, ...], ...],
+        token_budget: int,
+        profile: str,
+        force: bool,
+    ) -> tuple[bool, dict[str, Any]]:
+        # Hash live source files. Missing files contribute "absent" so
+        # the manifest distinguishes "not-yet-created" from "deleted".
+        source_hashes: dict[str, str] = {}
+        for fname in source_files:
+            p = source_root / fname
+            if p.exists():
+                source_hashes[fname] = "sha256:" + hashlib.sha256(
+                    p.read_bytes()
+                ).hexdigest()
+            else:
+                source_hashes[fname] = "absent"
+
+        prior_manifest = self._load_manifest(manifest_path)
+        prior_hashes = (prior_manifest or {}).get("source_hashes", {})
+        if (
+            not force
+            and prior_manifest is not None
+            and prior_hashes == source_hashes
+            and output_path.exists()
+        ):
+            log.info(
+                "memory.compile_split.noop",
+                label=label,
+                reason="source_hashes_match",
+            )
+            return False, prior_manifest
+
+        # Lazy import — keeps src.core import-light for processes that
+        # don't touch the new ingestion layer.
+        from src.memory.ingestion.writer import parse_processed_file
+
+        items: list[Any] = []
+        for fname in source_files:
+            p = source_root / fname
+            if not p.exists():
+                continue
+            text = p.read_text(encoding="utf-8")
+            items.extend(parse_processed_file(text))
+
+        excluded = {
+            "needs_review": 0,
+            "pii": 0,
+            "security": 0,
+            "superseded": 0,
+            "budget": 0,
+        }
+        eligible: list[Any] = []
+        for it in items:
+            if it.status == "needs_review":
+                excluded["needs_review"] += 1
+                continue
+            if it.status == "superseded":
+                excluded["superseded"] += 1
+                continue
+            if it.pii_candidate:
+                excluded["pii"] += 1
+                continue
+            if it.security_severity in ("medium", "high"):
+                excluded["security"] += 1
+                continue
+            eligible.append(it)
+
+        # Priority sort — earlier tuples in priority_keys are higher priority.
+        def _priority(item: Any) -> tuple[int, str]:
+            for rank, keys in enumerate(priority_keys):
+                if _matches_priority(item, keys):
+                    return (rank, item.created_at)
+            return (len(priority_keys), item.created_at)
+
+        eligible.sort(key=_priority)
+
+        included: list[dict[str, Any]] = []
+        running_tokens = 0
+        sections: list[str] = []
+        for it in eligible:
+            tokens = max(1, len(it.body) // 4)
+            if running_tokens + tokens > token_budget:
+                excluded["budget"] += 1
+                continue
+            running_tokens += tokens
+            sections.append(f"## {it.title}\n\n{it.body.rstrip()}\n")
+            included.append({
+                "item_id": it.item_id,
+                "type": it.type,
+                "tokens": tokens,
+            })
+
+        compile_reason = "first_run" if prior_manifest is None else "source_changed"
+        if force:
+            compile_reason = "forced"
+
+        generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        manifest: dict[str, Any] = {
+            "schema_version": 1,
+            "profile": profile,
+            "label": label,
+            "source_files": [str(source_root / f) for f in source_files],
+            "source_hashes": source_hashes,
+            "generated_at": generated_at,
+            "compile_reason": compile_reason,
+            "token_budget": token_budget,
+            "included_sections": included,
+            "excluded_count": excluded,
+        }
+
+        header_lines = [
+            "<!-- AUTO-GENERATED by MemoryCurator. DO NOT EDIT DIRECTLY.",
+            f"     Schema version: 1",
+            f"     Profile: {profile}",
+            f"     Label: {label}",
+            f"     Source: {', '.join(source_files)}",
+            f"     Generated: {generated_at}",
+            f"     Token budget: {token_budget}",
+            f"     Compile reason: {compile_reason}",
+            f"     Excluded: {excluded['needs_review']} needs_review, "
+            f"{excluded['pii']} pii, {excluded['security']} security, "
+            f"{excluded['superseded']} superseded, {excluded['budget']} budget",
+            "-->",
+            "",
+            f"# {label}",
+            "",
+        ]
+        body = "\n".join(header_lines)
+        if sections:
+            body += "\n" + "\n".join(sections)
+        else:
+            body += "\n_No items eligible for compile._\n"
+        self._write(output_path, body)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        log.info(
+            "memory.compile_split.done",
+            label=label,
+            reason=compile_reason,
+            included=len(included),
+            excluded=excluded,
+        )
+        return True, manifest
+
+    @staticmethod
+    def _load_manifest(path: Path) -> dict[str, Any] | None:
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+
+# Priority tuples for compile: each inner tuple is the AND-ed match
+# criteria. The first matching tuple wins; rank is its index.
+# Format: (type, status, source, confidence, tag) — empty string = wildcard.
+_USER_PRIORITY: tuple[tuple[str, ...], ...] = (
+    ("user_preference", "active", "user_correction", "high", ""),
+    ("response_style", "active", "", "", ""),
+    ("user_preference", "active", "", "", "risk_tolerance"),
+    ("user_preference", "active", "", "", "approval_preference"),
+    ("user_preference", "active", "", "", "language"),
+    ("user_preference", "active", "", "", "formatting"),
+    ("user_preference", "active", "", "low", ""),
+)
+_MEMORY_PRIORITY: tuple[tuple[str, ...], ...] = (
+    ("failure_pattern", "active", "", "high", ""),
+    ("failure_pattern", "active", "", "medium", ""),
+    ("decision", "active", "", "", ""),
+    ("prompt_template", "active", "", "", ""),
+    ("reusable_skill", "active", "", "", ""),
+    ("project_context", "active", "", "", ""),
+)
+
+
+def _matches_priority(item: Any, keys: tuple[str, ...]) -> bool:
+    """Match an item against a priority tuple.
+
+    keys = (type, status, source, confidence, tag)
+    """
+    type_, status, source, confidence, tag = keys
+    if type_ and item.type != type_:
+        return False
+    if status and item.status != status:
+        return False
+    if source and item.source != source:
+        return False
+    if confidence and item.confidence != confidence:
+        return False
+    if tag and tag not in item.tags:
+        return False
+    return True
 
 
 __all__ = ["MemoryCurator"]
