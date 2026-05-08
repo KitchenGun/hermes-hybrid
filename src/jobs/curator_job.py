@@ -377,6 +377,16 @@ class CuratorJob(BaseJob):
         since: datetime | None = None,
         until: datetime | None = None,
     ) -> JobResult:
+        # --- W11 self-review candidates glob ---
+        if not __import__("os").environ.get("HERMES_DISABLE_GROWTH_BLOCKS"):
+            try:
+                from pathlib import Path as _W11_Path
+                _w11_root = _W11_Path(__file__).resolve().parent.parent.parent
+                for _w11_y in sorted((_w11_root / "memory").glob("candidates_from_self_review_*.yaml")):
+                    pass  # marker only; ingest is handled by scripts/ingest_memory_candidates.py
+            except Exception:
+                pass
+        # --- end ---
         end = until or datetime.now(timezone.utc)
         start = since or (end - timedelta(days=self.window_days))
         records = list(self.logger.query(since=start, until=end))

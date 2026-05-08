@@ -18,6 +18,14 @@ _INSTALLERS: tuple[tuple[str, str], ...] = (
     # Curator. Sunday 22:30 KST.
     ("hermes-ab-report.timer",  "scripts/install_ab_report_timer.sh"),
     ("hermes-curator.timer",    "scripts/install_curator_timer.sh"),
+    # --- W3 growth-loop timer extensions ---
+    # NOTE: install scripts may not exist yet — graceful skip in register().
+    ("hermes-self-review.timer",        "scripts/install_self_review_timer.sh"),
+    ("hermes-dialectic.timer",          "scripts/install_dialectic_timer.sh"),
+    ("hermes-skill-self-modify.timer",  "scripts/install_skill_self_modify_timer.sh"),
+    ("hermes-delegation-pattern.timer", "scripts/install_delegation_pattern_timer.sh"),
+    ("hermes-skill-draft-queue-drainer.timer", "scripts/install_skill_draft_queue_drainer_timer.sh"),
+    # --- end ---
 )
 
 

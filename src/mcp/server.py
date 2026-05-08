@@ -89,6 +89,16 @@ _TOOLS: list[_Tool] = [
     ),
 ]
 
+# --- W6a MCP tool registry extensions ---
+try:
+    if not __import__("os").environ.get("HERMES_DISABLE_GROWTH_BLOCKS"):
+        from src.mcp.server_extensions_generated import register_extensions as _w6_register
+        _w6_register(_TOOLS)
+except Exception as _w6a_err:
+    log.warning("w6a.register_failed", err=str(_w6a_err))
+# --- end ---
+
+
 
 class HybridMCPServer:
     """JSON-RPC 2.0 request handler for MCP protocol.
@@ -176,6 +186,16 @@ class HybridMCPServer:
         name = params.get("name")
         arguments = params.get("arguments") or {}
 
+        # --- W6b MCP tool dispatch extensions ---
+        if not __import__("os").environ.get("HERMES_DISABLE_GROWTH_BLOCKS"):
+            try:
+                from src.mcp.server_extensions_generated import dispatch as _w6_dispatch
+                _w6_resp = await _w6_dispatch(name, arguments)
+                if _w6_resp is not None:
+                    return _w6_resp
+            except Exception as _w6b_err:  # noqa: BLE001
+                log.warning("w6b.dispatch_failed", err=str(_w6b_err))
+        # --- end ---
         if name != "hybrid.handle":
             raise MCPError(-32602, f"Unknown tool: {name!r}")
 
