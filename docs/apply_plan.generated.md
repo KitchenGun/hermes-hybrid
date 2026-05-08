@@ -7,7 +7,7 @@
 | target | reason | apply command | verification |
 |---|---|---|---|
 | `data/growth_metrics.generated.yaml` (W5) | Loop 4 baseline | `python scripts/capture_growth_metrics.py --output data/growth_metrics.generated.yaml` | 6 fields + timestamp + git_sha 존재 |
-| `data/memory/memos.db` schema (W1) | source 컬럼 추가 | `python scripts/migrate_memos_add_source.py --apply` | `PRAGMA table_info(memos)` 에 source 포함 |
+| `data/state.db` (bot SqliteMemory) schema (W1) | source 컬럼 추가 | `python scripts/migrate_memos_add_source.py --apply` (default `settings.state_db_path` = `data/state.db`) | `PRAGMA table_info(memos)` 에 source 포함 |
 | memory ingest (W1) | Loop 1 활성 | `python scripts/ingest_memory_candidates.py --apply --user-id $(detect)` | `SELECT COUNT(*) WHERE source='generated_candidates'` ≥ 80% |
 | 10 marker blocks (P0c.3) | W4/W6a/W6b/W10/W11×2/W12 | `python scripts/run_p0c.py --phases c3` | python imports succeed + pytest -x 통과 |
 | skill promote (W2) | Loop 2 bootstrap | `python scripts/promote_generated_skills.py --apply --score-threshold 0.85` | `agents/<cat>/<name>/SKILL.md` count 증가 |

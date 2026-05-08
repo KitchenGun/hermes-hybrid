@@ -1,10 +1,14 @@
-"""W1 — Ingest memory/memory_candidates.generated.yaml into data/memory/memos.db.
+"""W1 — Ingest memory/memory_candidates.generated.yaml into the memory store.
 
 For each candidate with `should_store: true`:
   - call SqliteMemory.save(user_id, text)
   - then UPDATE memos SET source=<source> WHERE id=lastrowid
 
-Audit log: data/memory/ingest.log
+The default DB path is resolved from `settings.state_db_path` (data/state.db),
+matching the bot's runtime SqliteMemory wiring at
+src/gateway/discord_bot.py:64. Override with --db when needed.
+
+Audit log: data/memory/ingest.log (kept here so both stores share an audit trail)
 
 Usage:
     python scripts/ingest_memory_candidates.py --dry-run
@@ -28,9 +32,22 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.memory.sqlite import SqliteMemory  # noqa: E402
 
-DEFAULT_DB = REPO_ROOT / "data" / "memory" / "memos.db"
+# Fallback when src.config is unimportable (e.g. running outside venv).
+# Real default comes from settings.state_db_path via _resolve_db().
+_FALLBACK_DB = REPO_ROOT / "data" / "state.db"
 DEFAULT_YAML = REPO_ROOT / "memory" / "memory_candidates.generated.yaml"
 DEFAULT_LOG = REPO_ROOT / "data" / "memory" / "ingest.log"
+
+
+def _resolve_db(override: Path | None) -> Path:
+    """Return --db when given, else settings.state_db_path, else _FALLBACK_DB."""
+    if override is not None:
+        return override
+    try:
+        from src.config import get_settings
+        return Path(get_settings().state_db_path)
+    except Exception:
+        return _FALLBACK_DB
 
 
 def _load_candidates(yaml_path: Path) -> list[dict]:
@@ -80,7 +97,8 @@ async def _last_id(db_path: Path) -> int:
 
 async def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--db", type=Path, default=DEFAULT_DB)
+    p.add_argument("--db", type=Path, default=None,
+                   help="Override DB path. Defaults to settings.state_db_path.")
     p.add_argument("--yaml", type=Path, default=DEFAULT_YAML)
     p.add_argument("--user-id", default=None)
     p.add_argument("--source", default="generated_candidates")
@@ -89,6 +107,8 @@ async def main() -> int:
     g.add_argument("--apply", action="store_true")
     p.add_argument("--log", type=Path, default=DEFAULT_LOG)
     args = p.parse_args()
+
+    args.db = _resolve_db(args.db)
 
     if args.apply:
         args.dry_run = False

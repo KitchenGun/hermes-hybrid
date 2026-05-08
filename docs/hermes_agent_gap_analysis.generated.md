@@ -22,9 +22,10 @@
 ## 5개 Loop 활성 상태 (Day-0 honest assessment)
 
 ### Loop 1 — Memory: **Active Growing on day 0**
-- W1 ingest 가 `data/memory/memos.db` 에 `source='generated_candidates'` 로 적재
-- 기존 `_maybe_inject_memory()` 가 다음 요청에서 recall (default ON)
-- W7 SelfReview → memory candidate yaml → CuratorJob 가 이어서 ingest
+- W1 ingest 가 `data/state.db` (settings.state_db_path, 봇 `SqliteMemory`와 동일 파일) 의 `memos` 테이블에 `source='generated_candidates'` 로 적재
+- 기존 `_maybe_inject_memory()` (`src/orchestrator/hermes_master.py:741-760`) 가 다음 요청에서 동일 DB로부터 recall (default ON)
+- `data/memory/MEMORY.md` 의 CuratorJob 큐레이트 store 와는 **별도** — 두 store는 함께 운영되지만 recall 코퍼스는 `data/state.db`만 사용
+- W7 SelfReview → memory candidate yaml → CuratorJob 가 이어서 ingest (P1.5: ingest path 도 `settings.state_db_path` 기준으로 정렬됨)
 
 ### Loop 2 — Skill: **mixed**
 - 초기 W2 10 skills: ACTIVE (직접 `agents/{cat}/{name}/SKILL.md` 작성)
@@ -86,7 +87,7 @@
   - `src/jobs/curator_job.py` ×1 (W11)
   - `src/jobs/skill_promoter.py` ×1 (W11)
   - `src/cli/timer_handlers/{windows,linux,darwin}.py` ×1 each (W3)
-  - `data/memory/memos.db` schema migration
+  - `data/state.db` (bot SqliteMemory) schema migration on `memos` table
   - `config/job_factory.yaml` `# --- generated job candidates ---` block
 - 모든 marker block 은 `HERMES_DISABLE_GROWTH_BLOCKS=true` short-circuit
 - 다른 기존 파일 수정은 P1 (NOT auto-applied)

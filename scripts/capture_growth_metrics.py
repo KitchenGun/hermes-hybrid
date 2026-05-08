@@ -2,7 +2,11 @@
 
 Fields:
   - skill_count: agents/{cat}/{name}/SKILL.md count + src/skills/* count
-  - memory_count: data/memory/memos.db row count + data/memory/MEMORY.md line count
+  - memory_count:
+      memos_db_rows  — bot SqliteMemory store (settings.state_db_path,
+                       defaults to data/state.db)
+      memory_md_lines — data/memory/MEMORY.md (CuratorJob curated, separate
+                        store; not the bot's recall corpus)
   - job_count: config/job_factory.yaml job_types + generated job candidates
   - prompt_pattern_distribution: top-N intents from logs/experience/*.jsonl
   - ab_treatment_stats: ab experiment arm sample sizes
@@ -26,7 +30,18 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 DEFAULT_OUTPUT = REPO_ROOT / "data" / "growth_metrics.generated.yaml"
+_FALLBACK_DB = REPO_ROOT / "data" / "state.db"
+
+
+def _memos_db_path() -> Path:
+    """Bot's SqliteMemory file. Mirrors src/gateway/discord_bot.py:64."""
+    try:
+        from src.config import get_settings
+        return Path(get_settings().state_db_path)
+    except Exception:
+        return _FALLBACK_DB
 
 
 def _git_sha() -> str:
@@ -54,16 +69,26 @@ def _skill_count() -> int:
 
 
 def _memory_count() -> dict:
-    out = {"memos_db_rows": 0, "memory_md_lines": 0}
-    db = REPO_ROOT / "data" / "memory" / "memos.db"
+    """Bot's recall corpus (memos table) + curated MEMORY.md (separate store).
+
+    `memos_db_rows` reflects what `_maybe_inject_memory()` actually queries
+    (settings.state_db_path via SqliteMemory). `memory_md_lines` is the
+    independent CuratorJob-curated `data/memory/MEMORY.md` count, not the
+    recall corpus.
+    """
+    out = {"memos_db_rows": 0, "memory_md_lines": 0, "memos_db_path": ""}
+    db = _memos_db_path()
+    out["memos_db_path"] = str(db.relative_to(REPO_ROOT)) if db.is_relative_to(REPO_ROOT) else str(db)
     if db.exists():
         try:
-            r = subprocess.run(
-                ["sqlite3", str(db), "SELECT COUNT(*) FROM memos"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if r.returncode == 0:
-                out["memos_db_rows"] = int(r.stdout.strip() or 0)
+            import sqlite3
+            con = sqlite3.connect(str(db))
+            try:
+                cols = [c[1] for c in con.execute("PRAGMA table_info(memos)")]
+                if "id" in cols:
+                    out["memos_db_rows"] = con.execute("SELECT COUNT(*) FROM memos").fetchone()[0]
+            finally:
+                con.close()
         except Exception:
             pass
     md = REPO_ROOT / "data" / "memory" / "MEMORY.md"
