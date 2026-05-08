@@ -65,6 +65,22 @@ data/external_memory/**
 !data/processed_memory/
 !data/processed_memory/**
 
+# Top-level data/ runtime artifacts — generators (W10 detector log,
+# kanban.db, state.db, growth_metrics, *.tmp) write here. None of
+# these belong in git. Subdirectories explicitly unignored above
+# (source_manifests/, processed_memory/, plus the per-file negations
+# inside data/memory/ below) are unaffected because those globs
+# don't traverse into nested directories.
+data/*.jsonl
+data/*.log
+data/*.db
+data/*.sqlite
+data/*.sqlite-journal
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/*.tmp
+data/*.yaml
+
 # data/memory/ — option B: directory traversal allowed, but the contents
 # stay ignored by default. Only the four compiled artifacts (and a
 # .gitkeep placeholder for directory preservation) are explicitly
