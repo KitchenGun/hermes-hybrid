@@ -1,0 +1,195 @@
+# jobs/generated/job_candidates.generated.yaml
+#
+# P0a Step 5 — Job candidates. existing 7 + candidate 7 = 14.
+# `status: existing` rows are evidence-only. `status: candidate` rows can be
+# auto-registered by scripts/register_generated_jobs.py --apply --candidates-only
+# into config/job_factory.yaml within `# --- generated job candidates ---` block.
+
+jobs:
+  # ---- existing ----
+  - id: job_weather_daily
+    name: HermesWeatherDaily
+    purpose: "매일 아침 KMA 날씨 알림을 Discord 브리핑 채널로 전송."
+    schedule: "0 7 * * *"
+    timezone: "Asia/Seoul"
+    required_tools: [http]
+    output_channel: "DISCORD_BRIEFING_WEBHOOK_URL"
+    status: existing
+    evidence: "scripts/weather_alert.py"
+
+  - id: job_calendar_briefing
+    name: HermesCalendarBriefing
+    purpose: "오늘/내일 일정 브리핑."
+    schedule: "30 7 * * *"
+    timezone: "Asia/Seoul"
+    required_tools: [google_calendar_mcp]
+    output_channel: "DISCORD_BRIEFING_WEBHOOK_URL"
+    status: existing
+    evidence: "scripts/calendar_briefing_job.py"
+
+  - id: job_mail_alert
+    name: HermesMailAlert
+    purpose: "Naver/Gmail 미확인 메일 알림."
+    schedule: "0 8 * * *"
+    timezone: "Asia/Seoul"
+    required_tools: [imap, gmail_oauth]
+    output_channel: "DISCORD_BRIEFING_WEBHOOK_URL"
+    status: existing
+    evidence: "scripts/mail_alert_job.py"
+
+  - id: job_reflection_weekly
+    name: HermesReflection
+    purpose: "주간 ExperienceLog reflection."
+    schedule: "0 22 * * 0"
+    timezone: "Asia/Seoul"
+    required_tools: []
+    output_channel: "logs/curator/"
+    status: existing
+    evidence: "scripts/reflection_job.py, src/jobs/base.py"
+
+  - id: job_ab_report_weekly
+    name: HermesABReport
+    purpose: "memory_inject A/B 실험 주간 리포트."
+    schedule: "30 22 * * 0"
+    timezone: "Asia/Seoul"
+    required_tools: []
+    output_channel: "logs/ab/"
+    status: existing
+    evidence: "scripts/ab_report_job.py, src/jobs/ab_report.py"
+
+  - id: job_curator_weekly
+    name: HermesCurator
+    purpose: "ExperienceLog 통계 + MEMORY.md / USER.md 자동 큐레이트."
+    schedule: "0 23 * * 0"
+    timezone: "Asia/Seoul"
+    required_tools: []
+    output_channel: "data/memory/, logs/curator/"
+    status: existing
+    evidence: "scripts/curator_job.py, src/jobs/curator_job.py"
+
+  - id: job_skill_promoter
+    name: HermesPromoter
+    purpose: "skill draft 생성 + auto-install + auto-revert + PR."
+    schedule: "30 23 * * 0"
+    timezone: "Asia/Seoul"
+    required_tools: [git, gh]
+    output_channel: "agents/auto/, logs/curator/auto_skills/"
+    status: existing
+    evidence: "src/jobs/skill_promoter.py, scripts/curator_job.py --skill-promote"
+
+  # ---- new candidates (W7/W8/W9/W10/W12 internal jobs) ----
+  - id: job_hermes_self_review
+    name: HermesSelfReview
+    purpose: "주간 마이그레이션 self-review (W7). growth_metrics delta + memory/skill/job 후보 yaml 산출."
+    schedule: "0 21 * * 0"
+    timezone: "Asia/Seoul"
+    required_tools: []
+    output_channel: "data/, memory/, skills/generated_from_self_review/, jobs/"
+    prompt: "Compare growth metrics vs baseline; emit prioritized action list + candidate yamls/markdowns."
+    status: candidate
+    evidence: "scripts/migration_self_review.py (W7)"
+
+  - id: job_hermes_dialectic
+    name: HermesDialectic
+    purpose: "Honcho-style dialectic user-model refinement (W8). 매주 월요일 06:00 KST."
+    schedule: "0 6 * * 1"
+    timezone: "Asia/Seoul"
+    required_tools: []
+    output_channel: "data/user_profile_drift_*.yaml"
+    prompt: "Cross-check each profile claim against last 7d evidence; emit confirmed/weakened/new/retired."
+    status: candidate
+    evidence: "scripts/dialectic_user_modeling.py (W8)"
+
+  - id: job_hermes_skill_self_modify
+    name: HermesSkillSelfModify
+    purpose: "scoring 하락 SKILL.md 자동 수정 draft (W9). 매주 토 23:00 KST."
+    schedule: "0 23 * * 6"
+    timezone: "Asia/Seoul"
+    required_tools: []
+    output_channel: "agents/<cat>/<name>/SKILL.draft.md"
+    prompt: "For each declining skill, regenerate SKILL.md with failure modes appended."
+    status: candidate
+    evidence: "scripts/skill_self_modify.py (W9)"
+
+  - id: job_hermes_delegation_pattern
+    name: HermesDelegationPattern
+    purpose: "delegation 성공 패턴 추출 (W12). 매주 월 12:00 KST."
+    schedule: "0 12 * * 1"
+    timezone: "Asia/Seoul"
+    required_tools: []
+    output_channel: "data/delegation_patterns_*.yaml"
+    prompt: "Group ExperienceRecord by intent_cluster, rank agent combos, emit best/weak."
+    status: candidate
+    evidence: "scripts/delegation_pattern_extractor.py (W12)"
+
+  - id: job_hermes_skill_draft_queue_drainer
+    name: HermesSkillDraftQueueDrainer
+    purpose: "30분마다 data/skill_draft_queue.jsonl 을 비워 skill draft 생성 (W10)."
+    schedule: "*/30 * * * *"
+    timezone: "Asia/Seoul"
+    required_tools: []
+    output_channel: "logs/curator/auto_skills/"
+    prompt: "Drain skill draft queue; produce SKILL.md drafts; prune 30-day-old recurring_request_log entries."
+    status: candidate
+    evidence: "scripts/process_skill_draft_queue.py (W10)"
+
+  # ---- user-suggested candidates (P1, NOT auto-registered) ----
+  - id: job_ai_trend_digest
+    name: HermesAITrendDigest
+    purpose: "오늘의 AI 트렌드 요약 — user pattern 'AI 트렌드' 반복 감지 시 W7 SelfReview 가 propose."
+    schedule: "0 9 * * *"
+    timezone: "Asia/Seoul"
+    required_tools: [web_search]
+    output_channel: "DISCORD_BRIEFING_WEBHOOK_URL"
+    status: candidate
+    evidence: "(no existing impl — proposed by user prompt)"
+
+  - id: job_market_check
+    name: HermesMarketCheck
+    purpose: "시장 / 게임 산업 동향 일일 체크."
+    schedule: "0 10 * * 1-5"
+    timezone: "Asia/Seoul"
+    required_tools: [web_search]
+    output_channel: "DISCORD_BRIEFING_WEBHOOK_URL"
+    status: candidate
+    evidence: "(no existing impl — proposed by user prompt)"
+
+  - id: job_github_repo_summary
+    name: HermesGitHubRepoSummary
+    purpose: "지정 GitHub repo 의 최근 변화 / PR / issue 요약."
+    schedule: "0 11 * * 1"
+    timezone: "Asia/Seoul"
+    required_tools: [gh, web_fetch]
+    output_channel: "DISCORD_BRIEFING_WEBHOOK_URL"
+    status: candidate
+    evidence: "(no existing impl — proposed by user prompt)"
+
+  - id: job_local_model_rebench
+    name: HermesLocalModelRebench
+    purpose: "로컬 Ollama 모델 정기 재벤치마크."
+    schedule: "0 4 1 * *"
+    timezone: "Asia/Seoul"
+    required_tools: [ollama]
+    output_channel: "data/bench/"
+    status: candidate
+    evidence: "scripts/bench_local_models.py (existing one-shot, schedule wiring proposed)"
+
+  - id: job_prompt_skill_update_extraction
+    name: HermesPromptSkillUpdateExtraction
+    purpose: "user prompt 패턴 변화 감지 → SKILL.md 갱신 후보."
+    schedule: "0 13 * * 1"
+    timezone: "Asia/Seoul"
+    required_tools: []
+    output_channel: "skills/generated_from_self_review/"
+    status: candidate
+    evidence: "src/jobs/skill_promoter.py (partial — prompt-pattern clustering)"
+
+  - id: job_schedule_lowdata_logging
+    name: HermesScheduleLowDataLogging
+    purpose: "Discord #일기 → 24-필드 sheets 적재 (low-data 모드)."
+    schedule: "*/15 * * * *"
+    timezone: "Asia/Seoul"
+    required_tools: [google_sheets, discord]
+    output_channel: "Google Sheets"
+    status: candidate
+    evidence: "src/skills/journal/, Phase 22 (event-driven, polling 후보)"

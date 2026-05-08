@@ -1,0 +1,170 @@
+# profiles/hermes_profiles.generated.yaml
+#
+# P0a Step 7 — 12 user-requested profiles → existing 17 sub-agent / hermes
+# 자산 매핑 (compatibility view). Phase 8 profile system 부활 아님.
+
+profiles:
+  - name: master_orchestrator
+    role: "single-entry orchestrator"
+    allowed_tools: [claude_cli, all_subagents, mcp]
+    preferred_provider: claude_code_cli
+    responsibilities:
+      - intent routing (RuleLayer / slash skill / @mention)
+      - parallel / pipeline / single-shot dispatch
+      - memory inject + critic + experience log
+    escalation_rules:
+      - "claude auth error → user 안내"
+      - "tool_error → degraded fallback"
+    example_prompts:
+      - "general user request → 자동 분기"
+    existing_implementation: "src/orchestrator/hermes_master.py"
+
+  - name: researcher
+    role: external_research
+    allowed_tools: [web_search, web_fetch, mcp_google_calendar, gh]
+    preferred_provider: claude_code_cli
+    responsibilities:
+      - 외부 docs / API 사양 / 트렌드 조사
+      - 캘린더 read
+      - 채용 공고 크롤
+    escalation_rules:
+      - "web tool 실패 → @finder 위임"
+    example_prompts:
+      - "이 라이브러리 사양 확인"
+      - "이번 주 일정"
+    existing_implementation: "agents/research/{finder,analyst,researcher}/SKILL.md"
+
+  - name: architect
+    role: system_design
+    allowed_tools: [all]
+    preferred_provider: claude_code_cli
+    responsibilities:
+      - 신규 기능 / 마이그레이션 plan 작성
+      - ADR 작성
+    escalation_rules:
+      - "복잡도 너무 높을 시 사용자에게 분해 제안"
+    example_prompts:
+      - "5-loop closed-loop 설계 plan"
+    existing_implementation: "agents/planning/{architect,planner}/SKILL.md"
+
+  - name: coder
+    role: write_new_code
+    allowed_tools: [editor, terminal, git]
+    preferred_provider: claude_code_cli
+    responsibilities:
+      - greenfield 모듈 / 함수 작성
+      - 테스트 작성
+    escalation_rules:
+      - "기존 코드 수정 → @editor"
+      - "버그 → @fixer"
+    example_prompts:
+      - "이 모듈 새로 작성"
+    existing_implementation: "agents/implementation/{coder,editor,fixer,refactorer}/SKILL.md"
+
+  - name: reviewer
+    role: code_review
+    allowed_tools: [editor, git]
+    preferred_provider: claude_code_cli
+    responsibilities:
+      - PR diff 리뷰
+      - 보안 / 성능 audit
+    escalation_rules:
+      - "테스트 실패 → @debugger"
+      - "보안 이슈 → @security"
+    example_prompts:
+      - "이 diff 리뷰"
+    existing_implementation: "agents/quality/{reviewer,tester,debugger,security}/SKILL.md"
+
+  - name: prompt_engineer
+    role: prompt_design
+    allowed_tools: []
+    preferred_provider: claude_code_cli
+    responsibilities:
+      - 사용자 raw 의도 → 구조화된 프롬프트 변환
+    escalation_rules:
+      - "단순 1-shot → @coder 직접"
+    example_prompts:
+      - "이 요청을 master 가 잘 따르게 다시 써줘"
+    existing_implementation: "NEEDS_REVIEW (no direct equivalent — generated skill 01_prompt_engineering.md 가 후보)"
+
+  - name: job_factory
+    role: job_tuning
+    allowed_tools: [yaml]
+    preferred_provider: claude_code_cli
+    responsibilities:
+      - config/job_factory.yaml 정책 tuning
+      - skill_promoter 자동 promotion 룰 점검
+    escalation_rules:
+      - "score_matrix 직접 수정 금지 — bench harness 사용"
+    example_prompts:
+      - "code_review threshold 조정"
+    existing_implementation: "src/jobs/, config/job_factory.yaml, src/jobs/skill_promoter.py"
+
+  - name: memory_curator
+    role: memory_curation
+    allowed_tools: []
+    preferred_provider: claude_code_cli
+    responsibilities:
+      - ExperienceLog 통계 → MEMORY.md / USER.md 갱신
+      - memory candidate ingest
+    escalation_rules: []
+    example_prompts:
+      - "이번 주 메모 정리"
+    existing_implementation: "src/jobs/curator_job.py, src/core/memory_curator.py, data/memory/MEMORY.md"
+
+  - name: discord_ops
+    role: discord_messaging
+    allowed_tools: [discord]
+    preferred_provider: claude_code_cli
+    responsibilities:
+      - Discord 메시지 송수신
+      - reaction 피드백 라우팅
+      - allowlist fail-closed
+    escalation_rules:
+      - "Slack 으로 라우팅하지 마라 (Slack 미통합)"
+    example_prompts:
+      - "Discord 채널에 알림 보내"
+    existing_implementation: "src/gateway/discord_bot.py, src/gateway/feedback_router.py"
+
+  - name: career_tutor
+    role: career_assistance
+    allowed_tools: []
+    preferred_provider: claude_code_cli
+    responsibilities:
+      - 면접 준비 / 이력서 / 포트폴리오 보조
+    escalation_rules:
+      - "기술 검색 → @researcher"
+    example_prompts:
+      - "넥슨 엔진 면접 예상 질문"
+    existing_implementation: "NEEDS_REVIEW — generated skill 07_interview_preparation.md 가 후보"
+
+  - name: unity_game_dev
+    role: unity_assistance
+    allowed_tools: [filesystem, web_fetch]
+    preferred_provider: claude_code_cli
+    responsibilities:
+      - Unity 프로젝트 audit
+      - asset / SO 의존 분석
+    escalation_rules:
+      - "코드 직접 수정 금지 — 사용자 본업"
+    example_prompts:
+      - "이 Unity 프로젝트 구조 분석"
+    existing_implementation: "NEEDS_REVIEW — generated skill 06_unity_game_analysis.md 가 후보. 메모 user_role.md 가 컨텍스트 제공"
+
+  - name: local_model_evaluator
+    role: model_bench
+    allowed_tools: [ollama]
+    preferred_provider: ollama
+    responsibilities:
+      - 로컬 ollama 모델 latency/quality/throughput 벤치
+    escalation_rules:
+      - "production lane 자동 변경 금지 — 사용자 결정"
+    example_prompts:
+      - "qwen3:4b 벤치"
+    existing_implementation: "scripts/bench_local_models.py, scripts/list_ollama_models.py"
+
+# Notes
+# - 12 profiles 는 사용자 prompt 의 정신 보존. 그러나 Phase 8 profile-cron
+#   architecture 부활 아님. 본 yaml 은 compatibility view (mapping table).
+# - master_orchestrator + sub-agent 11개 = 12.
+# - 7 profiles 는 직접 SKILL.md 매핑, 5 는 NEEDS_REVIEW 또는 generated skill.
