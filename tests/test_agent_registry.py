@@ -34,17 +34,22 @@ def test_real_repo_has_seventeen_agents_across_six_categories():
     if reg is None:
         pytest.skip("agents/ root not present (running outside repo)")
     entries = reg.all()
-    assert len(entries) == 17
+    # Phase 22 (2026-05-08) — Growth-Agent Migration P0c.4 promoted 10
+    # generated skills, expanding the 17-agent baseline to 27.
+    assert len(entries) == 27
 
     summary = reg.summary()
-    # 6 categories — exact counts as defined in Phase 7 plan
+    # 6 categories — Phase 7 baseline (research:3, planning:2,
+    # implementation:4, quality:4, documentation:2, infrastructure:2 = 17)
+    # + Phase 22 P0c.4 promotions (research:+3, planning:+1,
+    # documentation:+3, infrastructure:+3 = +10) → 27 total.
     assert summary == {
-        "research": 3,
-        "planning": 2,
+        "research": 6,
+        "planning": 3,
         "implementation": 4,
         "quality": 4,
-        "documentation": 2,
-        "infrastructure": 2,
+        "documentation": 5,
+        "infrastructure": 5,
     }
 
 
@@ -73,8 +78,17 @@ def test_real_repo_by_category_filters_correctly():
     reg = _real_registry()
     if reg is None:
         pytest.skip("agents/ root not present")
+    # Phase 22 P0c.4 added github_repo_analysis, research_summary,
+    # unity_game_analysis to the research category.
     research = reg.by_category("research")
-    assert sorted(e.name for e in research) == ["analyst", "finder", "researcher"]
+    assert sorted(e.name for e in research) == [
+        "analyst",
+        "finder",
+        "github_repo_analysis",
+        "research_summary",
+        "researcher",
+        "unity_game_analysis",
+    ]
     quality = reg.by_category("quality")
     assert sorted(e.name for e in quality) == [
         "debugger", "reviewer", "security", "tester",

@@ -163,9 +163,11 @@ def test_ack_true_skips_prompt_and_calls_register(monkeypatch, tmp_path):
 
 
 def test_windows_plan_emits_four_schtasks_commands(tmp_path):
-    """Phase 19 base 3 + Phase 21 ABReport = 4 weekly tasks."""
+    """Phase 19 base 3 + Phase 21 ABReport (4) + Phase 22 W3 growth-loop
+    timers (5: SelfReview/Dialectic/SkillSelfModify/DelegationPattern/
+    SkillDraftQueueDrainer) = 9 weekly tasks."""
     plans = win_handler.plan(tmp_path)
-    assert len(plans) == 4
+    assert len(plans) == 9
     names = []
     for cmd in plans:
         assert cmd[0] == "schtasks"
@@ -175,6 +177,8 @@ def test_windows_plan_emits_four_schtasks_commands(tmp_path):
         names.append(cmd[cmd.index("/TN") + 1])
     assert names == [
         "HermesReflection", "HermesABReport", "HermesCurator", "HermesPromoter",
+        "HermesSelfReview", "HermesDialectic", "HermesSkillSelfModify",
+        "HermesDelegationPattern", "HermesSkillDraftQueueDrainer",
     ]
 
 
@@ -195,11 +199,14 @@ def test_windows_register_calls_subprocess_per_task(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
     registered = win_handler.register(tmp_path, ack=True)
-    assert len(registered) == 4
-    assert len(captured) == 4
-    # All four task names land in the registered list
+    # Phase 22 P0c.5b extended _TASKS to 9 (4 base + 5 W3 growth-loop).
+    assert len(registered) == 9
+    assert len(captured) == 9
+    # All nine task names land in the registered list
     assert {
         "HermesReflection", "HermesABReport", "HermesCurator", "HermesPromoter",
+        "HermesSelfReview", "HermesDialectic", "HermesSkillSelfModify",
+        "HermesDelegationPattern", "HermesSkillDraftQueueDrainer",
     } == set(registered)
 
 
@@ -226,8 +233,8 @@ def test_windows_register_records_failures_but_continues(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", _FailFirst())
     registered = win_handler.register(tmp_path, ack=True)
-    # First failed, the other three succeed.
-    assert len(registered) == 3
+    # First failed; the remaining 8 of 9 (Phase 22 _TASKS) succeed.
+    assert len(registered) == 8
 
 
 def test_register_without_ack_is_noop(tmp_path):
