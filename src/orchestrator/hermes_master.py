@@ -815,41 +815,108 @@ class HermesMasterOrchestrator:
         *,
         anchor_message: str | None = None,
     ) -> int:
+        """Inject memory hits into ``history_window``. Returns total hits.
+
+        Two additive layers, both gated on ``memory_inject_enabled``:
+
+        1. **Legacy Phase-21 path** — sqlite ``memory.search(user_id,
+           query)``. Behaviour is unchanged from before; the Phase 21
+           ``memory_inject`` A/B experiment (treatment_ratio=0.5) keys
+           off this codepath and its variance must not shift.
+
+        2. **P2 retrieval supplement** — runs only when
+           ``memory_retrieval_enabled=True`` (default False) and the
+           user message is non-empty. Calls
+           :meth:`MemoryInjectionService.compose` with
+           ``include_compiled=False`` so it does NOT re-inject
+           compiled USER.md / MEMORY.md — :meth:`_compose_prompt`
+           already prepends those via
+           :meth:`MemoryCurator.read_prompt_prepend`, which surfaces
+           the P0-B :meth:`MemoryCurator.compile_split_memory`
+           artifacts as a side-effect of writing to the same files.
+           The two ab keys (``memory_inject`` vs
+           ``memory_retrieval_v1``) stay independent so the legacy
+           experiment is untouched.
+
+        Returns the sum of legacy hits and retrieval hits, so existing
+        callers (TaskState.memory_inject_count, ExperienceLog) keep a
+        single comparable count.
+        """
         if not (
             self.settings.memory_inject_enabled
             and user_message.strip()
         ):
             return 0
+
         # Phase 24 (R2) — follow-up 일 때 1턴 짧은 query ("진행해") 로
         # search 하면 무관 cluster 가 hit 한다. anchor 가 잡혔으면
         # anchor 를 query 로 사용해 직전 주제와 lexical/semantic 일치
-        # 한 메모만 끌어오게 한다.
-        query = anchor_message if anchor_message else user_message
+        # 한 메모만 끌어오게 한다. Layer 1/Layer 2 모두 동일 query 적용.
+        memory_query = anchor_message if anchor_message else user_message
+
+        # ----- Layer 1: legacy sqlite search (Phase 21 A/B path) -----
         try:
             hits = await self.memory.search(
-                user_id, query,
+                user_id, memory_query,
                 k=self.settings.memory_inject_top_k,
             )
         except Exception as e:  # noqa: BLE001
             log.warning("master.memory_search_failed", err=str(e))
             hits = []
-        if not hits:
-            return 0
-        bullets = "\n".join(f"- {m.text}" for m in hits)
-        history_window.insert(
-            0,
-            {
-                "role": "system",
-                "content": "관련 사용자 메모 (참고만):\n" + bullets,
-            },
-        )
-        log.info(
-            "master.memory_injected",
-            user_id=user_id,
-            hits=len(hits),
-            anchored=anchor_message is not None,
-        )
-        return len(hits)
+        total = 0
+        if hits:
+            bullets = "\n".join(f"- {m.text}" for m in hits)
+            history_window.insert(
+                0,
+                {
+                    "role": "system",
+                    "content": "관련 사용자 메모 (참고만):\n" + bullets,
+                },
+            )
+            total += len(hits)
+            log.info(
+                "master.memory_injected",
+                user_id=user_id,
+                hits=len(hits),
+                anchored=anchor_message is not None,
+            )
+
+        # ----- Layer 2: P2 retrieval supplement (default OFF) --------
+        if self.settings.memory_retrieval_enabled:
+            try:
+                from src.memory.injection import MemoryInjectionService
+                svc = MemoryInjectionService(
+                    compiled_memory_root=self.settings.compiled_memory_root,
+                    processed_memory_root=self.settings.processed_memory_root,
+                    token_budget=self.settings.memory_inject_token_budget,
+                    retriever_k=self.settings.memory_retriever_k,
+                    retrieval_enabled=True,
+                    retrieval_ab_key=self.settings.memory_retrieval_ab_key,
+                )
+                # Until a dedicated experiment runner for
+                # ``memory_retrieval_v1`` is plugged in, treat the flag
+                # being on as the treatment arm — control behaviour is
+                # reachable by leaving the flag at its False default.
+                result = svc.compose(
+                    query=memory_query,
+                    ab_arm="treatment",
+                    include_compiled=False,
+                )
+                if result.text and result.retrieval_hits > 0:
+                    history_window.insert(
+                        0,
+                        {"role": "system", "content": result.text},
+                    )
+                    total += result.retrieval_hits
+                    log.info(
+                        "master.retrieval_injected",
+                        user_id=user_id,
+                        hits=result.retrieval_hits,
+                    )
+            except Exception as e:  # noqa: BLE001
+                log.warning("master.retrieval_failed", err=str(e))
+
+        return total
 
     def _compose_prompt(
         self, task: TaskState, intent: Any
