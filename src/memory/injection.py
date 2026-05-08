@@ -84,25 +84,38 @@ class MemoryInjectionService:
         *,
         query: str,
         ab_arm: str = "control",
+        include_compiled: bool = True,
     ) -> InjectionResult:
         """Return the assembled system-prompt prefix.
 
         ``ab_arm`` reflects the *retrieval* experiment, not the legacy
         Phase-21 ``memory_inject`` arm. The two experiments must remain
         independent — compiled USER.md / MEMORY.md is shown to every
-        arm so the legacy experiment's variance is unaffected.
+        arm (when ``include_compiled=True``) so the legacy
+        experiment's variance is unaffected.
+
+        ``include_compiled`` defaults to True for the canonical caller
+        (a future thin :func:`_maybe_inject_memory` wrapper). Set to
+        False when the caller already injects compiled USER.md /
+        MEMORY.md by another path (today the orchestrator's
+        ``_compose_prompt`` already prepends them via
+        :meth:`MemoryCurator.read_prompt_prepend`); in that case the
+        result text contains only the retrieval supplement and avoids
+        double-prepending the same compiled context.
         """
         parts: list[tuple[str, int]] = []  # (text_chunk, est_tokens)
 
-        user_md = self._read(self.compiled_memory_root / "USER.md")
-        memory_md = self._read(self.compiled_memory_root / "MEMORY.md")
-        used_user = bool(user_md)
-        used_memory = bool(memory_md)
-
-        if user_md:
-            parts.append((f"## USER (compiled)\n{user_md.strip()}", _est_tokens(user_md)))
-        if memory_md:
-            parts.append((f"## MEMORY (compiled)\n{memory_md.strip()}", _est_tokens(memory_md)))
+        used_user = False
+        used_memory = False
+        if include_compiled:
+            user_md = self._read(self.compiled_memory_root / "USER.md")
+            memory_md = self._read(self.compiled_memory_root / "MEMORY.md")
+            used_user = bool(user_md)
+            used_memory = bool(memory_md)
+            if user_md:
+                parts.append((f"## USER (compiled)\n{user_md.strip()}", _est_tokens(user_md)))
+            if memory_md:
+                parts.append((f"## MEMORY (compiled)\n{memory_md.strip()}", _est_tokens(memory_md)))
 
         retrieval_hits: list[RetrievalHit] = []
         if (
