@@ -1,0 +1,19 @@
+# Force LF line endings for committed markdown files.
+#
+# Why: data/processed_memory/*.md and data/memory/USER.md / MEMORY.md
+# are hashed by MemoryCurator.compile_split_memory and recorded into
+# the *.manifest.json source_hashes. Without this rule, Windows
+# checkout normalises LF → CRLF in the working tree while the index
+# stays LF, so MemoryCurator's read_bytes() hash drifts away from any
+# manifest written on a Linux/WSL host (and vice-versa). The drift
+# makes compile_split_memory report ``compile_reason=source_changed``
+# every run even when no semantic change occurred — see the manifest
+# parity report from the response_style import.
+#
+# Scope is intentionally narrow (markdown only) so other text formats
+# keep their existing per-OS conventions until separately reviewed.
+# Existing tracked .md files do NOT get rewritten by adding this file
+# — run ``git add --renormalize .`` separately if you want to flush
+# the working tree to LF immediately. That is out of scope for this
+# commit.
+*.md text eol=lf
