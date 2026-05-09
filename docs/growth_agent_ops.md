@@ -9,18 +9,48 @@
 ## 1. Day-0 현재 상태 (Phase 22)
 
 ### Git
-- `origin/main` HEAD: **`12a87c2 fix(growth-agent): align memory scripts with state database`**
-- P0a/P0b/P0c/P0e baseline + P1 fix 모두 main 반영 완료. PR #1 (rebase merged).
+- `origin/main` HEAD: **post-PR#2 main** (Memory v4.2 rebase merged 2026-05-09)
+- P0a/P0b/P0c/P0e baseline + P1 fix(`12a87c2`) + Memory v4.2 (PR #2, P0-A → P3 + Claude import) 모두 main 반영 완료
+- 추적: PR #1 (Growth-Agent Migration), PR #2 (Memory v4.2)
 
-### Memory
+### Memory (post-v4.2 two-layer)
+
+**Layer 1 — legacy A/B (default ON, Phase 21 unchanged)**
 - **Recall 코퍼스**: `data/state.db` (settings.state_db_path 기본값) `memos` 테이블
 - **Schema**: `id, user_id, text, created_at, source` (P0c.2.0이 source 컬럼 ALTER 추가)
-- **현재 row 분포**:
+- **현재 row 분포** (사용자 직접 확인):
   - `generated_candidates` 28 rows (P0c.2 W1 ingest, `memory/memory_candidates.generated.yaml` 출처)
   - `user_feedback_style` 5 rows (사용자 직접 ingest)
-- **별도 store** (recall 미사용): `data/memory/MEMORY.md` (CuratorJob 자동 큐레이트, 사람 review용)
-- 봇 wiring: `src/gateway/discord_bot.py:64` `SqliteMemory(settings.state_db_path)` → `Orchestrator(memory=...)` → `HermesMasterOrchestrator(memory=...)` 명시 주입 (InMemoryMemory fallback 미트리거)
-- 매 master.start마다 `_maybe_inject_memory(user_id, text, k=3)` 호출 (`src/orchestrator/hermes_master.py:741-760`, default ON)
+  - 향후 `claude_import_*` (P4 auto-ingest 시점)
+- 봇 wiring: `src/gateway/discord_bot.py:64` `SqliteMemory(settings.state_db_path)` → `Orchestrator(memory=...)` → `HermesMasterOrchestrator(memory=...)` 명시 주입
+- 매 master.start마다 `_maybe_inject_memory(user_id, message, history, *, anchor_message=None)` Layer 1 호출 (default ON, top-k=3)
+
+**Layer 2 — P2 retrieval supplement (default OFF)**
+- gating: `memory_retrieval_enabled=False` (`src/config.py:225`)
+- 코퍼스: `data/processed_memory/*.md` (sanitized derivatives) + `data/memory/{USER,MEMORY}.md` (compile 결과)
+- ab key: `memory_retrieval_v1` (Phase 21 `memory_inject`와 **독립** A/B)
+- enabled 시 `MemoryInjectionService.compose(query=memory_query, ab_arm="treatment", include_compiled=False)` 호출
+- `_compose_prompt`가 `read_prompt_prepend()` 통해 USER.md/MEMORY.md 항상 prepend (이건 Layer 2 flag와 독립적으로 동작)
+
+**memory_query 결정 (Phase 24 + v4.2 통합)**
+- `_maybe_inject_memory` 함수 초반에 `memory_query = anchor_message if anchor_message else user_message`
+- Layer 1, Layer 2 모두 동일 query 사용 — anchor recovery 일관성
+
+### Memory v4.2 — track 정책 (.gitignore 강제)
+
+| Path | track 여부 | 비고 |
+|---|---|---|
+| `data/state.db` | ❌ ignored (`data/*.db`) | 봇 SqliteMemory recall 코퍼스 (Layer 1) |
+| `data/processed_memory/*.md` | ✅ tracked | sanitized derivatives, **private repo only** (현재 KitchenGun/hermes-hybrid PRIVATE) |
+| `data/memory/{USER,MEMORY}.md` | ✅ tracked | `compile_split_memory` 결과 |
+| `data/memory/{USER,MEMORY}.manifest.json` | ✅ tracked | manifest sidecar |
+| `data/memory/.gitkeep` | ✅ tracked | placeholder |
+| `data/memory/memos.db` | ❌ ignored (`data/memory/**` re-ignore + 명시 부재) | runtime DB |
+| `data/external_memory/snapshots/**` | ❌ ignored | raw 원문, **never tracked** |
+| `data/external_memory/examples/**` | ✅ tracked | 합성 fixture만 |
+| `data/source_manifests/*.jsonl` | ✅ tracked | manifest-only (`record_type=schema`/`manifest`, no raw payloads) |
+| `data/ingest_staging/` | ❌ ignored | 임시 import staging |
+| `data/*.jsonl`, `data/*.log`, `data/*.tmp`, `data/*.yaml`, `data/*.sqlite*` | ❌ ignored | runtime artifacts (W10 detector log, growth_metrics 등) |
 
 ### Skills
 - `agents/{research,planning,implementation,quality,documentation,infrastructure}/{name}/SKILL.md` 27개 (17 baseline + 10 P0c.4 promoted, score ≥0.85)
@@ -50,6 +80,14 @@
 - `config/job_factory.yaml` ×1 yaml block (`# --- generated job candidates ---`)
 - 모두 `HERMES_DISABLE_GROWTH_BLOCKS=true` env 즉시 short-circuit
 
+### v4.2 wrapper note (marker block과 별개)
+
+`_maybe_inject_memory()` 함수는 **two-layer wrapper** 구조 (Memory v4.2):
+- Layer 1 — Phase 21 legacy A/B sqlite search (default ON, `memory_inject_enabled` gated)
+- Layer 2 — P2 retrieval supplement (default OFF, `memory_retrieval_enabled` gated)
+- 두 layer 모두 `memory_query` 사용 (Phase 24 anchor recovery 일관성)
+- W4/W10/W12 marker block과 **독립** — `HERMES_DISABLE_GROWTH_BLOCKS`는 wrapper 자체엔 영향 없음. 단, W4 SOUL injection / W10 detector / W12 suggestion log는 같은 파일의 다른 함수에 있어 함께 short-circuit됨.
+
 ### Toggle 정책
 
 | Toggle | 현재 | 검토 시점 |
@@ -57,7 +95,10 @@
 | `skill_promoter_auto_install` | **OFF** | D+7~D+14 draft 품질 + revert 빈도 관찰 후 |
 | `skill_hot_reload_enabled` | **OFF** | 봇 재시작 흐름 유지 |
 | `feedback_keyword_match_enabled` | **OFF** | FP rate 30일 모니터링 후 |
+| `memory_retrieval_enabled` | **OFF** | `data/processed_memory/` ≥1 entry + USER.md/MEMORY.md compile 완료 + 1주일 retrieval hit 통계 후 (§7) |
 | W12 active dispatch biasing | **P2 (보류)** | `TaskState.suggested_handles` 추가 + dispatch chain audit 필요 |
+
+**Cron timers 영향**: v4.2는 **cron job 추가 없음**. 9 timer 그대로 active. import는 사용자 manual 호출 (§4b) 또는 P4 auto-ingest hook (미배선).
 
 ---
 
@@ -262,6 +303,81 @@ python -c "import sqlite3; con=sqlite3.connect(r'data\state.db'); print(con.exec
 
 ---
 
+## 4b. v4.2 compile_split_memory 운영 절차
+
+W7 SelfReview와 무관한 **별도 import + compile 흐름**. v4.2가 도입한 사용자 자동 메모리 (Claude / ChatGPT / Discord) → `data/processed_memory/` → `data/memory/{USER,MEMORY}.md`.
+
+### 4b.1 Claude Code 자동 메모리 import (dry-run)
+
+```powershell
+cd E:\hermes-hybrid
+python scripts\import_claude_memory.py --dry-run
+```
+
+기대 출력:
+- Source files read (e.g. 5 = MEMORY.md index + 4 detail files)
+- Candidates extracted (frontmatter fallback 포함)
+- PII / security / conflicts / needs_review 카운트 (자동 sanitize 결과)
+- Snapshot would be copied to `data/external_memory/snapshots/<ts>/` (gitignored)
+
+### 4b.2 apply
+
+```powershell
+python scripts\import_claude_memory.py --apply
+```
+
+결과:
+- `data/processed_memory/*.md` 8개 sanitized derivative 생성/갱신
+- `data/external_memory/snapshots/<ts>/` 원본 복사 (track되지 않음)
+- `data/source_manifests/claude.jsonl`에 manifest record append (record_type=manifest, retention=manifest_only, no raw payloads)
+
+### 4b.3 compile (USER.md + MEMORY.md)
+
+```powershell
+python -c "from src.core.memory_curator import MemoryCurator; from pathlib import Path; MemoryCurator(adapter=None, memory_root=Path('data/memory'), experience_log_root=Path('logs/experience'), enabled=True).compile_split_memory(processed_memory_root=Path('data/processed_memory'))"
+```
+
+결과:
+- `data/memory/USER.md` (`user_profile.md` + `response_style.md` 머지, token budget 2000)
+- `data/memory/MEMORY.md` (나머지 5종 머지)
+- `data/memory/{USER,MEMORY}.manifest.json` (sidecar, source_hashes 포함)
+- `_compose_prompt.read_prompt_prepend()`가 다음 master.start부터 자동 prepend
+
+### 4b.4 ChatGPT / Discord import (선택)
+
+```powershell
+python scripts\ingest_conversations.py --source chatgpt --apply
+python scripts\ingest_conversations.py --source discord --apply
+```
+
+각 source별로 별도 sanitizer + manifest 흐름 실행. `data/external_memory/<source>/<file>`로 raw 복사 (gitignored).
+
+### 4b.5 검증
+
+```powershell
+# processed_memory 갱신 확인
+Get-ChildItem E:\hermes-hybrid\data\processed_memory -Filter *.md | Select-Object Name, LastWriteTime, Length
+
+# USER.md / MEMORY.md token budget + source_hashes
+Get-Content E:\hermes-hybrid\data\memory\USER.manifest.json | ConvertFrom-Json | Select-Object profile, token_budget, source_hashes
+```
+
+### 4b.6 봇 재시작 불필요
+
+`MemoryCurator.read_prompt_prepend()`는 매 `_compose_prompt()` 호출 시 파일 mtime 기반 lazy load → 다음 master.start부터 새 USER.md/MEMORY.md 즉시 반영.
+
+### 4b.7 Layer 2 retrieval supplement 활성화 (선택)
+
+기본 OFF. 활성화 시:
+```powershell
+[Environment]::SetEnvironmentVariable('HERMES_MEMORY_RETRIEVAL_ENABLED','true','User')
+# 봇 재시작 필요 (settings는 startup 시 load)
+```
+
+활성 후 `master.retrieval_injected` 로그 발생 (Layer 1 `master.memory_injected`와 독립). 통계 모니터링은 §7 참조.
+
+---
+
 ## 5. D+7 / D+14 / D+30 검증 기준
 
 기준일: P0 main merge 시점 = 2026-05-08. 따라서 **D+7 = 2026-05-15, D+14 = 2026-05-22, D+30 = 2026-06-07**.
@@ -358,6 +474,14 @@ Remove-Item Env:\HERMES_DISABLE_GROWTH_BLOCKS
 # 봇 재시작 필요
 ```
 
+### Layer 2 P2 retrieval supplement만 즉시 OFF (W marker block과 독립)
+```powershell
+# default가 false라 평소엔 미설정 상태로 충분.
+# 사용자가 명시적으로 활성화한 후 빠르게 OFF하려면:
+[Environment]::SetEnvironmentVariable('HERMES_MEMORY_RETRIEVAL_ENABLED','false','User')
+# 봇 재시작 후 effective. Layer 1 (Phase 21 legacy)은 영향 없음.
+```
+
 ### 부분 rollback (특정 marker만 제거)
 ```bash
 bash scripts/rollback_marked_blocks.sh --names W4,W10,W12
@@ -404,6 +528,24 @@ foreach ($n in $names) { schtasks /Delete /TN $n /F }
 - 효과: Phase 20 reaction-based feedback에 keyword matching FP 추가
 - FP rate가 검증되지 않음
 - 30일 reaction 수가 50건 이상 누적된 후 검토
+
+### `memory_retrieval_enabled=true` — Layer 2 P2 retrieval supplement
+- 효과: `_maybe_inject_memory` Layer 2가 활성화. `MemoryInjectionService`가 `data/processed_memory/` + `data/memory/{USER,MEMORY}.md`에서 query 매칭 → history_window prepend
+- ab key: `memory_retrieval_v1` (Phase 21 `memory_inject` A/B와 **독립**)
+- **선결조건**:
+  - `data/processed_memory/`에 1개 이상 entry (`scripts/import_claude_memory.py --apply` 1회 이상 실행)
+  - `compile_split_memory` 실행으로 `data/memory/USER.md` + `MEMORY.md` 생성
+- **flip 기준**:
+  - 1주일 동안 `master.retrieval_failed` 로그 0건
+  - Layer 2 활성 시 `master.retrieval_injected` 로그 통계: hits > 0 비율 ≥30% (낮으면 retriever_k / token_budget 튜닝 검토)
+  - Phase 21 Layer 1 `master.memory_injected` 통계가 baseline 대비 변화 없음 (independence 확인)
+- **flip 위치**:
+  - 즉시 활성: `[Environment]::SetEnvironmentVariable('HERMES_MEMORY_RETRIEVAL_ENABLED','true','User')` + 봇 재시작
+  - 영구 default 변경: `src/config.py:225` `memory_retrieval_enabled: bool = True` (commit 필요)
+- **관찰 명령**:
+  ```powershell
+  Select-String -Path E:\hermes-hybrid\logs\bot*.log -Pattern 'master\.retrieval_injected|master\.retrieval_failed' | Select-Object -Last 30
+  ```
 
 ### W12 active dispatch biasing — P2 (코드 변경 필요)
 - 1단계: `src/state/task_state.py`에 `task.suggested_handles: list[str] = Field(default_factory=list)` 추가 (1줄)
