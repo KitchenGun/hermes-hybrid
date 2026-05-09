@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "profile": "default",
+  "label": "MEMORY",
+  "source_files": [
+    "data\\processed_memory\\project_context.md",
+    "data\\processed_memory\\decision_log.md",
+    "data\\processed_memory\\prompt_library.md",
+    "data\\processed_memory\\failure_patterns.md",
+    "data\\processed_memory\\skills_index.md"
+  ],
+  "source_hashes": {
+    "project_context.md": "sha256:7b0f69be040d38c83cbf43e3792d31bb10948b13a51ec81bd559843dbf913c6e",
+    "decision_log.md": "sha256:6754956ce53033bdf1d57701d3f2de178897a604c0d5ad2e7a5491bd5e6988e8",
+    "prompt_library.md": "sha256:241c8cb4310ea8600395c99003659f311fa4641e0d84816ed028f57622dbf8db",
+    "failure_patterns.md": "sha256:875f2a1ddc5175e3abdd12a91870b3741be73a63ae5948dcc78ae19c618eaeb4",
+    "skills_index.md": "sha256:e13412701b4c301f43cf347b5cde7d3f655df158270b6fbb956054fad9c7afd7"
+  },
+  "generated_at": "2026-05-09T01:37:23+00:00",
+  "compile_reason": "first_run",
+  "token_budget": 2000,
+  "included_sections": [
+    {
+      "item_id": "project_context:d2fb39789e441031:hermes-hybrid-2026-05-07",
+      "type": "project_context",
+      "tokens": 597
+    },
+    {
+      "item_id": "project_context:d5c209721009790b:kanban",
+      "type": "project_context",
+      "tokens": 391
+    },
+    {
+      "item_id": "project_context:117333d487869270:5e0ec76dc8323f20",
+      "type": "project_context",
+      "tokens": 223
+    }
+  ],
+  "excluded_count": {
+    "needs_review": 0,
+    "pii": 0,
+    "security": 0,
+    "superseded": 0,
+    "budget": 0
+  }
+}

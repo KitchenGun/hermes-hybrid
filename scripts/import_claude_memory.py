@@ -8,8 +8,26 @@ extractor over each file, and feeds the candidates to
 and routed straight to ``needs_review.md`` so the per-file writer
 never sees an auto-merge case.
 
-Default mode is ``--dry-run``: print what would be written and exit
-without touching ``data/processed_memory/`` or the source manifests.
+Claude Code auto-memory uses a YAML frontmatter convention
+(``name:``, ``description:``, ``type: user|project|reference``) plus
+free-form markdown body. The generic :class:`RuleExtractor` matches
+explicit "# Decision:" / "# Failure pattern:" style headings and
+won't see anything in those files. So this script also runs a
+*frontmatter fallback*: every source file with a recognised
+``type:`` field becomes one additional candidate (``type: user`` →
+``user_preference``, ``type: project`` / ``type: reference`` →
+``project_context``). RuleExtractor results, when present, are
+additive — the two passes coexist.
+
+Each candidate is scanned by :class:`PIIScanner` and
+:class:`SecurityScanner` BEFORE writing. PII matches force
+``pii_candidate=true`` (writer routes to ``needs_review.md``);
+security findings at or above the threshold force a
+``security_severity`` annotation that the writer's quarantine path
+respects.
+
+Default mode is dry-run: print what would be written and exit without
+touching ``data/processed_memory/`` or the source manifests.
 ``--apply`` performs the actual writes. The external MEMORY.md is
 NEVER modified — only read.
 """
@@ -23,9 +41,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.memory.ingestion.conflict import detect_pairs
-from src.memory.ingestion.extractor import RuleExtractor
+from src.memory.ingestion.extractor import Candidate, RuleExtractor
 from src.memory.ingestion.manifest import ManifestStore, sha16
-from src.memory.ingestion.sources import ClaudeSource
+from src.memory.ingestion.pii import PIIScanner
+from src.memory.ingestion.security_scan import SecurityScanner, SecuritySeverity
+from src.memory.ingestion.sources import ClaudeSource, SourceItem
 from src.memory.ingestion.writer import ProcessedMemoryWriter
 
 
@@ -34,6 +54,71 @@ _DEFAULT_ROOT = Path.home() / ".claude" / "projects" / "E--hermes-hybrid" / "mem
 
 def _utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+# --------------------------------------------------------------------------
+# Frontmatter fallback
+# --------------------------------------------------------------------------
+_FRONTMATTER_TYPE_MAP = {
+    "user": "user_preference",
+    "project": "project_context",
+    "reference": "project_context",
+}
+
+
+def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    """Tiny YAML-frontmatter parser. Returns (meta_dict, body).
+
+    Only handles ``key: value`` pairs on individual lines — enough for
+    the Claude Code auto-memory schema (``name``, ``description``,
+    ``type``, ``originSessionId``). Multi-line values and lists fall
+    out into the body, which is fine because the body is what we keep
+    anyway.
+    """
+    if not text.startswith("---\n") and not text.startswith("---\r\n"):
+        return {}, text
+    sep = "\n---\n" if text.startswith("---\n") else "\r\n---\r\n"
+    body_offset = len(sep)
+    end = text.find(sep, 4)
+    if end < 0:
+        return {}, text
+    raw_meta = text[4:end]
+    body = text[end + body_offset:].strip()
+    meta: dict[str, str] = {}
+    for line in raw_meta.splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        meta[key.strip()] = value.strip()
+    return meta, body
+
+
+def _frontmatter_candidate(item: SourceItem) -> Candidate | None:
+    meta, body = _parse_frontmatter(item.content)
+    fm_type = meta.get("type", "").strip().lower()
+    target_type = _FRONTMATTER_TYPE_MAP.get(fm_type)
+    if not target_type:
+        return None
+    title = meta.get("name") or Path(item.source_path).stem
+    if not title.strip():
+        return None
+    description = meta.get("description", "").strip()
+    composed_body = body.strip() if body.strip() else description
+    if not composed_body:
+        return None
+    # Cap the body so a giant source file doesn't blow the token budget
+    # downstream. Compile applies its own budget on top of this.
+    if len(composed_body) > 4000:
+        composed_body = composed_body[:4000].rstrip() + "\n\n[... truncated]"
+    return Candidate(
+        type=target_type,
+        title=title.strip(),
+        body=composed_body,
+        confidence="medium",
+        source="claude",
+        source_sha16=sha16(item.content),
+        source_path=item.source_path,
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -106,10 +191,45 @@ def main(argv: list[str] | None = None) -> int:
     all_items = list(src.iter_items())
     print(f"[import-claude-memory] source items: {len(all_items)}")
 
-    candidates: list = []
+    candidates: list[Candidate] = []
     for item in all_items:
-        candidates.extend(extractor.extract(item))
+        rule_hits = extractor.extract(item)
+        candidates.extend(rule_hits)
+        # Frontmatter fallback always runs — Claude auto-memory files
+        # rarely match RuleExtractor patterns but always carry a useful
+        # frontmatter body.
+        fm = _frontmatter_candidate(item)
+        if fm is not None:
+            candidates.append(fm)
     print(f"[import-claude-memory] extracted candidates: {len(candidates)}")
+
+    # --- PII / Security scan -----------------------------------------
+    pii_scanner = PIIScanner()
+    sec_scanner = SecurityScanner()
+    annotated: list[tuple[Candidate, bool, str]] = []
+    pii_count = 0
+    sec_high = 0
+    sec_medium = 0
+    for c in candidates:
+        pii_findings = pii_scanner.scan(c.body)
+        sec_findings = sec_scanner.scan(c.body, source_path=c.source_path)
+        is_pii = bool(pii_findings)
+        if is_pii:
+            pii_count += 1
+        if sec_findings:
+            top = max(int(f.severity) for f in sec_findings)
+        else:
+            top = int(SecuritySeverity.NONE)
+        sev_str = SecuritySeverity(top).name.lower() if top > 0 else "none"
+        if sev_str == "high":
+            sec_high += 1
+        elif sev_str == "medium":
+            sec_medium += 1
+        annotated.append((c, is_pii, sev_str))
+    print(
+        f"[import-claude-memory] PII candidates: {pii_count} | "
+        f"security medium: {sec_medium} | security high: {sec_high}"
+    )
 
     # --- conflict pre-detection --------------------------------------
     pairs = detect_pairs(candidates)
@@ -134,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
     writer = ProcessedMemoryWriter(args.processed_root)
     manifests: dict[str, ManifestStore] = {}
     actions: dict[str, int] = {}
-    for c in candidates:
+    for c, is_pii, sev_str in annotated:
         from src.memory.ingestion.writer import slugify as _slug
         is_conflict = (c.type, _slug(c.title)) in skip_keys
         result = writer.write(
@@ -146,6 +266,8 @@ def main(argv: list[str] | None = None) -> int:
             confidence=c.confidence,
             tags=c.tags,
             needs_review=is_conflict,
+            pii_candidate=is_pii,
+            security_severity=sev_str,
         )
         actions[result.action] = actions.get(result.action, 0) + 1
 
