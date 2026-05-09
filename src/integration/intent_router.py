@@ -39,6 +39,54 @@ if TYPE_CHECKING:
 # 패턴 회피. `\w` 또는 `.` 직전이면 매치하지 않음.
 _MENTION_RE = re.compile(r"(?<![\w.])@(\w+)")
 
+# Phase 24 (2026-05-08) — context anchoring fix.
+# 짧은 follow-up 지시어. 사용자가 "이 내용에 대해 보고해", "진행해",
+# "골격 정해" 같은 deictic 발화를 던지면 master 가 직전 turn 의 주제
+# 를 잃고 memory_curator 블록 (routing debug cluster) 으로 anchor 가
+# 옮겨가는 회귀가 있었다. 이 정규식은 follow-up 신호 토큰만 잡고,
+# 추가로 메시지 길이 게이트로 false positive 를 막는다 (장문에 우연히
+# "진행" 이 끼어 있어도 anchor 치환은 일어나지 않게).
+_FOLLOWUP_RE = re.compile(
+    r"(이\s*내용|이\s*거|이\s*대로|그거|그것|그건|이걸|"
+    r"계속|이어서|진행|보고|골격|초안|정리)",
+)
+# 메시지가 이 길이보다 짧을 때만 follow-up 후보로 본다. 장문 user
+# 메시지가 우연히 follow-up 토큰을 품고 있어도 anchor 치환 X.
+_FOLLOWUP_MAX_CHARS = 80
+# anchor 후보로 채택할 직전 user turn 의 최소 길이. 너무 짧은 직전
+# turn (인사 등) 은 anchor 로 신뢰하지 않는다.
+_ANCHOR_MIN_CHARS = 60
+
+
+def _is_followup(message: str) -> bool:
+    """Return True if the message looks like a deictic/anaphora follow-up.
+
+    Heuristic: short message + contains at least one follow-up token.
+    """
+    if not message:
+        return False
+    if len(message) > _FOLLOWUP_MAX_CHARS:
+        return False
+    return _FOLLOWUP_RE.search(message) is not None
+
+
+def _resolve_anchor_message(history: list[dict[str, str]] | None) -> str | None:
+    """Walk history backwards and return the most recent long user turn.
+
+    Used when the current message is a short follow-up — we want the
+    master's anchor to fall back to the substantive prior request, not
+    the immediately preceding (often short) assistant turn.
+    """
+    if not history:
+        return None
+    for entry in reversed(history):
+        if (entry or {}).get("role") != "user":
+            continue
+        content = (entry or {}).get("content") or ""
+        if len(content.strip()) >= _ANCHOR_MIN_CHARS:
+            return content
+    return None
+
 
 @dataclass
 class IntentResult:
@@ -68,6 +116,15 @@ class IntentResult:
     # Phase 12: pipeline trigger_keyword 매치 시 stamp.
     # @handle 명시 mention 이 있으면 stamp X (mention 우선).
     pipeline_id: str | None = None
+
+    # Phase 24 (2026-05-08) — context anchoring.
+    # 현재 메시지가 짧은 follow-up 지시어 ("이 내용", "진행해", "골격 정해"
+    # 등) 로 판정되고 history 안에 충분히 긴 직전 user turn 이 있으면,
+    # 그 turn 을 anchor 로 stamp. master 가 prompt 에 ``## Recent topic
+    # anchor`` 블록으로 user message 직전에 inject 해 직전 주제로 응답이
+    # 안전하게 회복되도록 돕는다.
+    is_followup: bool = False
+    anchor_message: str | None = None
 
     @property
     def short_circuited(self) -> bool:
@@ -114,6 +171,7 @@ class IntentRouter:
         memory: Any = None,
         repo: Any = None,
         orchestrator: Any = None,
+        history: list[dict[str, str]] | None = None,
     ) -> IntentResult:
         """Resolve the message into an IntentResult.
 
@@ -124,8 +182,16 @@ class IntentRouter:
 
         ``@handle`` 멘션은 모든 분기에서 동일 파싱 (RuleLayer / slash skill
         도 stamp 만 — 실제 inject 는 master 가 결정).
+
+        ``history`` (Phase 24): 짧은 follow-up 지시어가 들어오면 그 안에서
+        가장 최근 장문 user turn 을 anchor 로 stamp. master 의 prompt
+        구성과 memory recall 양쪽에 활용된다.
         """
         agent_handles = self._parse_agent_handles(user_message)
+        is_followup = _is_followup(user_message)
+        anchor_message = (
+            _resolve_anchor_message(history) if is_followup else None
+        )
 
         # 1. RuleLayer
         rule_match = self.rules.match(user_message)
@@ -137,6 +203,8 @@ class IntentRouter:
                 trigger_type="discord_message",
                 trigger_source=f"user:{user_id}",
                 agent_handles=agent_handles,
+                is_followup=is_followup,
+                anchor_message=anchor_message,
             )
 
         # 2. Slash skills
@@ -153,6 +221,8 @@ class IntentRouter:
                 job_id=skill.name,
                 job_category="chat",
                 agent_handles=agent_handles,
+                is_followup=is_followup,
+                anchor_message=anchor_message,
             )
 
         # 3. Phase 12: pipeline trigger_keyword 매치 — @handle 명시
@@ -169,6 +239,8 @@ class IntentRouter:
             trigger_source=f"user:{user_id}",
             agent_handles=agent_handles,
             pipeline_id=pipeline_id,
+            is_followup=is_followup,
+            anchor_message=anchor_message,
         )
 
     def _parse_agent_handles(self, message: str) -> list[str]:
@@ -211,4 +283,9 @@ class IntentRouter:
         )
 
 
-__all__ = ["IntentResult", "IntentRouter"]
+__all__ = [
+    "IntentResult",
+    "IntentRouter",
+    "_is_followup",
+    "_resolve_anchor_message",
+]

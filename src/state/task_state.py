@@ -213,6 +213,12 @@ class TaskState(BaseModel):
     final_response: str = ""
     degraded: bool = False
 
+    # Phase 24 (2026-05-08) — context anchoring fix.
+    # 권한 거부 / 실패 안내문이 final_response 를 통째로 교체하기 직전
+    # 에 master 가 stamp 하는 원 user_message 스냅샷. 다음 turn 이
+    # follow-up ("진행해", "이 내용") 으로 들어오면 anchor 로 복구.
+    failed_task_context: dict[str, Any] | None = None
+
     # Timestamps
     timestamps: dict[str, datetime] = Field(default_factory=dict)
 

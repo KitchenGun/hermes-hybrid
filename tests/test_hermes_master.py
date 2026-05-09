@@ -469,6 +469,9 @@ async def test_permission_denied_response_replaced_with_notice(tmp_path):
     그대로 송출하는 대신 settings 점검 안내문으로 교체한다 (회로 차단기)."""
     settings = _settings(tmp_path)
     master = HermesMasterOrchestrator(settings)
+    # Phase 17 게이트: bypassPermissions 모드에선 회로 차단기 비활성화.
+    # 회로 차단기 동작 자체를 검증하므로 default 모드로 강제.
+    master.adapter.permission_mode = "default"
 
     # 실제 스크린샷에서 본 거부 안내문 형태
     raw_denied = (
@@ -493,6 +496,7 @@ async def test_permission_denied_english_phrase_also_caught(tmp_path):
     """영문 'permission denied' 패턴도 동일하게 잡힌다."""
     settings = _settings(tmp_path)
     master = HermesMasterOrchestrator(settings)
+    master.adapter.permission_mode = "default"  # Phase 17 게이트 우회
     master.adapter.run = AsyncMock(
         return_value=_ok_result(
             "I tried to write the file but got permission denied. "
@@ -642,6 +646,240 @@ async def test_ab_treatment_no_hits_sub_label(tmp_path):
 
     result = await master.handle("아무거나", user_id="u1")
     assert result.task.experiment_arm == "treatment_no_hits"
+
+
+# ---- Phase 24 (2026-05-08): context anchoring fix ---------------------
+
+
+_LONG_INSTA_TURN = (
+    "인스타 자동화 프로젝트 — 현재 의견 정리. 권장 MVP 순서는 "
+    "(1) 계정 연결 OAuth, (2) 게시 스케줄러, (3) 분석 대시보드. "
+    "각 단계마다 관찰 가능한 메트릭 정의가 필요해."
+)
+
+
+@pytest.mark.asyncio
+async def test_followup_after_long_user_turn_injects_topic_anchor(tmp_path):
+    """짧은 follow-up + history 의 장문 user turn → prompt 에 anchor 블록.
+
+    재현 시나리오 (input 2): "좋아 진행해보자. 골격 정하고 나에게 보고해라" —
+    직전 인스타 자동화 장문 user turn 이 anchor 로 들어가서 master 가
+    routing/디버깅 cluster 로 anchor 가 옮겨가지 않게.
+    """
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+
+    captured: dict = {}
+
+    async def _capture_run(*, prompt, history, model=None, timeout_ms=None):
+        captured["prompt"] = prompt
+        captured["history"] = history
+        return _ok_result("응답")
+
+    master.adapter.run = _capture_run  # type: ignore[assignment]
+
+    history = [
+        {"role": "user", "content": _LONG_INSTA_TURN},
+        {"role": "assistant", "content": "라우팅 디버깅 진행 — metadata 빈 row 검토 중."},
+    ]
+    await master.handle(
+        "좋아 진행해보자. 골격 정하고 보고해라",
+        user_id="u1",
+        history=history,
+    )
+    prompt = captured["prompt"]
+    assert "## Recent topic anchor (referenced by follow-up)" in prompt
+    assert "인스타 자동화 프로젝트" in prompt
+    # anchor 블록이 user message *앞* 에 위치해야 함 (anchor 우선)
+    anchor_pos = prompt.index("Recent topic anchor")
+    user_pos = prompt.index("## User\n")
+    assert anchor_pos < user_pos
+
+
+@pytest.mark.asyncio
+async def test_deictic_followup_after_assistant_debug_turn_uses_long_user_anchor(tmp_path):
+    """input 3 재현: '이 내용에 대한 골격을 정하고...' → 직전 assistant 가
+    디버깅 응답이어도 가장 가까운 장문 user turn 이 anchor 로 우선."""
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+
+    captured: dict = {}
+
+    async def _capture_run(*, prompt, history, model=None, timeout_ms=None):
+        captured["prompt"] = prompt
+        return _ok_result("응답")
+
+    master.adapter.run = _capture_run  # type: ignore[assignment]
+
+    history = [
+        {"role": "user", "content": _LONG_INSTA_TURN},
+        {
+            "role": "assistant",
+            "content": "라우팅 디버그: metadata 빈 row, ExperienceLog 회복 진행.",
+        },
+    ]
+    await master.handle(
+        "이 내용에 대한 골격을 정하고 보고해줘라",
+        user_id="u1",
+        history=history,
+    )
+    prompt = captured["prompt"]
+    assert "Recent topic anchor" in prompt
+    assert "인스타 자동화" in prompt
+
+
+@pytest.mark.asyncio
+async def test_no_anchor_block_for_normal_message(tmp_path):
+    """일반 (장문 + non-followup) 메시지는 anchor 블록 없음 — false positive 방지."""
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+
+    captured: dict = {}
+
+    async def _capture_run(*, prompt, history, model=None, timeout_ms=None):
+        captured["prompt"] = prompt
+        return _ok_result("응답")
+
+    master.adapter.run = _capture_run  # type: ignore[assignment]
+
+    await master.handle(
+        "안녕 오늘 회의 일정 알려줘",
+        user_id="u1",
+        history=[{"role": "user", "content": _LONG_INSTA_TURN}],
+    )
+    assert "Recent topic anchor" not in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_curator_block_moved_below_user_message(tmp_path):
+    """R3 — auto-curated MEMORY.md 블록이 user message *앞* 에 prepend 되지
+    않고 *뒤* 에 'Background context (lower priority)' 라벨로 붙는다.
+    짧은 user message 에서 큐레이터 cluster 가 attention 을 압도하던
+    회귀 방지."""
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+    # MemoryCurator 가 비어있지 않은 prepend 를 반환하도록 stub
+    master.memory_curator.read_prompt_prepend = lambda: (  # type: ignore[assignment]
+        "## User profile (auto-learned)\n자주 쓰는: @coder, @reviewer\n\n"
+        "## Recent agent notes (auto-curated)\n- routing debug: metadata 빈 row"
+    )
+
+    captured: dict = {}
+
+    async def _capture_run(*, prompt, history, model=None, timeout_ms=None):
+        captured["prompt"] = prompt
+        return _ok_result("응답")
+
+    master.adapter.run = _capture_run  # type: ignore[assignment]
+
+    await master.handle("hello", user_id="u1")
+    prompt = captured["prompt"]
+    assert "## User\n" in prompt
+    assert "Background context (auto-curated, lower priority)" in prompt
+    user_pos = prompt.index("## User\n")
+    bg_pos = prompt.index("Background context (auto-curated, lower priority)")
+    assert user_pos < bg_pos, (
+        "auto-curated 블록은 user message 보다 뒤에 배치돼야 한다"
+    )
+
+
+@pytest.mark.asyncio
+async def test_memory_recall_uses_anchor_query_not_short_followup(tmp_path):
+    """R2 — follow-up 1턴 ('진행해') 으로 memory.search 하면 무관 cluster 가
+    hit 한다. anchor 가 잡히면 그 anchor 를 query 로 사용해야 함."""
+    settings = _settings(
+        tmp_path,
+        memory_inject_enabled=True,
+        memory_inject_top_k=2,
+    )
+
+    captured_queries: list[str] = []
+
+    class _RecordingMemory:
+        async def search(self, user_id, query, k):
+            captured_queries.append(query)
+            return []
+
+    master = HermesMasterOrchestrator(settings, memory=_RecordingMemory())  # type: ignore[arg-type]
+    master.adapter.run = AsyncMock(return_value=_ok_result("응답"))
+
+    await master.handle(
+        "좋아 진행해보자. 골격 정하고 보고해라",
+        user_id="u1",
+        history=[{"role": "user", "content": _LONG_INSTA_TURN}],
+    )
+    assert captured_queries, "memory.search must be called when inject enabled"
+    # query 가 follow-up 1턴이 아닌 장문 anchor 여야 한다
+    assert any("인스타 자동화" in q for q in captured_queries)
+    assert "진행해보자" not in captured_queries[0]
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_caches_failed_task_context(tmp_path):
+    """R4 — _handle_permission_denied 가 final_response 를 교체하기 *전*
+    에 원 user_message 를 user 별 캐시 + task.failed_task_context 에 저장."""
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+    master.adapter.permission_mode = "default"  # Phase 17 게이트 우회
+
+    raw_denied = (
+        "파일 쓰기 권한이 다시 거부되었습니다. 사용자 측에서 권한 프롬프트를 "
+        "한번 더 승인해주셔야 진행 가능합니다."
+    )
+    master.adapter.run = AsyncMock(return_value=_ok_result(raw_denied))
+
+    original_msg = "인스타 자동화 MVP 골격 짜서 파일로 저장해줘"
+    result = await master.handle(original_msg, user_id="u1")
+    assert result.handled_by == "master:permission_denied"
+
+    # in-process 캐시 + task 필드 둘 다 stamp
+    assert "u1" in master._failed_task_contexts
+    assert master._failed_task_contexts["u1"]["user_message"] == original_msg
+    assert result.task.failed_task_context is not None
+    assert result.task.failed_task_context["user_message"] == original_msg
+
+
+@pytest.mark.asyncio
+async def test_followup_recovers_failed_task_context_when_history_lacks_anchor(tmp_path):
+    """R4 후속 — 권한 거부 직후 follow-up 이 들어오고 history 가 충분치
+    않으면 master 가 _failed_task_contexts 에서 원 의도를 복구해 anchor 로
+    inject."""
+    settings = _settings(tmp_path)
+    master = HermesMasterOrchestrator(settings)
+    master.adapter.permission_mode = "default"  # Phase 17 게이트 우회
+
+    # 1턴: 권한 거부 시뮬레이션 — final_response 가 안내문으로 교체됨
+    master.adapter.run = AsyncMock(
+        return_value=_ok_result(
+            "권한 프롬프트를 한번 더 승인해주셔야 진행 가능합니다."
+        )
+    )
+    await master.handle(
+        "인스타 자동화 MVP 골격 보고해줘",
+        user_id="u1",
+    )
+
+    # 2턴: 사용자가 follow-up 으로 다시 요청 — history 에는 안내문만 남았음
+    captured: dict = {}
+
+    async def _capture_run(*, prompt, history, model=None, timeout_ms=None):
+        captured["prompt"] = prompt
+        return _ok_result("정상 응답")
+
+    master.adapter.run = _capture_run  # type: ignore[assignment]
+
+    # discord_bot 이 history 에 안내문 assistant turn 만 남기는 상황을 모사
+    history = [
+        {"role": "user", "content": "짧"},   # < ANCHOR_MIN_CHARS
+        {
+            "role": "assistant",
+            "content": "⚠️ Claude 측에서 권한 거부가 발생했습니다 …",
+        },
+    ]
+    await master.handle("이 내용 진행해", user_id="u1", history=history)
+    prompt = captured["prompt"]
+    assert "Recent topic anchor" in prompt
+    assert "인스타 자동화" in prompt
 
 
 @pytest.mark.asyncio
