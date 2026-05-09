@@ -25,7 +25,7 @@ RunOutcome = Literal[
     "reclaimed",
 ]
 
-WorkspaceKind = Literal["scratch", "worktree", "dir"]  # Phase 2-A: scratch only
+WorkspaceKind = Literal["scratch", "worktree", "dir"]  # Phase 2-B: scratch + dir active
 
 
 class KanbanTask(BaseModel):
@@ -48,6 +48,11 @@ class KanbanTask(BaseModel):
     current_run_id: str | None = None
     spawn_failure_count: int = 0
     skills: list[str] = Field(default_factory=list)
+    # v0.13 "Tenacity" alignment: per-task retry budget + tracker.
+    # incomplete-exit (TTL/crash) bumps retry_count; when it reaches
+    # max_retries the dispatcher auto-blocks instead of cycling forever.
+    max_retries: int = 3
+    retry_count: int = 0
 
 
 class KanbanRun(BaseModel):

@@ -24,7 +24,10 @@ from src.core.kanban.models import (
     KanbanTask,
     RunOutcome,
 )
-from src.core.kanban.workspace import ensure_scratch_workspace
+from src.core.kanban.workspace import (
+    ensure_scratch_workspace,
+    materialize_workspace,
+)
 
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -47,7 +50,7 @@ def normalize_board_slug(raw: str) -> str:
     return slug
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2  # v0.13 Tenacity: per-task retry budget columns
 _BOARD_DEFAULT = "default"
 
 _SCHEMA = """
@@ -161,11 +164,13 @@ def _short_id(prefix: str) -> str:
 
 
 def _row_to_task(row) -> KanbanTask:
-    skills_raw = None
-    try:
-        skills_raw = row["skills_json"]
-    except (KeyError, IndexError):
-        skills_raw = None
+    def _safe(name, default=None):
+        try:
+            return row[name]
+        except (KeyError, IndexError):
+            return default
+
+    skills_raw = _safe("skills_json")
     skills: list[str] = []
     if skills_raw:
         try:
@@ -194,6 +199,8 @@ def _row_to_task(row) -> KanbanTask:
         current_run_id=row["current_run_id"],
         spawn_failure_count=row["spawn_failure_count"],
         skills=skills,
+        max_retries=_safe("max_retries", 3) or 3,
+        retry_count=_safe("retry_count", 0) or 0,
     )
 
 
@@ -244,13 +251,24 @@ class KanbanDB:
                 "INSERT OR IGNORE INTO boards(id, name, created_at) VALUES (?, ?, ?)",
                 (_BOARD_DEFAULT, "default", _utc_now_iso()),
             )
-            # Phase 2-A v1.1: skills_json column (per-task skill loadout).
-            # SQLite has no `IF NOT EXISTS` for ADD COLUMN, so probe.
+            # SQLite has no `IF NOT EXISTS` for ADD COLUMN, so probe each.
             async with db.execute("PRAGMA table_info(tasks)") as cur:
                 cols = [row["name"] for row in await cur.fetchall()]
+            # Phase 2-A v1.1: per-task skill loadout
             if "skills_json" not in cols:
                 await db.execute(
                     "ALTER TABLE tasks ADD COLUMN skills_json TEXT"
+                )
+            # v0.13 "Tenacity": per-task retry budget + tracker
+            if "max_retries" not in cols:
+                await db.execute(
+                    "ALTER TABLE tasks ADD COLUMN max_retries INTEGER "
+                    "NOT NULL DEFAULT 3"
+                )
+            if "retry_count" not in cols:
+                await db.execute(
+                    "ALTER TABLE tasks ADD COLUMN retry_count INTEGER "
+                    "NOT NULL DEFAULT 0"
                 )
             await db.commit()
 
@@ -417,6 +435,9 @@ class KanbanDB:
         parents: list[str] | None = None,
         skills: list[str] | None = None,
         board_id: str = _BOARD_DEFAULT,
+        workspace_kind: str = "scratch",
+        workspace_path: str | None = None,
+        max_retries: int = 3,
     ) -> KanbanTask:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -434,13 +455,15 @@ class KanbanDB:
             now = _utc_now_iso()
             skills_json = json.dumps(list(skills or []))
             await db.execute(
-                "INSERT INTO tasks(id, board_id, title, body, status, assignee, tenant, "
-                "priority, scheduled_at, max_runtime_seconds, created_at, updated_at, "
-                "created_by, idempotency_key, skills_json) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO tasks(id, board_id, title, body, status, "
+                "assignee, tenant, priority, workspace_kind, workspace_path, "
+                "scheduled_at, max_runtime_seconds, created_at, updated_at, "
+                "created_by, idempotency_key, skills_json, max_retries) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (tid, board_id, title, body, status, assignee, tenant,
-                 priority, scheduled_at, max_runtime_seconds, now, now,
-                 created_by, idempotency_key, skills_json),
+                 priority, workspace_kind, workspace_path,
+                 scheduled_at, max_runtime_seconds, now, now,
+                 created_by, idempotency_key, skills_json, max_retries),
             )
             for pid in (parents or []):
                 await db.execute(
@@ -450,7 +473,10 @@ class KanbanDB:
             await self._record_event(
                 db, tid, "created",
                 {"assignee": assignee, "tenant": tenant, "status": status,
-                 "skills": list(skills or [])},
+                 "skills": list(skills or []),
+                 "workspace_kind": workspace_kind,
+                 "workspace_path": workspace_path,
+                 "max_retries": max_retries},
                 actor=created_by or "human", at=now,
             )
             await db.commit()
@@ -710,8 +736,13 @@ class KanbanDB:
                 ttl = (now_dt + timedelta(seconds=claim_ttl_seconds)).isoformat(
                     timespec="seconds"
                 )
-                ws = ensure_scratch_workspace(self.workspaces_root, task_id)
-                ws_str = str(ws)
+                # Resolve workspace per task kind (scratch | dir).
+                ws_str = materialize_workspace(
+                    kind=row["workspace_kind"] or "scratch",
+                    workspace_path=row["workspace_path"],
+                    scratch_root=self.workspaces_root,
+                    task_id=task_id,
+                )
                 await db.execute(
                     "INSERT INTO task_runs(id, task_id, started_at, "
                     "claim_expires_at, workspace_path) VALUES(?,?,?,?,?)",
@@ -850,6 +881,33 @@ class KanbanDB:
             )
             await db.commit()
 
+    async def bump_retry_count(self, task_id: str) -> int:
+        """Increment retry_count and return the new value.
+
+        v0.13 Tenacity: dispatcher reclaims an incomplete-exit run by
+        bumping retry_count. When retry_count >= max_retries, the
+        dispatcher auto-blocks instead of cycling the task forever.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE tasks SET retry_count=retry_count+1, updated_at=? "
+                "WHERE id=?",
+                (_utc_now_iso(), task_id),
+            )
+            await db.commit()
+            async with db.execute(
+                "SELECT retry_count FROM tasks WHERE id=?", (task_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def reset_retry_count(self, task_id: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE tasks SET retry_count=0 WHERE id=?", (task_id,)
+            )
+            await db.commit()
+
     # ---- events -----------------------------------------------------
 
     async def _record_event(
@@ -868,6 +926,23 @@ class KanbanDB:
             (task_id, kind, json.dumps(payload) if payload else None,
              actor, at or _utc_now_iso()),
         )
+
+    async def record_event(
+        self,
+        task_id: str,
+        kind: str,
+        payload: dict | None = None,
+        *,
+        actor: str | None = None,
+    ) -> None:
+        """Public single-shot event writer. Used by tools (e.g.
+        ``hallucination_rejected``) that need to record an audit event
+        outside an existing transaction."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await self._record_event(
+                db, task_id, kind, payload or {}, actor=actor,
+            )
+            await db.commit()
 
     async def list_events(self, task_id: str) -> list[KanbanEvent]:
         async with aiosqlite.connect(self.db_path) as db:
