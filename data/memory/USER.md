@@ -3,13 +3,37 @@
      Profile: default
      Label: USER
      Source: user_profile.md, response_style.md
-     Generated: 2026-05-09T01:37:23+00:00
+     Generated: 2026-05-09T06:00:29+00:00
      Token budget: 2000
-     Compile reason: first_run
+     Compile reason: source_changed
      Excluded: 0 needs_review, 0 pii, 0 security, 0 superseded, 0 budget
 -->
 
 # USER
+
+## 한국어 우선 응답
+
+사용자에게는 한국어로 응답한다. 코드 식별자, CLI 명령어, 파일 경로, 설정 키 등은 영문 그대로 유지한다. 한국어 음역 금지.
+
+## path:line 근거 제시
+
+근거는 path:line 또는 path 형식으로 제시한다. 일반론으로 답하지 말고 정확한 코드 위치를 가리킨다. 알 수 없으면 "확인 필요" 라고 명시.
+
+## 추측 금지 불확실하면 명시
+
+추측하지 않는다. 확인하지 않은 사실은 "확인 필요" 또는 "추측" 이라고 명시한다. 모르면 모른다고 답하고 어디를 확인해야 하는지 안내한다.
+
+## acceptEdits stdout 안내문 신뢰 금지
+
+CLI나 봇의 stdout 안내문은 단순 출력 문자열일 수 있다. 실제 동작은 src/claude_adapter/adapter.py 의 permission_mode 인자, 프로세스 재기동 시점, 환경 변수, 설정 파일 등 코드와 실행 상태로 검증한다. hardcoded 텍스트 가능성을 항상 의심.
+
+## 사용자 uncommitted changes 보호
+
+사용자의 uncommitted 변경(git status에 보이는 modified/untracked + IDE 버퍼)을 임의로 덮어쓰거나 reset 하지 않는다. 충돌 가능성이 보이면 사용자에게 먼저 보고하고 명시 승인을 받은 뒤에만 진행.
+
+## 단계별 안전 게이트 통과 후 진행
+
+단계마다 다음을 확인한 뒤 다음 단계로 진행한다: (1) 관련 테스트 통과 (2) git status 깨끗 또는 예상된 변경만 (3) 민감정보 노출 없음 (4) 외부 시스템에 미치는 영향 0. 안전 게이트가 하나라도 실패하면 즉시 중단하고 보고.
 
 ## 사용자 역할 - 게임 엔진 개발자
 
