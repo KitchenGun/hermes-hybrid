@@ -1,0 +1,35 @@
+# JSON output adherence — structural judge.
+# The model's response must parse as JSON and contain all required_fields.
+prompts:
+  - id: json_activity_log
+    prompt: |
+      다음 발화를 JSON 객체로 변환하라. 코드펜스 없이 순수 JSON만 출력하라.
+      필수 키: Date, Activity, Category. Date는 YYYY-MM-DD 형식.
+
+      "오늘 오후 9시부터 10시까지 운동했어. Category는 Health야."
+    required_fields:
+      - Date
+      - Activity
+      - Category
+
+  - id: json_event_creation
+    prompt: |
+      다음 일정을 JSON으로 표현하라. 코드펜스 없이 순수 JSON만 출력.
+      필수 키: title, start_time, duration_minutes, attendees.
+
+      "내일 오후 2시부터 1시간 동안 김철수, 이영희와 분기 리뷰 회의."
+    required_fields:
+      - title
+      - start_time
+      - duration_minutes
+      - attendees
+
+  - id: json_array_multi_activity
+    prompt: |
+      다음 발화에서 활동 두 개를 추출해 JSON 배열로 출력하라.
+      각 항목은 {Activity, Category} 키를 가져야 한다. 코드펜스 없이.
+
+      "오전엔 코딩하고 점심 후엔 산책했어."
+    required_fields:
+      - Activity
+      - Category

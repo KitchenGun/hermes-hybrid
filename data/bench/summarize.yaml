@@ -1,0 +1,31 @@
+# Summarization — LLM-judged.
+prompts:
+  - id: summarize_meeting_notes
+    prompt: |
+      다음 회의록을 5줄 이내로 한국어 요약하라. 코드펜스 없이.
+
+      "오늘 회의에서는 신규 결제 시스템 도입 일정을 확정했다. PG사 후보로 A, B,
+      C가 검토되었고, 비용과 안정성 관점에서 B가 우선순위 1순위로 결정됐다.
+      개발 일정은 4주를 잡되 첫 2주는 PoC, 다음 2주는 본 구축으로 나눈다.
+      QA 인력 배정은 다음 주 화요일 회의에서 확정한다. 영업팀의 우려는 수수료
+      인상으로 인한 매출 영향이며, CFO가 시뮬레이션 자료를 다음 주까지
+      준비한다."
+    rubric: |
+      좋은 요약은: PG사 결정(B), 개발 일정(4주, 2+2 분할), QA 인력 미정,
+      영업팀 우려(수수료) 4가지 포인트를 5줄 이내로 모두 포함. 빠진 포인트
+      당 감점. 영문/원문 그대로 발췌만 하면 감점.
+
+  - id: summarize_long_email
+    prompt: |
+      다음 영문 이메일을 한국어로 3줄 이내 요약하라. 코드펜스 없이.
+
+      "Hi team, I wanted to follow up on our discussion last week regarding
+      the API rate limiting. After reviewing the traffic logs, we found
+      that 80% of throttle events come from just two integration partners
+      (Acme and Globex). I propose we (1) raise their individual quotas
+      from 1000/hr to 5000/hr, (2) keep the global cap at 100k/hr, and (3)
+      add per-partner alerting so we catch this earlier next time. Let's
+      align by EOW."
+    rubric: |
+      한국어 3줄 이내. 핵심 정보 3가지(범인 2개사, 제안 3개 사항, EOW 정렬)
+      보존. 영문 그대로 두면 감점. 4줄 이상이면 감점.
