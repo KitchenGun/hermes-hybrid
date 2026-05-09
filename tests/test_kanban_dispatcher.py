@@ -349,3 +349,52 @@ async def test_max_claims_caps_step4(tmp_path: Path):
     report = await disp.tick(max_claims=2)
     assert len(report["claimed"]) == 2
     assert len(spawned) == 2
+
+
+# ---- v0.13 Tenacity: per-task retry budget + auto-block ----
+
+
+@pytest.mark.asyncio
+async def test_reclaim_within_budget_returns_to_ready(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    t = await db.create_task(
+        title="x", assignee="y", status="ready", max_retries=3,
+    )
+    await db.atomic_claim_one_ready(claim_ttl_seconds=1)
+    far_future = datetime.now(timezone.utc) + timedelta(hours=10)
+    disp = KanbanDispatcher(
+        db, spawn_runner=_spawn_returns(0),
+        now=lambda: far_future,
+    )
+    report = await disp.tick()
+    assert t.id in report["reclaimed"]
+    assert t.id not in report["blocked"]
+    fetched = await db.get_task(t.id)
+    assert fetched.status == "ready"
+    assert fetched.retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_reclaim_exhausts_budget_auto_blocks(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    t = await db.create_task(
+        title="x", assignee="y", status="ready", max_retries=2,
+    )
+    far_future = datetime.now(timezone.utc) + timedelta(hours=10)
+    disp = KanbanDispatcher(
+        db, spawn_runner=_spawn_returns(0),
+        now=lambda: far_future,
+    )
+    # Tick 1: claim → expire → retry_count=1 → ready
+    await db.atomic_claim_one_ready(claim_ttl_seconds=1)
+    await disp.tick()
+    fetched = await db.get_task(t.id)
+    assert fetched.status == "ready"
+    assert fetched.retry_count == 1
+    # Tick 2: claim again → expire → retry_count=2 == max_retries → blocked
+    await db.atomic_claim_one_ready(claim_ttl_seconds=1)
+    report = await disp.tick()
+    assert t.id in report["blocked"]
+    fetched = await db.get_task(t.id)
+    assert fetched.status == "blocked"
+    assert fetched.retry_count == 2

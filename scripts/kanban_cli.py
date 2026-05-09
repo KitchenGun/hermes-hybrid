@@ -41,6 +41,10 @@ from src.core.kanban import (  # noqa: E402
     cleanup_scratch_workspace,
     normalize_board_slug,
 )
+from src.core.kanban.workspace import (  # noqa: E402
+    WorkspaceError,
+    parse_workspace_spec,
+)
 from src.core.kanban.dispatcher import KanbanDispatcher  # noqa: E402
 from src.core.kanban.tools import (  # noqa: E402
     KanbanToolError,
@@ -338,8 +342,18 @@ async def _amain(argv: list[str] | None = None) -> int:
     )
     p_create.add_argument(
         "--workspace", default="scratch",
-        choices=["scratch"],  # Phase 2-B: add worktree, dir:<path>
-        help="Workspace kind (Phase 2-A: scratch only)",
+        help=(
+            "Workspace spec: 'scratch' or 'dir:<absolute-path>'. "
+            "scratch = fresh tmp per task; dir = shared persistent directory."
+        ),
+    )
+    p_create.add_argument(
+        "--max-retries", type=int, default=3, dest="max_retries",
+        help=(
+            "Per-task retry budget for incomplete-exit (TTL/crash). "
+            "Default 3. When exhausted dispatcher auto-blocks instead of "
+            "cycling forever."
+        ),
     )
     p_create.add_argument("--created-by", default="cli")
 
@@ -482,6 +496,11 @@ async def _amain(argv: list[str] | None = None) -> int:
 
         if args.cmd == "create":
             parents = _parse_csv(args.parents) or None
+            try:
+                ws_kind, ws_path = parse_workspace_spec(args.workspace)
+            except WorkspaceError as e:
+                _emit({"error": str(e)}, as_json=as_json)
+                return 2
             out = await kanban_create(
                 db,
                 title=args.title, assignee=args.assignee, body=args.body,
@@ -493,6 +512,9 @@ async def _amain(argv: list[str] | None = None) -> int:
                 created_by=args.created_by,
                 skills=args.skills or None,
                 board_id=effective_board,
+                workspace_kind=ws_kind,
+                workspace_path=ws_path,
+                max_retries=args.max_retries,
             )
             if args.triage and out["status"] != "triage":
                 await db.set_status(out["task_id"], "triage", actor="cli")
@@ -728,7 +750,9 @@ async def _amain(argv: list[str] | None = None) -> int:
                 status="archived", include_archived=True,
                 board_id=effective_board,
             )
-            for t in done + archived:
+            # gc only touches scratch workspaces — never delete user-owned
+            # dir: paths.
+            for t in [t for t in done + archived if t.workspace_kind == "scratch"]:
                 if cleanup_scratch_workspace(
                     settings.kanban_workspaces_root
                     if Path(settings.kanban_workspaces_root).is_absolute()

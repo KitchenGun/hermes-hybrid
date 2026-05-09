@@ -493,3 +493,79 @@ async def test_list_events_since_filters(tmp_path: Path):
     only_a = await db.list_events_since(snap, task_id=a.id)
     assert all(e.task_id == a.id for e in only_a)
     assert len(only_a) == 1
+
+
+# ---- v0.13 Tenacity: retry budget + workspace=dir + record_event ----
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_max_retries(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    t = await db.create_task(
+        title="x", assignee="y", status="ready", max_retries=7,
+    )
+    fetched = await db.get_task(t.id)
+    assert fetched.max_retries == 7
+    assert fetched.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_bump_retry_count(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    t = await db.create_task(title="x", assignee="y", status="ready")
+    assert await db.bump_retry_count(t.id) == 1
+    assert await db.bump_retry_count(t.id) == 2
+    fetched = await db.get_task(t.id)
+    assert fetched.retry_count == 2
+
+
+@pytest.mark.asyncio
+async def test_reset_retry_count(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    t = await db.create_task(title="x", assignee="y", status="ready")
+    await db.bump_retry_count(t.id)
+    await db.bump_retry_count(t.id)
+    await db.reset_retry_count(t.id)
+    fetched = await db.get_task(t.id)
+    assert fetched.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_dir_workspace_persists(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    abs_path = str(tmp_path / "shared")
+    t = await db.create_task(
+        title="x", assignee="y", status="ready",
+        workspace_kind="dir", workspace_path=abs_path,
+    )
+    fetched = await db.get_task(t.id)
+    assert fetched.workspace_kind == "dir"
+    assert fetched.workspace_path == abs_path
+
+
+@pytest.mark.asyncio
+async def test_atomic_claim_dir_workspace_materializes(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    target = tmp_path / "video-project"
+    await db.create_task(
+        title="render", assignee="renderer", status="ready",
+        workspace_kind="dir", workspace_path=str(target),
+    )
+    claimed = await db.atomic_claim_one_ready(claim_ttl_seconds=60)
+    assert claimed is not None
+    # workspace_path is the resolved (canonicalized) form
+    assert Path(claimed.workspace_path) == target.resolve()
+    assert target.exists()
+
+
+@pytest.mark.asyncio
+async def test_record_event_public(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    t = await db.create_task(title="x", assignee="y", status="ready")
+    await db.record_event(
+        t.id, "hallucination_rejected",
+        {"phantom_ids": ["t_phantom"]},
+        actor="worker",
+    )
+    events = await db.list_events(t.id)
+    assert any(e.kind == "hallucination_rejected" for e in events)

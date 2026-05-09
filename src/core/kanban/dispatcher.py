@@ -88,7 +88,9 @@ class KanbanDispatcher:
         }
         now_dt = self.now()
 
-        # 1. reclaim TTL-expired or PID-dead runs
+        # 1. reclaim TTL-expired or PID-dead runs.
+        # v0.13 "Tenacity": each incomplete-exit bumps retry_count; when
+        # retry_count >= max_retries, auto-block instead of cycling forever.
         active_runs = await self.db.list_active_runs()
         inflight = len(active_runs)
         # Tasks the dispatcher touched this tick — don't re-claim them in step 4.
@@ -105,16 +107,37 @@ class KanbanDispatcher:
                 outcome = "crashed"
             if outcome is None:
                 continue
-            if not dry_run:
-                await self.db.end_run(
-                    run.id, outcome=outcome,
-                    error="reclaimed by dispatcher",
+            if dry_run:
+                report["reclaimed"].append(run.task_id)
+                excluded.add(run.task_id)
+                inflight -= 1
+                continue
+            await self.db.end_run(
+                run.id, outcome=outcome,
+                error="reclaimed by dispatcher",
+            )
+            new_count = await self.db.bump_retry_count(run.task_id)
+            task_now = await self.db.get_task(run.task_id)
+            limit = task_now.max_retries if task_now else 3
+            if new_count >= limit:
+                await self.db.set_status(
+                    run.task_id, "blocked",
+                    actor="dispatcher",
+                    reason=(
+                        f"auto-blocked: incomplete-exit retry budget "
+                        f"exhausted ({new_count}/{limit}, last={outcome})"
+                    ),
                 )
+                report["blocked"].append(run.task_id)
+            else:
                 await self.db.set_status(
                     run.task_id, "ready",
-                    actor="dispatcher", reason=f"reclaimed: {outcome}",
+                    actor="dispatcher",
+                    reason=(
+                        f"reclaimed: {outcome} (retry {new_count}/{limit})"
+                    ),
                 )
-            report["reclaimed"].append(run.task_id)
+                report["reclaimed"].append(run.task_id)
             excluded.add(run.task_id)
             inflight -= 1
 

@@ -108,7 +108,12 @@ async def kanban_complete(
     created_cards: list[str] | None = None,
     task_id: str | None = None,
 ) -> dict:
-    """End the current run with outcome=completed and mark the task done."""
+    """End the current run with outcome=completed and mark the task done.
+
+    v0.13 hallucination recovery: if any ``created_cards`` id does not
+    exist, log a ``hallucination_rejected`` event (permanent audit trail)
+    and raise — never silently complete with phantom ids.
+    """
     tid = _resolve_task_id(task_id)
     task = await db.get_task(tid)
     if task is None:
@@ -116,11 +121,25 @@ async def kanban_complete(
     if task.current_run_id is None:
         raise KanbanToolError(f"task {tid!r} has no active run")
     if created_cards:
+        phantoms: list[str] = []
         for cid in created_cards:
             if await db.get_task(cid) is None:
-                raise KanbanToolError(
-                    f"created_card {cid!r} does not exist — never invent ids"
-                )
+                phantoms.append(cid)
+        if phantoms:
+            # v0.13 Tenacity: phantom-id rejection is a hallucination event.
+            # The event log keeps a permanent record even after the run
+            # is later completed by retry — auditors see the false claim.
+            await db.record_event(
+                tid, "hallucination_rejected",
+                {"phantom_ids": phantoms,
+                 "claimed_count": len(created_cards),
+                 "summary": summary},
+                actor="worker",
+            )
+            raise KanbanToolError(
+                f"created_cards rejected — phantom ids: {phantoms!r}. "
+                "Only list ids returned from a successful kanban_create."
+            )
     merged_metadata: dict = dict(metadata or {})
     if created_cards:
         merged_metadata["created_cards"] = list(created_cards)
@@ -131,6 +150,8 @@ async def kanban_complete(
         metadata=merged_metadata,
     )
     await db.set_status(tid, "done", actor="worker")
+    # v0.13 Tenacity: clean completion clears the retry budget.
+    await db.reset_retry_count(tid)
     promoted: list[str] = []
     for child in await db.children_of(tid):
         if child.status != "todo":
@@ -224,6 +245,9 @@ async def kanban_create(
     created_by: str | None = None,
     skills: list[str] | None = None,
     board_id: str | None = None,
+    workspace_kind: str = "scratch",
+    workspace_path: str | None = None,
+    max_retries: int = 3,
 ) -> dict:
     """Create a new task. Validates parents exist; auto-resolves tenant + board from env."""
     if not title:
@@ -257,6 +281,9 @@ async def kanban_create(
         parents=parents,
         skills=skills,
         board_id=eff_board,
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
+        max_retries=max_retries,
     )
     return {
         "task_id": task.id,
@@ -264,6 +291,9 @@ async def kanban_create(
         "assignee": task.assignee,
         "skills": task.skills,
         "board_id": task.board_id,
+        "workspace_kind": task.workspace_kind,
+        "workspace_path": task.workspace_path,
+        "max_retries": task.max_retries,
     }
 
 

@@ -297,3 +297,57 @@ async def test_link_rejects_phantom(tmp_path: Path):
     a = await db.create_task(title="a", assignee="x", status="ready")
     with pytest.raises(KanbanToolError):
         await kanban_link(db, parent_id=a.id, child_id="t_phantom")
+
+
+# ---- v0.13 Tenacity: hallucination event + retry reset ----
+
+
+@pytest.mark.asyncio
+async def test_complete_phantom_logs_hallucination_event(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    t = await db.create_task(title="x", assignee="y", status="ready")
+    await db.atomic_claim_one_ready(claim_ttl_seconds=60)
+    with pytest.raises(KanbanToolError):
+        await kanban_complete(
+            db, task_id=t.id, summary="lying",
+            created_cards=["t_doesnotexist"],
+        )
+    events = await db.list_events(t.id)
+    kinds = [e.kind for e in events]
+    assert "hallucination_rejected" in kinds
+
+
+@pytest.mark.asyncio
+async def test_complete_clears_retry_count(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    t = await db.create_task(
+        title="x", assignee="y", status="ready", max_retries=5,
+    )
+    await db.bump_retry_count(t.id)
+    await db.bump_retry_count(t.id)  # retry_count = 2
+    await db.atomic_claim_one_ready(claim_ttl_seconds=60)
+    await kanban_complete(db, task_id=t.id, summary="done")
+    fetched = await db.get_task(t.id)
+    assert fetched.status == "done"
+    assert fetched.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_create_with_workspace_dir_persists(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    target = tmp_path / "shared"
+    out = await kanban_create(
+        db, title="render", assignee="renderer",
+        workspace_kind="dir", workspace_path=str(target),
+    )
+    assert out["workspace_kind"] == "dir"
+    assert out["workspace_path"] == str(target)
+
+
+@pytest.mark.asyncio
+async def test_create_with_max_retries_persists(tmp_path: Path):
+    db = await _make_db(tmp_path)
+    out = await kanban_create(
+        db, title="x", assignee="y", max_retries=10,
+    )
+    assert out["max_retries"] == 10
