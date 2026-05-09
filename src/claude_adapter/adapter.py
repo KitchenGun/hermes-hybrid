@@ -67,6 +67,12 @@ _QUOTA_RE = re.compile(
 class ClaudeCodeAdapter:
     """``claude -p`` subprocess wrapper — Hermes Master 의 single LLM lane."""
 
+    # Phase 17 (2026-05-08) — 모드를 인스턴스/클래스 attribute 로 노출해
+    # 다른 컴포넌트(특히 hermes_master 회로 차단기)가 분기에 사용할 수 있게.
+    # ``bypassPermissions`` 에선 권한 거부 자체가 발생하지 않으므로 회로
+    # 차단기를 disable 하는 데 활용.
+    permission_mode: str = "bypassPermissions"
+
     def __init__(self, settings: Settings, *, concurrency: int | None = None):
         self.settings = settings
         effective = (
@@ -194,7 +200,7 @@ class ClaudeCodeAdapter:
             "--model", model,
             "--output-format", "json",
             "--no-session-persistence",
-            "--permission-mode", "bypassPermissions",
+            "--permission-mode", self.permission_mode,
         ]
         if self.settings.master_cli_backend == "wsl_subprocess":
             inner = " ".join(shlex.quote(a) for a in args)

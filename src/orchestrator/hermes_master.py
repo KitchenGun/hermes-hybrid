@@ -165,6 +165,13 @@ class HermesMasterOrchestrator:
             )
         )
 
+        # Phase 24 (2026-05-08) — last permission-denied / failure context
+        # per user_id. ``_handle_permission_denied`` 에서 원 user_message
+        # 를 stamp 해두면, 다음 turn 이 follow-up 으로 들어왔을 때 master
+        # 가 그 직전 의도를 anchor 로 복구한다 (in-process; 봇 재시작 시
+        # 휘발 — Discord history 가 회복 경로 보조).
+        self._failed_task_contexts: dict[str, dict[str, Any]] = {}
+
         # Phase 21 (2026-05-07) — A/B experiment runner.
         # Stateless deterministic arm assigner used in handle() before
         # _maybe_inject_memory(). disabled 일 때도 항상 control 반환이라
@@ -204,15 +211,10 @@ class HermesMasterOrchestrator:
             arm = None
             experiment_name = None
 
-        if arm == "control":
-            memory_inject_count = 0
-        else:
-            memory_inject_count = await self._maybe_inject_memory(
-                user_id, user_message, history_window
-            )
-            if arm == "treatment" and memory_inject_count == 0:
-                arm = "treatment_no_hits"
-
+        # Phase 24 (2026-05-08) — context anchoring fix.
+        # IntentRouter 가 follow-up 토큰 + history 를 보고 anchor_message
+        # 를 stamp 하므로 route() 를 memory inject 보다 먼저 호출. 그래야
+        # _maybe_inject_memory 가 anchor 를 query 로 활용 가능 (R2).
         intent = await self.intent_router.route(
             user_message=user_message,
             user_id=user_id,
@@ -221,7 +223,32 @@ class HermesMasterOrchestrator:
             memory=self.memory,
             repo=self.repo,
             orchestrator=self,
+            history=history_window,
         )
+
+        # Phase 24 — 직전 turn 이 권한 거부였고 이번 turn 이 follow-up
+        # 이면 _failed_task_contexts 에 저장된 원 task summary 를 anchor
+        # 로 우선 복구 (R4). IntentRouter 가 history-based anchor 를 못
+        # 잡았을 때만 (장문 user turn 이 history 에서 잘려나간 케이스).
+        if (
+            getattr(intent, "is_followup", False)
+            and not intent.anchor_message
+        ):
+            recovered = self._failed_task_contexts.get(user_id)
+            if recovered:
+                intent.anchor_message = recovered.get("user_message") or None
+
+        if arm == "control":
+            memory_inject_count = 0
+        else:
+            memory_inject_count = await self._maybe_inject_memory(
+                user_id,
+                user_message,
+                history_window,
+                anchor_message=intent.anchor_message,
+            )
+            if arm == "treatment" and memory_inject_count == 0:
+                arm = "treatment_no_hits"
 
         # Build the persistent task — every branch ends with
         # _log_task_end so the ExperienceLog gets a single row per
@@ -425,7 +452,13 @@ class HermesMasterOrchestrator:
         # Phase 16 — circuit breaker. Claude 가 권한 거부에 걸려 안내문을
         # 응답으로 만들어 보낸 경우, 같은 prompt 재호출은 동일 결과를 낳으므로
         # 사용자에게 settings/permission-mode 점검을 안내하고 종료.
-        if _looks_like_permission_denied(result.text):
+        # Phase 17 (2026-05-08) — bypassPermissions 모드에선 거부 자체가
+        # 발생하지 않으므로 회로 차단기 비활성화. (Claude 응답 본문에 \"권한\"
+        # /\"승인해주\" 같은 단어가 자연스럽게 등장해 false positive 가 빈번)
+        if (
+            self.adapter.permission_mode != "bypassPermissions"
+            and _looks_like_permission_denied(result.text)
+        ):
             return self._handle_permission_denied(task, result.text, t0)
 
         verdict = self.critic.evaluate(
@@ -546,7 +579,11 @@ class HermesMasterOrchestrator:
         # Phase 16 — circuit breaker (revision loop edition). Final attempt
         # 의 응답이 권한 거부 안내문이면 retry/escalation 도 동일 결과를
         # 낳았다는 뜻 → 사용자에게 settings 점검 안내.
-        if _looks_like_permission_denied(rev_result.final_response):
+        # Phase 17 (2026-05-08) — bypassPermissions 모드면 비활성화.
+        if (
+            self.adapter.permission_mode != "bypassPermissions"
+            and _looks_like_permission_denied(rev_result.final_response)
+        ):
             return self._handle_permission_denied(
                 task, rev_result.final_response, t0
             )
@@ -775,15 +812,22 @@ class HermesMasterOrchestrator:
         user_id: str,
         user_message: str,
         history_window: list[dict[str, str]],
+        *,
+        anchor_message: str | None = None,
     ) -> int:
         if not (
             self.settings.memory_inject_enabled
             and user_message.strip()
         ):
             return 0
+        # Phase 24 (R2) — follow-up 일 때 1턴 짧은 query ("진행해") 로
+        # search 하면 무관 cluster 가 hit 한다. anchor 가 잡혔으면
+        # anchor 를 query 로 사용해 직전 주제와 lexical/semantic 일치
+        # 한 메모만 끌어오게 한다.
+        query = anchor_message if anchor_message else user_message
         try:
             hits = await self.memory.search(
-                user_id, user_message,
+                user_id, query,
                 k=self.settings.memory_inject_top_k,
             )
         except Exception as e:  # noqa: BLE001
@@ -800,7 +844,10 @@ class HermesMasterOrchestrator:
             },
         )
         log.info(
-            "master.memory_injected", user_id=user_id, hits=len(hits)
+            "master.memory_injected",
+            user_id=user_id,
+            hits=len(hits),
+            anchored=anchor_message is not None,
         )
         return len(hits)
 
@@ -837,10 +884,6 @@ class HermesMasterOrchestrator:
             except Exception as _w4_err:  # noqa: BLE001
                 log.warning("w4.soul_inject_failed", err=str(_w4_err))
         # --- end ---
-        # Phase 14 — auto-curated MEMORY.md + USER.md prepend
-        memory_block = self.memory_curator.read_prompt_prepend()
-        if memory_block:
-            parts.append(memory_block)
 
         handles = list(getattr(intent, "agent_handles", []) or [])
         if handles:
@@ -856,7 +899,34 @@ class HermesMasterOrchestrator:
                 ),
             )
 
+        # Phase 24 (R3) — auto-curated MEMORY.md / USER.md 블록은 user
+        # message 보다 *뒤* 에 배치하고 우선순위 낮음 라벨을 붙인다.
+        # 이전 구현 (user message 직전 prepend) 은 짧은 follow-up 메시지
+        # 와 결합되면 큐레이터 cluster (routing debug 노트) 가 attention
+        # 을 압도해 anchor 가 옮겨갔다.
+        memory_block = self.memory_curator.read_prompt_prepend()
+
+        # Phase 24 (R1+R5) — follow-up + history-resolved anchor 가 있으면
+        # user message 직전에 명시적 topic anchor 블록을 박는다.
+        anchor = getattr(intent, "anchor_message", None)
+        if anchor:
+            parts.append(
+                "## Recent topic anchor (referenced by follow-up)\n"
+                + anchor.strip()
+            )
+            log.info(
+                "master.anchor_injected",
+                anchor_chars=len(anchor),
+                user_msg_chars=len(task.user_message),
+            )
+
         parts.append("## User\n" + task.user_message)
+
+        if memory_block:
+            parts.append(
+                "## Background context (auto-curated, lower priority)\n"
+                + memory_block
+            )
         return "\n\n".join(parts)
 
     def _agent_snippet(self, handle: str) -> str:
@@ -918,12 +988,30 @@ class HermesMasterOrchestrator:
         "권한 프롬프트를 한번 더 승인해주세요" 류 메시지를 만들어 보낸다.
         같은 prompt 재호출은 동일 결과를 낳으므로 사용자에게 즉시
         settings/permission-mode 점검 안내로 응답을 교체.
+
+        Phase 24 (R4) — final_response 를 통째로 권한 거부 안내문으로
+        교체하기 *전에*, 원 task 의 user_message + agent_handles 를 user
+        별 캐시에 stamp. 다음 turn 이 follow-up ("진행해", "이 내용") 으로
+        들어오면 master 가 캐시된 원 의도를 anchor 로 복구한다.
         """
+        # save BEFORE replacing — this is the only place that overwrites
+        # task.final_response with a notice unrelated to the user's intent.
+        self._failed_task_contexts[task.user_id] = {
+            "user_message": task.user_message,
+            "agent_handles": list(task.agent_handles),
+            "task_id": task.task_id,
+        }
+        task.failed_task_context = {
+            "user_message": task.user_message,
+            "agent_handles": list(task.agent_handles),
+        }
+
         notice = (
             "⚠️ Claude 측에서 권한 거부가 발생했습니다. 같은 메시지 재전송은 "
             "동일 결과를 낳습니다. `.claude/settings.json` 의 allow 패턴 또는 "
             "`--permission-mode` 설정을 점검하세요. "
-            f"(현재 mode: `acceptEdits`, cwd: `{self.settings.project_root}`)"
+            f"(현재 mode: `{self.adapter.permission_mode}`, "
+            f"cwd: `{self.settings.project_root}`)"
         )
         log.warning(
             "master.permission_denied_detected",
