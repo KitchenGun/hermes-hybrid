@@ -31,7 +31,12 @@ from src.memory import SqliteMemory
 from src.obs import bind_task_id, get_logger
 from src.orchestrator import Orchestrator
 from src.skills.journal.pipeline import JournalPipeline
-from src.state import Repository
+from src.state import (
+    DiscordSession,
+    Repository,
+    SessionStore,
+    make_session_key,
+)
 
 log = get_logger(__name__)
 DISCORD_MAX = 2000
@@ -69,6 +74,10 @@ class DiscordBot(commands.Bot):
         self.kanban_db: KanbanDB | None = None
         self.kanban_dispatcher: KanbanDispatcher | None = None
         self._kanban_task: asyncio.Task | None = None
+        # P2 — Discord session auto-resume. Same SQLite file as Repository
+        # (state_db_path) but a dedicated table. Hydrated in setup_hook,
+        # written best-effort after each successful on_message turn.
+        self.session_store = SessionStore(settings.state_db_path)
 
         # Phase 20 — feedback wiring. ExperienceLogger reused from
         # orchestrator so reaction patches land in the same root.
@@ -97,6 +106,20 @@ class DiscordBot(commands.Bot):
 
     async def setup_hook(self) -> None:  # pragma: no cover
         """Discord.py 2.0+ async init hook — start KanbanDispatcher loop here."""
+        # P2 — hydrate the legacy ``_sessions`` shape from SessionStore so
+        # restart-survival is transparent to the rest of on_message().
+        try:
+            await self.session_store.init()
+            hydrated = await self.session_store.hydrate_user_session_map()
+            if hydrated:
+                self._sessions.update(hydrated)
+                log.info(
+                    "discord.session_resume",
+                    count=len(hydrated),
+                )
+        except Exception as e:  # noqa: BLE001
+            log.warning("discord.session_hydrate_failed", err=str(e))
+
         if not self.settings.kanban_dispatcher_enabled:
             return
         self.kanban_db = KanbanDB(
@@ -190,6 +213,16 @@ class DiscordBot(commands.Bot):
             self._history[user_id].append({"role": "assistant", "content": result.response})
             self._history[user_id] = self._history[user_id][-16:]
 
+            # P2 — best-effort persist. Never block the user reply on a
+            # save failure; just log and continue.
+            try:
+                await self._persist_session(message, result)
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "discord.session_persist_failed",
+                    user=user_id, err=str(e),
+                )
+
             with bind_task_id(result.task.task_id, str(user_id)):
                 log.info(
                     "discord.replied",
@@ -248,6 +281,32 @@ class DiscordBot(commands.Bot):
                 await placeholder.edit(content=f"❌ internal error: `{type(e).__name__}`")
             except discord.HTTPException:
                 pass
+
+    async def _persist_session(  # pragma: no cover
+        self, message: discord.Message, result,
+    ) -> None:
+        """Upsert the post-turn session into SessionStore.
+
+        ``context_json`` carries only the master session id and the last
+        task id — never the raw user message or response, never tokens.
+        """
+        guild = getattr(message, "guild", None)
+        guild_id = str(guild.id) if guild is not None else None
+        channel_id = str(message.channel.id)
+        user_id = str(message.author.id)
+        key = make_session_key(
+            user_id=user_id, channel_id=channel_id, guild_id=guild_id,
+        )
+        await self.session_store.save(
+            DiscordSession(
+                session_key=key,
+                user_id=user_id,
+                channel_id=channel_id,
+                guild_id=guild_id,
+                last_task_id=getattr(result.task, "task_id", None),
+                context={"session_id": result.task.session_id},
+            )
+        )
 
     async def _handle_journal(  # pragma: no cover
         self, message: discord.Message, content: str,

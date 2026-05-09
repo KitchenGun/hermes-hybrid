@@ -1,3 +1,5 @@
+from .repository import Repository
+from .session_store import DiscordSession, SessionStore, make_session_key
 from .task_state import (
     ConfirmationContext,
     ErrorType,
@@ -7,15 +9,17 @@ from .task_state import (
     TaskState,
     Tier,
 )
-from .repository import Repository
 
 __all__ = [
     "ConfirmationContext",
+    "DiscordSession",
     "ErrorType",
     "HermesTrace",
     "Repository",
     "Route",
+    "SessionStore",
     "Status",
     "TaskState",
     "Tier",
+    "make_session_key",
 ]
