@@ -59,11 +59,44 @@ branch에서 `git rm` 되었습니다 (commit `99c3bc8`).
 
 ## Branch
 
-- `main` / `retire/self-implementation`: `a9f06b6` 로 정렬됨 (2026-05-11 dry-run 조기 종료 시점 동기화).
+- `main` / `retire/self-implementation` / `origin/main`: 모두 동일 commit으로 정렬됨 (2026-05-11 dry-run 조기 종료 시점 동기화).
 - 적용된 commit:
   - `99c3bc8` — 자체 구현 제거 (Phase A–C)
   - `78757df` — README rewrite + `one_off_migration/` 추가
-  - `a9f06b6` — Phase D cleanup (`_archive/`, `data/`, `.env.example`, `.agents/` 제거)
+  - `a9f06b6` — Phase D cleanup (tracked: `_archive/`, `data/`, `.env.example`, `.agents/` 제거)
+  - `1ee33be` — README dry-run 종료 + merge 완료 반영
+  - 본 commit — Cleanup history 섹션 추가
+
+---
+
+## Cleanup history (2026-05-11)
+
+Dry-run 조기 종료 후 main worktree 최종 정리. 본 저장소는 이후 **마이그레이션 history archive** 상태로 유지됨 (운영은 `~/.hermes/`로 일원화).
+
+### Tracked 정리 (`a9f06b6`)
+- `_archive/` — 11-profile .env/MEMORY 백업. ~/.hermes/profiles_archive/가 actual archive (README §복귀 참조).
+- `data/` — bench/memory/processed_memory/source_manifests/job_factory. 호출 코드(자체 구현)는 `99c3bc8`에서 git rm됨. memory 컨텐츠는 이미 ~/.hermes/memories/에 import 완료.
+- `.env.example` — hermes-hybrid 자체 구현 환경변수 템플릿 (공식 Hermes Agent는 ~/.hermes/.env 사용).
+- `.agents/skills/` — `.claude/skills/`와 중복 (Codex 포팅 변종, 외부 도구 미사용).
+
+### Untracked 정리 (.gitignore'd로 git status 미노출, 디스크에만 잔존했던 dead artifact)
+- 운영 DB: `data/state.db`, `data/kanban.db`, `data/recurring_request_log.jsonl`, `data/growth_metrics.generated.yaml`, `data/pipelines.yaml`, `data/memory/ingest.log`
+- 운영 로그: `logs/` (60+ files: `bot-*.log`, `run-*.log`, `*.err.log`, `experience/*.jsonl`), `bot_stderr.log`, `bot_stdout.log`
+- 백업 (.bak/.pre_v42 패턴): `data/*.pre_v42_20260509T144427Z` (4), `data/job_factory/score_matrix.bak.20260503-noise.json`, `data/benchmarks/claude_family_2026-05-03*.log` (3), `secrets/gmail_kitchen_token.json.bak.20260504`, `.env.bak`, `.env.bak.20260501`
+- Build artifacts: `.venv/` (Windows venv), `.venv-linux/` (WSL venv), `tests/__pycache__/`, `scripts/__pycache__/`, `.pytest_cache/`
+- 자체 구현 source dirs (retire git rm 후 .gitignore'd로 잔존): `profiles/`, `src/`, `state/`, `_archive/`
+- 벤치 결과: `data/benchmarks/*.json` (8)
+- 활성 `.env` — DISCORD_BOT_TOKEN, MASTER_*, OLLAMA_* 등 자체 구현용. 운영 token은 이미 ~/.hermes/.env에 import 완료.
+
+### 보존 (KEEP)
+- **Git 운영**: `.gitignore`, `.gitattributes`, `README.md`
+- **Claude Code 도구**: `.claude/` (settings + commands + skills)
+- **Migration history**: `one_off_migration/` (11 scripts — README §Migration scripts 명시)
+- **OAuth credentials**: `secrets/` — ~/.hermes/ grep 결과 미참조이나 재발급 비용 회피 위해 보존. `.gitignore`'d이므로 repo cleanliness 무관.
+  - `google_oauth_client.json` / `google_calendar_token.json` / `gmail_kk_token.json` / `gmail_kitchen_token.json`
+
+### 권한 시스템 ping-pong (참고)
+정리 과정에서 Claude Code 권한 시스템이 destructive action을 여러 번 차단 — `state.db/kanban.db backups` 자동 inference 거부, `git push origin main` 명시 미인가 거부, `Remove-Item` recursive 거부. 모두 사용자 명시 확인(AskUserQuestion) 후 진행. 결과적으로 OAuth credential 같은 sensitive 자료가 보존되는 안전망 역할.
 
 ---
 
