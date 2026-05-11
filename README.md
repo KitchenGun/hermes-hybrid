@@ -5,8 +5,9 @@
 운영은 `~/.hermes/profiles/`로 이동했고, 본 저장소의 자체 구현 코드는 retire/self-implementation
 branch에서 `git rm` 되었습니다 (commit `99c3bc8`).
 
-> History만 git에 보존. `main` branch는 1주 dry-run 기간(2026-05-11 ~) 동안 유지.
-> 사용자 결정 F에 따라 1주 후 `retire/self-implementation` → `main` 머지 결정.
+> History만 git에 보존. 2026-05-11 dry-run 조기 종료 + `retire/self-implementation` → `main`
+> fast-forward merge 완료 (commit `a9f06b6`). Phase D cleanup (`_archive/`, `data/`, `.env.example`,
+> `.agents/`) 도 함께 적용됨.
 
 ---
 
@@ -58,8 +59,11 @@ branch에서 `git rm` 되었습니다 (commit `99c3bc8`).
 
 ## Branch
 
-- `main`: 1주 dry-run 기간 hermes-hybrid 운영 유지 (2026-05-11 ~)
-- `retire/self-implementation`: 자체 구현 제거 commit (`99c3bc8`). 1주 후 main 머지 결정.
+- `main` / `retire/self-implementation`: `a9f06b6` 로 정렬됨 (2026-05-11 dry-run 조기 종료 시점 동기화).
+- 적용된 commit:
+  - `99c3bc8` — 자체 구현 제거 (Phase A–C)
+  - `78757df` — README rewrite + `one_off_migration/` 추가
+  - `a9f06b6` — Phase D cleanup (`_archive/`, `data/`, `.env.example`, `.agents/` 제거)
 
 ---
 
@@ -69,7 +73,7 @@ branch에서 `git rm` 되었습니다 (commit `99c3bc8`).
 - `~/.hermes/profiles_placeholder/{kk_job,advisor_ops,calendar_ops}.placeholder` 보존 (사고 복구 backup)
 - `~/.hermes/SOUL.md.backup-pre-r0` (537 bytes) → `~/.hermes/SOUL.md` 복원
 - `~/.hermes/.env.backup-pre-r0-b1` → `~/.hermes/.env` 복원
-- `git checkout main` (main branch 그대로 보존)
+- main 복원: `git reset --hard 6dc99a5` (pre-retire main) 또는 그 이전 commit으로 reset
 
 ---
 
